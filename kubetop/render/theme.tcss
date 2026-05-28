@@ -1,0 +1,492 @@
+/* kubetop — modern dark dashboard theme.
+ * Clear visual hierarchy: summary bar -> trend graphs -> main table -> panels.
+ * Threshold colors (green/yellow/red) are applied via Rich markup in widgets;
+ * this file owns layout, borders, and structural color. */
+
+Screen {
+    layout: vertical;
+    background: $background;
+    /* Reserve a 1-column right safe-area. Some terminals (and panes with an
+     * always-on scrollbar) do not let an app draw into the very last column,
+     * which clipped the right-aligned Header clock and the Footer command hint
+     * by one cell. Padding the Screen keeps docked Header/Footer + all panels
+     * one column inside the reported width so nothing falls off-frame. */
+    padding-right: 1;
+}
+
+/* ── summary counter bar ────────────────────────────────────────────────── */
+/* compact (legacy) one-line bar; the -tiles variant grows to a 2-line strip of
+ * boxed, color-coded stat tiles for fast 5-second situational awareness. */
+#summary_bar {
+    height: 1;
+    background: $panel;
+    color: $text;
+    padding: 0 1;
+    content-align: left middle;
+}
+
+#summary_bar.-tiles {
+    height: 2;
+    background: $panel;
+    padding: 0 1;
+    content-align: left top;
+}
+
+/* Panel show/hide (Options -> Panels tab). events/pvc/alerts/health/sidebar
+ * each carry their own .-hidden rule; summary/trends/pod-table were missing
+ * theirs, so toggling them set the class but nothing hid. */
+#summary_bar.-hidden,
+#trends.-hidden,
+#main_table.-hidden {
+    display: none;
+}
+
+/* ── search / filter bar (key '/') ──────────────────────────────────────── */
+#search_bar {
+    height: 3;
+    layout: horizontal;
+    background: $surface;
+    border: round $accent;
+    padding: 0 1;
+}
+
+#search_bar.-hidden {
+    display: none;
+}
+
+#search_glyph {
+    width: 2;
+    color: $accent;
+    text-style: bold;
+    content-align: center middle;
+}
+
+#search_input {
+    width: 1fr;
+    border: none;
+    background: $surface;
+}
+
+/* ── common panel chrome (.kpanel) ──────────────────────────────────────── */
+/* ONE shared spec so every side panel (alerts, health, and the three data-table
+ * panels) shares identical chrome: rounded border, LEFT-aligned accent title,
+ * consistent padding, uniform scrollbar. Each panel keeps its own semantic
+ * border COLOR via its #id rule below, but the border STYLE, title alignment,
+ * and padding are uniform — panels stop looking "each different".
+ *
+ * .kpanel is a scrollable VerticalScroll (the alerts/health Panel base). Its
+ * body scrolls vertically when content overflows the fixed height. */
+.kpanel {
+    border: round $accent;
+    background: $surface;
+    padding: 0 1;
+    scrollbar-size-vertical: 1;
+}
+
+#main_table, #events_table, #pvc_table, .kpanel {
+    border-title-align: left;
+    border-title-color: $accent;
+}
+
+.kpanel-body {
+    width: 100%;
+    height: auto;
+}
+
+/* ── alerts panel (core) + plugin panels (e.g. health) ──────────────────── */
+/* Opt-in, cluster-linked. Hidden unless toggled on AND the linked config is set
+ * (the app applies the -hidden class in apply_panel_visibility). All panels in
+ * this row share one horizontal band (like the events|pvc bottom row). */
+#top_panels {
+    layout: horizontal;
+    height: 7;
+}
+
+#top_panels.-hidden {
+    display: none;
+}
+
+/* Alerts keeps its semantic error-red border, but the TITLE stays accent-yellow
+ * like every other panel (the id rule's border must not shadow the title color). */
+#alerts_panel {
+    width: 1fr;
+    height: 100%;
+    border: round $error;
+    border-title-color: $accent;
+}
+
+#alerts_panel.-hidden {
+    display: none;
+}
+
+/* Health (plugin) panel keeps its semantic secondary-color border + accent title. */
+#health_panel {
+    width: 1fr;
+    height: 100%;
+    border: round $secondary;
+    border-title-color: $accent;
+}
+
+#health_panel.-hidden {
+    display: none;
+}
+
+/* ── trend graphs row ───────────────────────────────────────────────────── */
+/* Small fixed strip — these are at-a-glance context, NOT the focus. The main
+ * NODE/POD table below is the dominant panel (BUG FIX #1). */
+#trends {
+    height: 6;
+    layout: horizontal;
+}
+
+TrendGraph {
+    width: 1fr;
+    border: round $primary-darken-2;
+    border-title-align: left;
+    border-title-color: $accent;
+    padding: 0 1;
+}
+
+.trend-title {
+    text-style: bold;
+    color: $accent;
+    height: 1;
+}
+
+.trend-spark {
+    height: 3;
+}
+
+.trend-spark.cpu > .sparkline--max-color {
+    color: $success;
+}
+.trend-spark.cpu > .sparkline--min-color {
+    color: $success-darken-2;
+}
+.trend-spark.mem > .sparkline--max-color {
+    color: $secondary;
+}
+.trend-spark.mem > .sparkline--min-color {
+    color: $secondary-darken-2;
+}
+
+.trend-value {
+    height: 1;
+    text-style: bold;
+    color: $text;
+}
+
+/* ── main horizontal: sidebar + content ─────────────────────────────────── */
+#main_horizontal {
+    layout: horizontal;
+    height: 1fr;
+}
+
+#sidebar {
+    width: 28;
+    background: $surface;
+    border-right: tall $accent;
+    padding: 1;
+    height: 1fr;
+    layout: vertical;
+}
+
+#sidebar.-hidden {
+    display: none;
+}
+
+/* BUG FIX #3: scroll the sidebar body so SORT BY / PANELS stay reachable on
+ * short terminals instead of being clipped off the bottom. */
+#side_scroll {
+    height: 1fr;
+    width: 100%;
+    scrollbar-size-vertical: 1;
+}
+
+#side_title {
+    content-align: center middle;
+    text-style: bold;
+    background: $accent-darken-1;
+    color: $text;
+    height: 3;
+    margin-bottom: 1;
+}
+
+.side_section {
+    text-style: bold;
+    margin-top: 1;
+    color: $accent;
+}
+
+/* NAMESPACE checkbox list can hold the full cluster discovery — give it room
+ * but cap the height and let this inner VerticalScroll scroll so many
+ * namespaces never push the lower controls (SORT BY / PANELS) off-screen. */
+#side_ns_box {
+    height: auto;
+    max-height: 10;
+    width: 100%;
+    border: solid $primary-darken-2;
+    scrollbar-size-vertical: 1;
+}
+
+/* compact, full-width namespace checkboxes inside the bounded scroll box */
+#side_ns_box Checkbox {
+    height: 1;
+    width: 100%;
+    border: none;
+    padding: 0;
+    background: transparent;
+}
+
+#side_sort_list {
+    height: auto;
+    max-height: 5;
+    border: solid $primary-darken-2;
+}
+
+#side_tip {
+    margin-top: 2;
+    color: $text-muted;
+}
+
+/* ── content view ───────────────────────────────────────────────────────── */
+#main_view {
+    width: 1fr;
+    layout: vertical;
+    height: 1fr;
+}
+
+/* BUG FIX #1: the NODE/POD table is the DOMINANT panel. It takes ~65% of the
+ * content column (2fr) while the Events+PVC bottom row shares the remaining
+ * ~35% (1fr). Using fr units keeps this proportion stable at any terminal
+ * height instead of the previous fixed 14-row bottom strip swamping a short
+ * viewport. The DataTable itself is height:1fr so it fills the panel and shows
+ * all ~26 rows (scrollable). */
+#main_table {
+    height: 2fr;
+    min-height: 10;
+    border: round $success;
+}
+
+#main_table > .datatable--cursor {
+    background: $accent;
+}
+
+#bottom_box {
+    height: 1fr;
+    min-height: 6;
+    max-height: 16;
+    layout: horizontal;
+}
+
+#bottom_box.-hidden {
+    display: none;
+}
+
+#events_table {
+    width: 1fr;
+    border: round $primary;
+}
+
+#events_table.-hidden {
+    display: none;
+}
+
+#pvc_table {
+    width: 1fr;
+    border: round $success;
+}
+
+#pvc_table.-hidden {
+    display: none;
+}
+
+/* ── modals ─────────────────────────────────────────────────────────────── */
+LogViewerModal, DescribeModal, EventDetailModal {
+    align: center middle;
+    background: $background 70%;
+}
+
+#log_box {
+    width: 90%;
+    height: 85%;
+    border: round $accent;
+    background: $surface;
+    padding: 1;
+}
+
+#desc_box {
+    width: 85%;
+    height: 80%;
+    border: round $warning;
+    background: $surface;
+    padding: 1;
+}
+
+#ev_box {
+    width: 75%;
+    height: 45%;
+    border: round $primary;
+    background: $surface;
+    padding: 1;
+}
+
+#log_hdr, #desc_hdr, #ev_hdr {
+    height: 1;
+    content-align: center middle;
+    text-style: bold;
+    color: $accent;
+}
+
+#log_content, #desc_content, #ev_content {
+    height: 1fr;
+}
+
+/* ── confirm modal ──────────────────────────────────────────────────────── */
+ConfirmModal {
+    align: center middle;
+    background: $background 80%;
+}
+
+#confirm_box {
+    width: 60;
+    height: 13;
+    border: double $error;
+    background: $surface;
+    padding: 1;
+    align: center middle;
+    content-align: center middle;
+}
+
+#confirm_title {
+    text-style: bold;
+    color: $error;
+    height: 2;
+    content-align: center middle;
+}
+
+#confirm_body {
+    height: 1fr;
+    content-align: center middle;
+    text-align: center;
+}
+
+#confirm_btns {
+    layout: horizontal;
+    align: center middle;
+    height: 3;
+}
+
+#confirm_btns Button {
+    margin: 0 2;
+    width: 16;
+}
+
+/* ── options / settings modal ───────────────────────────────────────────── */
+OptionsModal {
+    align: center middle;
+    background: $background 80%;
+}
+
+#opt_box {
+    width: 78;
+    height: 90%;
+    max-height: 100%;
+    border: round $accent;
+    background: $surface;
+    padding: 1;
+    layout: vertical;
+}
+
+#opt_hdr {
+    height: 1;
+    content-align: center middle;
+    text-style: bold;
+    color: $accent;
+    margin-bottom: 1;
+}
+
+/* Tabbed body fills the space between the header and the footer; each pane
+ * scrolls internally so no tab overflows on a short (~80x24) terminal. */
+#opt_tabs {
+    height: 1fr;
+    width: 100%;
+}
+
+#opt_tabs ContentSwitcher {
+    height: 1fr;
+}
+
+.opt_pane {
+    height: 1fr;
+    width: 100%;
+    scrollbar-size-vertical: 1;
+    padding: 0 1;
+}
+
+.opt_section {
+    text-style: bold;
+    color: $accent;
+    margin-top: 1;
+    border-bottom: solid $primary-darken-2;
+}
+
+.opt_hint {
+    color: $text-muted;
+    height: 1;
+}
+
+.opt_input {
+    width: 30;
+    height: 1;
+}
+
+#opt_columns {
+    height: 1fr;          /* fill the Columns tab instead of a fixed 12 rows */
+    min-height: 8;
+    border: solid $primary-darken-2;
+}
+
+.opt_btnrow {
+    height: 3;
+    align: left middle;
+}
+
+.opt_btn {
+    margin: 0 1;
+    min-width: 12;
+}
+
+#opt_footer {
+    height: 3;
+    align: center middle;
+}
+
+#opt_footer Button {
+    margin: 0 2;
+    width: 18;
+}
+
+#opt_status {
+    height: 1;
+    content-align: center middle;
+    color: $success;
+}
+
+/* ── dual-handle threshold sliders (Thresholds tab) ─────────────────────── */
+/* One per metric (CPU / MEM / PVC). Three lines tall: title, colored track,
+ * value labels. Focusable so keyboard users can move handles; a tall left
+ * border marks the focused slider. */
+.opt_slider {
+    height: 3;
+    width: 100%;
+    margin: 1 0;
+    padding: 0 1;
+    border-left: tall $primary-darken-2;
+    background: $surface;
+}
+
+.opt_slider:focus {
+    border-left: tall $accent;
+    background: $boost;
+}

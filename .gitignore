@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtualenv
+.venv/
+venv/
+
+# Local user profiles / config (never commit cluster-specific identifiers)
+*.local.yaml
+
+# OS / editor
+.DS_Store
+*.swp

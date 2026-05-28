@@ -1,0 +1,46 @@
+# Example kubetop profile.
+#
+# Copy to ~/.config/kubetop/profiles/<name>.yaml and run `kubetop --profile <name>`.
+# Every field is OPTIONAL — with no profile, kubetop shows a generic,
+# workload-agnostic view (alphabetical pods, host-local timezone, default
+# thresholds). A profile just teaches kubetop about YOUR workloads.
+name: example
+
+# Default namespaces to watch when none are passed on the CLI.
+namespaces:
+  - default
+
+# Display timezone for timestamps (IANA name). "" = the host's local timezone.
+timezone: ""
+
+# Pod ordering: rows are sorted by ascending weight, so the lowest weight shows
+# first. Match is a prefix on the pod name. Pods that match nothing sort last.
+ordering:
+  - { prefix: ingress-, weight: 10 }
+  - { prefix: api-,     weight: 20 }
+  - { prefix: worker-,  weight: 30 }
+
+# OK / Warn / Crit coloring thresholds (percent of limit or capacity).
+thresholds:
+  cpu_warn: 75
+  cpu_crit: 90
+  mem_warn: 80
+  mem_crit: 92
+  pvc_warn: 75
+  pvc_crit: 90
+
+# Inline alert panel (toggle with `a`). A '/'-prefixed path is fetched via
+# `kubectl get --raw` through the Kubernetes API-server proxy, so it uses your
+# kubeconfig auth with NO localhost port-forward. An http(s) URL is also allowed
+# (needs the endpoint reachable). Empty / unset = the alerts panel stays hidden.
+# alertmanager_url: "/api/v1/namespaces/monitoring/services/<alertmanager-svc>:9093/proxy/api/v2/alerts"
+
+# Workload health row (plugin; toggle with `h`). Each probe scrapes a metrics or
+# HTTP endpoint and extracts values via a regex (capturing group 1). Like alerts,
+# a '/'-prefixed url goes through the API-server proxy (no port-forward).
+# health_probes:
+#   - name: api
+#     url: "/api/v1/namespaces/<ns>/services/<svc>:<port>/proxy/metrics"
+#     fields:
+#       requests: 'http_requests_total ([0-9]+)'
+#       errors:   'http_errors_total ([0-9]+)'
