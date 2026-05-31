@@ -1,5 +1,16 @@
 # kutop
 
+[![CI](https://github.com/ken-jo/kutop/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/ken-jo/kutop/actions/workflows/ci.yml)
+[![Release](https://github.com/ken-jo/kutop/actions/workflows/release.yml/badge.svg)](https://github.com/ken-jo/kutop/actions/workflows/release.yml)
+[![GitHub release](https://img.shields.io/github/v/release/ken-jo/kutop?include_prereleases&sort=semver&logo=github)](https://github.com/ken-jo/kutop/releases)
+[![PyPI](https://img.shields.io/pypi/v/kutop?logo=pypi&logoColor=white)](https://pypi.org/project/kutop/)
+[![Wheel](https://img.shields.io/pypi/wheel/kutop?logo=python&logoColor=white)](https://pypi.org/project/kutop/)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](pyproject.toml)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Issues](https://img.shields.io/github/issues/ken-jo/kutop)](https://github.com/ken-jo/kutop/issues)
+[![Stars](https://img.shields.io/github/stars/ken-jo/kutop?style=social)](https://github.com/ken-jo/kutop/stargazers)
+[![Last commit](https://img.shields.io/github/last-commit/ken-jo/kutop)](https://github.com/ken-jo/kutop/commits/master)
+
 A modern, like-btop **Kubernetes resource dashboard** for the terminal, built
 with [Textual](https://textual.textualize.io/). It attaches to any cluster /
 namespace, shows live CPU/MEM trend sparklines, an aggregate counter bar, and
