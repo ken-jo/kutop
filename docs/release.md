@@ -46,14 +46,14 @@ PUBLISH_PYPI=true
 Create a tap repository, for example:
 
 ```bash
-gh repo create ken-jo/homebrew-tap --public
+gh repo create ken-jo/homebrew-kutop --public
 ```
 
 Configure repository variables/secrets on `ken-jo/kutop`:
 
 ```text
 PUBLISH_HOMEBREW=true
-HOMEBREW_TAP_REPO=ken-jo/homebrew-tap
+HOMEBREW_TAP_REPO=ken-jo/homebrew-kutop
 HOMEBREW_TAP_TOKEN=<token with write access to the tap repo>
 ```
 
@@ -64,7 +64,11 @@ formula into the tap repo.
 Install command:
 
 ```bash
-brew install ken-jo/tap/kutop
+brew tap ken-jo/kutop
+brew install kutop
+
+# One-shot install without a separate tap step:
+brew install ken-jo/kutop/kutop
 ```
 
 ## Apt Repository

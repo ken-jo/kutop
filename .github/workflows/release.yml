@@ -147,7 +147,7 @@ jobs:
     needs: [build-homebrew, github-release]
     if: ${{ vars.PUBLISH_HOMEBREW == 'true' }}
     env:
-      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ken-jo/homebrew-tap' }}
+      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ken-jo/homebrew-kutop' }}
     steps:
       - uses: actions/download-artifact@v4
         with:
