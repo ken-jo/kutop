@@ -1,29 +1,35 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kubetop"
+name = "kutop"
 version = "0.1.0"
 description = "A modern btop-style Kubernetes resource dashboard for the terminal."
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
-authors = [{ name = "kubetop contributors" }]
-keywords = ["kubernetes", "tui", "monitoring", "dashboard", "textual", "btop"]
+license = "MIT"
+authors = [{ name = "kutop contributors" }]
+keywords = ["kubernetes", "tui", "monitoring", "dashboard", "textual", "btop", "kutop", "kubetop"]
 dependencies = [
     "textual==8.2.7",
     "rich==15.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ken-jo/kutop"
+Repository = "https://github.com/ken-jo/kutop"
+Issues = "https://github.com/ken-jo/kutop/issues"
+
 [project.optional-dependencies]
 profiles = ["pyyaml>=6"]
 
 [project.scripts]
+kutop = "kubetop.cli:main"
 kubetop = "kubetop.cli:main"
 
 [tool.setuptools]
-packages = ["kubetop", "kubetop.render", "kubetop.plugins"]
+packages = ["kubetop", "kubetop.render", "kubetop.plugins", "kubetop.profiles"]
 
 [tool.setuptools.package-data]
 kubetop = ["profiles/*.yaml", "render/*.tcss"]

@@ -1,4 +1,4 @@
-"""kubetop command-line entrypoint.
+"""kutop / kubetop command-line entrypoint.
 
 Backward compatible with ``top.sh <ns> <interval>``: positional ``namespaces``
 (comma list) and ``interval`` are optional. A profile may supply default
@@ -9,6 +9,7 @@ headlessly with a synthetic snapshot (no kubectl) for cluster-independent CI.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import Optional
 
@@ -26,7 +27,7 @@ from .config import (
 
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        prog="kubetop",
+        prog=_prog_name(),
         description="A modern btop-style Kubernetes resource dashboard for the terminal.",
     )
     ap.add_argument(
@@ -40,7 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--profile", default=None,
                     help="profile name (profiles/<name>.yaml) or explicit path")
     ap.add_argument("--config", default=None,
-                    help="explicit config file path (default: ~/.config/kubetop/config.yaml)")
+                    help="explicit config file path (default: ~/.config/kutop/config.yaml)")
     ap.add_argument("--dump-config", action="store_true",
                     help="print the complete annotated config skeleton as YAML and exit")
     ap.add_argument("--tz", default=None,
@@ -74,8 +75,15 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--size", default=None, metavar="WxH",
                     help="terminal size for --snapshot (default depends on --detail)")
     ap.add_argument("--version", action="version",
-                    version=f"kubetop {__version__}")
+                    version=f"kutop {__version__}")
     return ap
+
+
+def _prog_name() -> str:
+    name = os.path.basename(sys.argv[0] or "")
+    if name in ("__main__.py", "-m", "python", "python3"):
+        return "kutop"
+    return name or "kutop"
 
 
 def _parse_size(spec: str) -> "tuple[int, int]":

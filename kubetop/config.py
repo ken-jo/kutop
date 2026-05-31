@@ -1,4 +1,4 @@
-"""Unified configuration system for kubetop.
+"""Unified configuration system for kutop / kubetop.
 
 Two layers of structure live here:
 
@@ -10,19 +10,19 @@ Two layers of structure live here:
   to watch, refresh interval, theme accent, alert thresholds, which panels are
   visible, and which table COLUMNS are shown / in what order. Every option here
   is editable at runtime (the Options modal, key ``o``), persisted to
-  ``~/.config/kubetop/config.yaml``, and dumpable as an annotated skeleton via
-  ``kubetop --dump-config``.
+  ``~/.config/kutop/config.yaml``, and dumpable as an annotated skeleton via
+  ``kutop --dump-config``.
 
 Resolution order for a :class:`Config` (later wins):
 
   1. built-in defaults (this module — :func:`_default_config_dict`)
   2. profile file (``--profile NAME`` -> ``profiles/NAME.yaml``)
-  3. user config file (``~/.config/kubetop/config.yaml`` or ``--config PATH``)
+  3. user config file (``~/.config/kutop/config.yaml`` or ``--config PATH``)
   4. CLI overrides (namespaces, interval, tz, …)
 
 The core runs fully without any profile or user file — defaults give an
 alphabetical, workload-agnostic view. PyYAML is optional for *reading* profiles
-but is needed to load/save a YAML user config; without it kubetop still runs on
+but is needed to load/save a YAML user config; without it kutop still runs on
 defaults + CLI overrides and persists nothing.
 
 NO module here imports textual — keep it light so the CLI ``--dump-config`` and
@@ -42,16 +42,21 @@ except ImportError:  # keep core usable without PyYAML
     _HAS_YAML = False
 
 _BUILTIN_PROFILE_DIR = os.path.join(os.path.dirname(__file__), "profiles")
-_USER_PROFILE_DIR = os.path.expanduser("~/.config/kubetop/profiles")
+_USER_PROFILE_DIR = os.path.expanduser("~/.config/kutop/profiles")
+_LEGACY_KUBETOP_PROFILE_DIR = os.path.expanduser("~/.config/kubetop/profiles")
+_LEGACY_KTOP_PROFILE_DIR = os.path.expanduser("~/.config/ktop/profiles")
 
 # User config + legacy state locations.
-CONFIG_DIR = os.path.expanduser("~/.config/kubetop")
+CONFIG_DIR = os.path.expanduser("~/.config/kutop")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
-_LEGACY_STATE_PATH = os.path.join(CONFIG_DIR, "state.json")
+_STATE_PATH = os.path.join(CONFIG_DIR, "state.json")
 
-# Pre-rename config dir (the project used to be called "ktop"). When the new
-# ~/.config/kubetop/config.yaml is absent but the old one exists we copy it over
-# on first load so existing users keep their settings (see _migrate_ktop_config).
+# Pre-rename config dirs. The project has used ktop -> kubetop -> kutop names.
+# When ~/.config/kutop/config.yaml is absent but an old config exists we copy it
+# over on first load so existing users keep their settings.
+_LEGACY_KUBETOP_CONFIG_DIR = os.path.expanduser("~/.config/kubetop")
+_LEGACY_KUBETOP_CONFIG_PATH = os.path.join(_LEGACY_KUBETOP_CONFIG_DIR, "config.yaml")
+_LEGACY_KUBETOP_STATE_PATH = os.path.join(_LEGACY_KUBETOP_CONFIG_DIR, "state.json")
 _LEGACY_KTOP_CONFIG_DIR = os.path.expanduser("~/.config/ktop")
 _LEGACY_KTOP_CONFIG_PATH = os.path.join(_LEGACY_KTOP_CONFIG_DIR, "config.yaml")
 _LEGACY_KTOP_STATE_PATH = os.path.join(_LEGACY_KTOP_CONFIG_DIR, "state.json")
@@ -96,7 +101,12 @@ class Profile:
 def _profile_path(name_or_path: str) -> Optional[str]:
     if os.path.sep in name_or_path or name_or_path.endswith((".yaml", ".yml")):
         return name_or_path if os.path.exists(name_or_path) else None
-    for d in (_USER_PROFILE_DIR, _BUILTIN_PROFILE_DIR):
+    for d in (
+        _USER_PROFILE_DIR,
+        _LEGACY_KUBETOP_PROFILE_DIR,
+        _LEGACY_KTOP_PROFILE_DIR,
+        _BUILTIN_PROFILE_DIR,
+    ):
         p = os.path.join(d, f"{name_or_path}.yaml")
         if os.path.exists(p):
             return p
@@ -104,7 +114,7 @@ def _profile_path(name_or_path: str) -> Optional[str]:
 
 
 def load_profile(name_or_path: Optional[str]) -> Profile:
-    """Load a profile by name (user then built-in dirs) or path.
+    """Load a profile by name (user, legacy, then built-in dirs) or path.
 
     Returns the generic default Profile when name_or_path is falsy or unresolved.
     """
@@ -799,9 +809,9 @@ def _read_user_file(path: str) -> dict:
     """Read a user config YAML/JSON file. Returns {} on any problem."""
     if not path or not os.path.exists(path):
         if path == CONFIG_PATH:
-            # one-time rename migration: a pre-rename ~/.config/ktop/config.yaml
-            # is adopted so existing users keep their settings (highest priority).
-            migrated = _migrate_ktop_config()
+            # One-time rename migration: pre-rename kubetop/ktop configs are
+            # adopted so existing users keep their settings (highest priority).
+            migrated = _migrate_legacy_config()
             if migrated:
                 return migrated
             # else fall back to absorbing the legacy state.json sidebar choices
@@ -834,19 +844,26 @@ def _read_user_file(path: str) -> dict:
         return {}
 
 
-def _migrate_ktop_config() -> dict:
-    """Adopt a pre-rename ``~/.config/ktop/config.yaml`` into the new location.
+def _migrate_legacy_config() -> dict:
+    """Adopt a pre-rename config file into the new kutop location.
 
-    The project was renamed ktop -> kubetop. When the new
-    ``~/.config/kubetop/config.yaml`` does not yet exist but the old ktop config
-    does, we read it and copy it across so existing users keep every setting.
+    The project was renamed ktop -> kubetop -> kutop. When the new
+    ``~/.config/kutop/config.yaml`` does not yet exist but an old config does, we
+    read it and copy it across so existing users keep every setting.
     Returns the parsed config dict (so it layers exactly like a user file would)
     or ``{}`` when there is nothing to migrate. Never raises.
     """
-    if os.path.exists(CONFIG_PATH) or not os.path.exists(_LEGACY_KTOP_CONFIG_PATH):
+    if os.path.exists(CONFIG_PATH):
+        return {}
+    source_path = ""
+    for candidate in (_LEGACY_KUBETOP_CONFIG_PATH, _LEGACY_KTOP_CONFIG_PATH):
+        if os.path.exists(candidate):
+            source_path = candidate
+            break
+    if not source_path:
         return {}
     try:
-        with open(_LEGACY_KTOP_CONFIG_PATH, encoding="utf-8") as fh:
+        with open(source_path, encoding="utf-8") as fh:
             text = fh.read()
         if _HAS_YAML:
             data = yaml.safe_load(text) or {}
@@ -870,14 +887,14 @@ def _migrate_ktop_config() -> dict:
 
 
 def _migrate_legacy_state() -> dict:
-    """Absorb a legacy ``state.json`` (kubetop or pre-rename ktop) into a layer.
+    """Absorb a legacy ``state.json`` (kutop/kubetop/ktop) into a layer.
 
     Returns a partial config dict (only the keys the old state knew about) so
     the user's previous sidebar choices survive the upgrade. Checks the current
-    config dir first, then the pre-rename ktop dir. Never raises.
+    config dir first, then pre-rename dirs. Never raises.
     """
     st = None
-    for candidate in (_LEGACY_STATE_PATH, _LEGACY_KTOP_STATE_PATH):
+    for candidate in (_STATE_PATH, _LEGACY_KUBETOP_STATE_PATH, _LEGACY_KTOP_STATE_PATH):
         try:
             import json
             with open(candidate, encoding="utf-8") as fh:
@@ -928,7 +945,7 @@ def load_config(
 
 
 def save_config(cfg: Config, path: Optional[str] = None) -> str:
-    """Persist a Config to ``~/.config/kubetop/config.yaml`` (or ``path``).
+    """Persist a Config to ``~/.config/kutop/config.yaml`` (or ``path``).
 
     Returns the path written. Raises if PyYAML is unavailable (caller decides
     how to surface that). Creates the directory tree as needed.
@@ -939,11 +956,13 @@ def save_config(cfg: Config, path: Optional[str] = None) -> str:
     with open(target, "w", encoding="utf-8") as fh:
         fh.write(text)
     # Migration complete: the legacy state.json has been absorbed into config.yaml.
-    if target == CONFIG_PATH and os.path.exists(_LEGACY_STATE_PATH):
-        try:
-            os.remove(_LEGACY_STATE_PATH)
-        except Exception:
-            pass
+    if target == CONFIG_PATH:
+        for old_state in (_STATE_PATH, _LEGACY_KUBETOP_STATE_PATH, _LEGACY_KTOP_STATE_PATH):
+            if os.path.exists(old_state):
+                try:
+                    os.remove(old_state)
+                except Exception:
+                    pass
     return target
 
 
@@ -954,7 +973,7 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     """Render the COMPLETE config skeleton as annotated YAML.
 
     Every option appears with its current (or default) value and a short inline
-    comment. Hand-editable; also exactly what ``kubetop --dump-config`` prints and
+    comment. Hand-editable; also exactly what ``kutop --dump-config`` prints and
     what :func:`save_config` writes. Does NOT require PyYAML (we emit text).
     """
     if cfg is None:
@@ -965,8 +984,8 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
         return "true" if v else "false"
 
     lines: list = []
-    lines.append("# kubetop configuration skeleton — every option, with defaults.")
-    lines.append("# Location: ~/.config/kubetop/config.yaml  (edit by hand or via the")
+    lines.append("# kutop configuration skeleton — every option, with defaults.")
+    lines.append("# Location: ~/.config/kutop/config.yaml  (edit by hand or via the")
     lines.append("# Options modal, key 'o', in the running app). Layering order:")
     lines.append("#   built-in defaults -> --profile -> this file -> CLI flags.")
     lines.append(f"profile: {cfg.profile_name}        # active profile name (read-only)")

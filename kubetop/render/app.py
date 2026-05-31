@@ -1,4 +1,4 @@
-"""The kubetop Textual application.
+"""The kutop Textual application.
 
 Composes a modern dashboard:
   * SummaryBar (aggregate counters)
@@ -1327,7 +1327,7 @@ class TopApp(App):
             self.cfg.name_filter = self._search_term
 
     def _persist_state(self) -> None:
-        """Persist current config to ~/.config/kubetop/config.yaml. Best effort."""
+        """Persist current config to ~/.config/kutop/config.yaml. Best effort."""
         self._sync_cfg_from_app()
         try:
             save_config(self.cfg)
@@ -1542,7 +1542,7 @@ class TopApp(App):
         """Re-read the user config file and apply it live (M5 hot-reload).
 
         Re-runs the same layered load the CLI used (defaults -> profile -> file)
-        so an edit to ``~/.config/kubetop/config.yaml`` takes effect without a
+        so an edit to ``~/.config/kutop/config.yaml`` takes effect without a
         restart. Robust: a missing/broken file falls back to defaults+profile and
         the app keeps running. Shows a toast either way.
         """
@@ -1552,7 +1552,7 @@ class TopApp(App):
             self.notify(f"reload failed: {exc}", severity="error")
             return
         self.apply_config(cfg)
-        src = self._config_path or "~/.config/kubetop/config.yaml"
+        src = self._config_path or "~/.config/kutop/config.yaml"
         self.notify(f"config reloaded from {src}")
 
     def action_toggle_sidebar(self) -> None:

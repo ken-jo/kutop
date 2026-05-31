@@ -1,4 +1,4 @@
-"""Dumb presentation widgets for kubetop.
+"""Presentation widgets for kutop.
 
 These widgets hold no fetching logic and no workload knowledge. The app feeds
 them already-computed data (a Snapshot, history deques, threshold-resolved
@@ -760,7 +760,7 @@ class OptionsModal(ModalScreen):
     overflows on a short (~80x24) terminal; the modal header and the footer action
     row (Export / Close) stay OUTSIDE the tabs and are always visible. Editing a
     control applies immediately (via the app's ``apply_config`` callbacks) and
-    persists to ``~/.config/kubetop/config.yaml``. An "Export config" button writes
+    persists to ``~/.config/kutop/config.yaml``. An "Export config" button writes
     the complete config and reports the path.
 
     The app passes its live :class:`Config`; this modal mutates a working copy

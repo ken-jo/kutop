@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Headless screenshot harness for kubetop — renders one frame to SVG.
+"""Headless screenshot harness for kutop - renders one frame to SVG.
 
 Thin wrapper around the in-package :func:`kubetop.snapshot.render_snapshot` (the
-same code path as the ``kubetop --snapshot`` product feature). Fetches a live
+same code path as the ``kutop --snapshot`` product feature). Fetches a live
 cluster Snapshot when possible, otherwise falls back to a synthetic frame, and
 writes an SVG. Kept for local visual QA/iteration.
 
@@ -33,8 +33,9 @@ def _parse_size(spec: str):
 
 def main() -> int:
     out = (sys.argv[1] if len(sys.argv) > 1
-           else os.path.join(tempfile.gettempdir(), "kubetop.svg"))
-    detail = os.environ.get("KUBETOP_SNAPSHOT_DETAIL", "")
+           else os.path.join(tempfile.gettempdir(), "kutop.svg"))
+    detail = (os.environ.get("KUTOP_SNAPSHOT_DETAIL")
+              or os.environ.get("KUBETOP_SNAPSHOT_DETAIL", ""))
     if detail and detail not in SNAPSHOT_DETAIL_LEVELS:
         detail = ""
     size = snapshot_detail_size(detail)
@@ -42,21 +43,23 @@ def main() -> int:
         size = _parse_size(sys.argv[2])
     namespaces = (sys.argv[3].split(",") if len(sys.argv) > 3
                   else ["default"])
-    # Optionally apply a profile (ordering + probes) when one is named via the
-    # KUBETOP_SNAPSHOT_PROFILE env var; render_snapshot falls back to a generic
-    # synthetic frame when no cluster. No workload literal is hardcoded here.
+    # Optionally apply a profile (ordering + probes) when one is named via env;
+    # render_snapshot falls back to a generic synthetic frame when no cluster.
+    # No workload literal is hardcoded here.
     profile = None
-    prof_name = os.environ.get("KUBETOP_SNAPSHOT_PROFILE")
+    prof_name = (os.environ.get("KUTOP_SNAPSHOT_PROFILE")
+                 or os.environ.get("KUBETOP_SNAPSHOT_PROFILE"))
     if prof_name:
         try:
             profile = load_profile(prof_name)
         except Exception:
             profile = None
-    # Optional: point KUBETOP_SNAPSHOT_CONFIG at a config file to control the
+    # Optional: point KUTOP_SNAPSHOT_CONFIG at a config file to control the
     # visible column set (e.g. enable an opt-in column like `owner`). Falls back
     # to the layered default (profile + defaults) when unset.
     config = None
-    cfg_path = os.environ.get("KUBETOP_SNAPSHOT_CONFIG")
+    cfg_path = (os.environ.get("KUTOP_SNAPSHOT_CONFIG")
+                or os.environ.get("KUBETOP_SNAPSHOT_CONFIG"))
     if cfg_path:
         try:
             config = load_config(profile=profile, user_path=cfg_path)

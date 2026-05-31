@@ -1,4 +1,4 @@
-/* kubetop — modern dark dashboard theme.
+/* kutop - modern dark dashboard theme.
  * Clear visual hierarchy: summary bar -> trend graphs -> main table -> panels.
  * Threshold colors (green/yellow/red) are applied via Rich markup in widgets;
  * this file owns layout, borders, and structural color. */

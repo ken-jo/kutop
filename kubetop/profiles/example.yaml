@@ -1,9 +1,9 @@
-# Example kubetop profile.
+# Example kutop / kubetop profile.
 #
-# Copy to ~/.config/kubetop/profiles/<name>.yaml and run `kubetop --profile <name>`.
-# Every field is OPTIONAL — with no profile, kubetop shows a generic,
+# Copy to ~/.config/kutop/profiles/<name>.yaml and run `kutop --profile <name>`.
+# Every field is OPTIONAL — with no profile, kutop shows a generic,
 # workload-agnostic view (alphabetical pods, host-local timezone, default
-# thresholds). A profile just teaches kubetop about YOUR workloads.
+# thresholds). A profile just teaches kutop about YOUR workloads.
 name: example
 
 # Default namespaces to watch when none are passed on the CLI.

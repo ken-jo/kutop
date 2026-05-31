@@ -1,0 +1,32 @@
+class Kutop < Formula
+  desc "btop-style Kubernetes resource dashboard for the terminal"
+  homepage "https://github.com/ken-jo/kutop"
+  url "https://github.com/ken-jo/kutop/releases/download/{{TAG}}/kutop-homebrew-{{VERSION}}.tar.gz"
+  sha256 "{{SHA256}}"
+  license "MIT"
+
+  depends_on "python@3.12"
+
+  def install
+    libexec.install Dir["*"]
+
+    (bin/"kutop").write <<~EOS
+      #!/bin/bash
+      export PYTHONPATH="#{libexec}/lib/python${PYTHONPATH:+:$PYTHONPATH}"
+      exec "#{Formula["python@3.12"].opt_bin}/python3" -m kubetop "$@"
+    EOS
+    chmod 0755, bin/"kutop"
+
+    (bin/"kubetop").write <<~EOS
+      #!/bin/bash
+      export PYTHONPATH="#{libexec}/lib/python${PYTHONPATH:+:$PYTHONPATH}"
+      exec "#{Formula["python@3.12"].opt_bin}/python3" -m kubetop "$@"
+    EOS
+    chmod 0755, bin/"kubetop"
+  end
+
+  test do
+    assert_match "kutop {{VERSION}}", shell_output("#{bin}/kutop --version")
+    assert_match "self-test OK", shell_output("#{bin}/kutop --self-test")
+  end
+end

@@ -1,7 +1,7 @@
-"""Headless one-frame SVG renderer for kubetop (M4).
+"""Headless one-frame SVG renderer for kutop.
 
 Promotes the visual-QA harness (``tools/snapshot.py``) into a real product
-feature: ``kubetop --snapshot PATH`` renders ONE live frame headlessly to an SVG
+feature: ``kutop --snapshot PATH`` renders ONE live frame headlessly to an SVG
 and exits. Works with live cluster data; falls back to a synthetic frame when a
 fetch fails (so it always produces an artifact, even with no cluster).
 
@@ -157,7 +157,7 @@ def render_snapshot(
 
     Reuses the live cluster snapshot when reachable; otherwise a synthetic one.
     Returns 0 on success, 1 on an unexpected rendering failure (the artifact is
-    still attempted). Safe to call from ``kubetop --snapshot`` or the tools harness.
+    still attempted). Safe to call from ``kutop --snapshot`` or the tools harness.
     An optional ``config`` lets a caller pick the visible column set (e.g. the
     tools harness loading a temp config to surface an opt-in column).
     """
