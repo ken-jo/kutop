@@ -237,6 +237,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         # live namespace discovery (the snapshot still fetches its one frame).
         discover_namespaces=not (args.self_test or args.snapshot),
         auto_refresh=not (args.self_test or args.snapshot),
+        force_color=bool(args.snapshot),
         config_path=args.config,
     )
 

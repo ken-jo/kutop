@@ -588,9 +588,15 @@ class TopApp(App):
         log_tail: int = 150,
         discover_namespaces: bool = True,
         auto_refresh: bool = True,
+        force_color: bool = False,
         config_path: Optional[str] = None,
     ) -> None:
-        super().__init__()
+        no_color = os.environ.pop("NO_COLOR", None) if force_color else None
+        try:
+            super().__init__()
+        finally:
+            if no_color is not None:
+                os.environ["NO_COLOR"] = no_color
         self.profile = profile or Profile()
         # Unified config: the single source of truth for everything the user can
         # customise. The CLI builds it (defaults->profile->file->CLI). If a caller

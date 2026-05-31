@@ -128,6 +128,7 @@ async def _render(out: str, size, namespaces, context, profile, app=None,
             config=config,
             discover_namespaces=False,
             auto_refresh=False,
+            force_color=True,
         )
 
     async with app.run_test(size=size) as pilot:
