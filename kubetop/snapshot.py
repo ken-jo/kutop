@@ -29,30 +29,53 @@ def synthetic_snapshot() -> Snapshot:
     snap = Snapshot()
     snap.nodes = [
         Node(name="node-1", role="worker", cpu_mcpu=2900, cpu_cap_mcpu=8000,
-             mem_mi=56000, mem_cap_mi=63000, pod_count=6, ready=True),
+             cpu_req_mcpu=4200, mem_mi=56000, mem_cap_mi=63000,
+             mem_req_mi=32768, pod_count=6, ready=True),
         Node(name="node-2", role="worker", cpu_mcpu=900, cpu_cap_mcpu=8000,
-             mem_mi=22000, mem_cap_mi=63000, pod_count=4, ready=True),
+             cpu_req_mcpu=2600, mem_mi=22000, mem_cap_mi=63000,
+             mem_req_mi=24576, pod_count=4, ready=True),
     ]
     snap.pods = [
         # stateful pod with PVC-backed storage (USE/CAP populated)
         Pod(name="app-0", namespace="default", node="node-1", phase="Running",
             ready="1/1", cpu_mcpu=320, cpu_cap_mcpu=4000, mem_mi=7400,
+            cpu_req_mcpu=1000, mem_req_mi=4096,
             mem_cap_mi=16384, storage_used_mi=1000871, storage_cap_mi=3133440,
-            start_time="2026-05-24T07:15:00Z"),
+            start_time="2026-05-24T07:15:00Z",
+            owner_kind="StatefulSet", owner_name="app"),
         Pod(name="worker-0", namespace="default", node="node-1", phase="Running",
             ready="1/1", restarts=1, oomkilled=True, cpu_mcpu=900,
+            cpu_req_mcpu=750, mem_req_mi=8192,
             cpu_cap_mcpu=4000, mem_mi=12800, mem_cap_mi=16384,
             storage_used_mi=48000, storage_cap_mi=51200,
-            start_time="2026-05-27T06:00:00Z"),
+            start_time="2026-05-27T06:00:00Z",
+            owner_kind="Deployment", owner_name="worker",
+            last_terminated_reason="OOMKilled"),
+        Pod(name="api-2", namespace="services", node="node-2", phase="Running",
+            ready="1/1", cpu_mcpu=220, cpu_cap_mcpu=1000, cpu_req_mcpu=250,
+            mem_mi=640, mem_cap_mi=2048, mem_req_mi=512,
+            start_time="2026-05-28T10:10:00Z",
+            owner_kind="Deployment", owner_name="api"),
+        Pod(name="cache-0", namespace="infra", node="node-2", phase="Running",
+            ready="1/1", cpu_mcpu=180, cpu_cap_mcpu=1000, cpu_req_mcpu=250,
+            mem_mi=1800, mem_cap_mi=4096, mem_req_mi=2048,
+            storage_used_mi=11264, storage_cap_mi=20480,
+            start_time="2026-05-25T02:00:00Z",
+            owner_kind="StatefulSet", owner_name="cache"),
         # stateless pod: no PVC -> storage stays None (renders '-')
         Pod(name="pending-0", namespace="default", node="", phase="Pending",
-            ready="0/1", start_time="2026-05-27T11:55:00Z"),
+            ready="0/1", cpu_req_mcpu=250, mem_req_mi=256,
+            start_time="2026-05-27T11:55:00Z",
+            owner_kind="Deployment", owner_name="pending-app",
+            last_terminated_reason="ImagePullBackOff"),
     ]
     snap.pvcs = [
         PVC(name="data-app-0", namespace="default", capacity_mi=3133440,
             used_mi=1000871, storage_class="gp3"),
         PVC(name="data-worker-0", namespace="default", capacity_mi=51200,
             used_mi=None, storage_class="gp3"),
+        PVC(name="data-cache-0", namespace="infra", capacity_mi=20480,
+            used_mi=11264, storage_class="standard"),
     ]
     snap.events = [
         Event(ts_utc="2026-05-27T07:15:00Z", name="worker-0",
@@ -82,6 +105,8 @@ def _live_snapshot(namespaces, context=None, profile=None) -> Optional[Snapshot]
         return None
     if snap is None or snap.error:
         return None
+    if not (snap.nodes or snap.pods or snap.pvcs or snap.events):
+        return None
     return snap
 
 
@@ -102,6 +127,7 @@ async def _render(out: str, size, namespaces, context, profile, app=None,
             profile=profile or Profile(), context=context,
             config=config,
             discover_namespaces=False,
+            auto_refresh=False,
         )
 
     async with app.run_test(size=size) as pilot:
@@ -110,6 +136,11 @@ async def _render(out: str, size, namespaces, context, profile, app=None,
             app._apply_snapshot(snap)
             await pilot.pause()
         app.save_screenshot(out)
+        try:
+            app.fetcher.cancel()
+        except Exception:
+            pass
+        await pilot.exit(None)
 
 
 def render_snapshot(

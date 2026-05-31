@@ -179,6 +179,15 @@ _DEFAULT_COLUMN_ORDER = [
     "owner", "owner_name",
 ]
 
+SNAPSHOT_DETAIL_LEVELS = ("normal", "wide", "full")
+_SNAPSHOT_WIDE_COLUMNS = [
+    "name", "namespace", "ready", "phase",
+    "cpu", "cpu_pct", "cpu_gauge",
+    "mem", "mem_pct", "mem_gauge",
+    "storage", "storage_pct", "storage_gauge",
+    "restarts", "age", "last_reason", "owner", "owner_name", "node",
+]
+
 
 # Sort keys. "priority" is the profile-weight default; the rest map to a Pod
 # attribute (resolved in the renderer). Any key here is a valid ``sort_key`` and
@@ -459,6 +468,47 @@ def clamp_name_width(v) -> int:
     return max(NAME_WIDTH_MIN, min(NAME_WIDTH_MAX, n))
 
 
+def default_visible_columns() -> list:
+    """Return the built-in visible table columns in default display order."""
+    reg = build_column_registry()
+    return [k for k in _DEFAULT_COLUMN_ORDER if reg[k].default_visible]
+
+
+def snapshot_detail_size(detail: Optional[str]) -> "tuple[int, int]":
+    """Default terminal size for screenshot detail presets."""
+    return {
+        "wide": (240, 60),
+        "full": (320, 80),
+    }.get(detail or "normal", (200, 50))
+
+
+def apply_detail_preset(cfg: "Config", detail: Optional[str]) -> "Config":
+    """Apply a one-shot detail preset to a runtime config.
+
+    ``normal`` restores the built-in visible columns. ``wide`` and ``full`` are
+    intended for screenshots/reviews: they expose diagnostic columns without
+    requiring a user config file.
+    """
+    if not detail:
+        return cfg
+    if detail not in SNAPSHOT_DETAIL_LEVELS:
+        return cfg
+    if detail == "normal":
+        cfg.columns = default_visible_columns()
+        cfg.name_width = NAME_WIDTH_DEFAULT
+        return cfg
+    if detail == "wide":
+        cfg.columns = list(_SNAPSHOT_WIDE_COLUMNS)
+        cfg.summary_style = "compact"
+        cfg.name_width = 24
+        return cfg
+    cfg.columns = list(_DEFAULT_COLUMN_ORDER)
+    cfg.summary_style = "compact"
+    cfg.name_width = 26
+    cfg.show_pvc = True
+    return cfg
+
+
 @dataclass
 class Config:
     """Full user-customisable runtime config (the visible 'skeleton')."""
@@ -591,9 +641,7 @@ class Config:
 
 def _default_config_dict() -> dict:
     """Built-in defaults as a nested dict (layer 1)."""
-    reg = build_column_registry()
-    default_cols = [k for k in _DEFAULT_COLUMN_ORDER if reg[k].default_visible]
-    return Config(columns=default_cols).to_dict()
+    return Config(columns=default_visible_columns()).to_dict()
 
 
 def _coerce_bool(v, default: bool) -> bool:

@@ -16,17 +16,30 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from kubetop.config import load_config, load_profile
+from kubetop.config import (
+    SNAPSHOT_DETAIL_LEVELS,
+    apply_detail_preset,
+    load_config,
+    load_profile,
+    snapshot_detail_size,
+)
 from kubetop.snapshot import render_snapshot
+
+
+def _parse_size(spec: str):
+    w, h = spec.lower().split("x", 1)
+    return (int(w), int(h))
 
 
 def main() -> int:
     out = (sys.argv[1] if len(sys.argv) > 1
            else os.path.join(tempfile.gettempdir(), "kubetop.svg"))
-    size = (200, 50)
+    detail = os.environ.get("KUBETOP_SNAPSHOT_DETAIL", "")
+    if detail and detail not in SNAPSHOT_DETAIL_LEVELS:
+        detail = ""
+    size = snapshot_detail_size(detail)
     if len(sys.argv) > 2 and "x" in sys.argv[2]:
-        w, h = sys.argv[2].split("x")
-        size = (int(w), int(h))
+        size = _parse_size(sys.argv[2])
     namespaces = (sys.argv[3].split(",") if len(sys.argv) > 3
                   else ["default"])
     # Optionally apply a profile (ordering + probes) when one is named via the
@@ -50,6 +63,10 @@ def main() -> int:
             namespaces = list(config.namespaces) or namespaces
         except Exception:
             config = None
+    if detail:
+        if config is None:
+            config = load_config(profile=profile)
+        apply_detail_preset(config, detail)
     code = render_snapshot(out, size=size, namespaces=namespaces,
                            profile=profile, config=config)
     if code == 0:

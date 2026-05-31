@@ -15,9 +15,12 @@ from typing import Optional
 from . import __version__
 from .config import (
     Profile,
+    SNAPSHOT_DETAIL_LEVELS,
+    apply_detail_preset,
     dump_config_yaml,
     load_config,
     load_profile,
+    snapshot_detail_size,
 )
 
 
@@ -66,8 +69,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="run headlessly with a synthetic snapshot and exit (CI smoke test)")
     ap.add_argument("--snapshot", default=None, metavar="PATH",
                     help="render ONE live frame headlessly to an SVG at PATH and exit")
-    ap.add_argument("--size", default="200x50", metavar="WxH",
-                    help="terminal size for --snapshot (default: 200x50)")
+    ap.add_argument("--detail", choices=SNAPSHOT_DETAIL_LEVELS, default=None,
+                    help="one-shot detail preset for columns (normal/wide/full)")
+    ap.add_argument("--size", default=None, metavar="WxH",
+                    help="terminal size for --snapshot (default: 200x50, larger with --detail)")
     ap.add_argument("--version", action="version",
                     version=f"kubetop {__version__}")
     return ap
@@ -80,6 +85,12 @@ def _parse_size(spec: str) -> "tuple[int, int]":
         return (max(20, int(w)), max(10, int(h)))
     except (ValueError, AttributeError):
         return (200, 50)
+
+
+def _snapshot_size(args) -> "tuple[int, int]":
+    if args.size:
+        return _parse_size(args.size)
+    return snapshot_detail_size(args.detail)
 
 
 def _base_overrides(args) -> dict:
@@ -184,6 +195,8 @@ def _self_test(app) -> int:
             assert app._loaded, "snapshot was not applied"
             assert app.cpu_hist, "cpu history empty after frame"
             assert app.query_one("#main_table").row_count > 0, "main table empty"
+            app.fetcher.cancel()
+            await pilot.exit(None)
 
     asyncio.run(drive())
     print("self-test OK: rendered 1 synthetic frame, no exception")
@@ -202,6 +215,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         base_overrides=_base_overrides(args),
         cli_overrides=_cli_overrides(args),
     )
+    apply_detail_preset(cfg, args.detail)
 
     # --dump-config: print the complete annotated skeleton and exit (no cluster).
     if args.dump_config:
@@ -222,6 +236,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         # --self-test / --snapshot must stay kubectl-free for discovery: skip
         # live namespace discovery (the snapshot still fetches its one frame).
         discover_namespaces=not (args.self_test or args.snapshot),
+        auto_refresh=not (args.self_test or args.snapshot),
         config_path=args.config,
     )
 
@@ -234,7 +249,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         from .snapshot import render_snapshot
         code = render_snapshot(
             args.snapshot,
-            size=_parse_size(args.size),
+            size=_snapshot_size(args),
             namespaces=list(cfg.namespaces),
             context=cfg.context or None,
             profile=profile,

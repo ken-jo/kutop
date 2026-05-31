@@ -38,6 +38,8 @@ kubetop --context demo-context demo-ns  # pick a kubeconfig context
 kubetop --allow-destructive         # enable pod delete (still confirm-gated)
 kubetop --dump-config               # print the full annotated config skeleton
 kubetop --self-test                 # headless smoke test (no cluster), exits 0
+kubetop --snapshot out.svg          # render one frame to SVG and exit
+kubetop --snapshot out.svg --detail full  # wider diagnostic capture
 ```
 
 Positional `namespaces`/`interval` only seed the first run; your in-app choices
@@ -63,6 +65,29 @@ are saved to `~/.config/kubetop/config.yaml` and win on the next launch.
 
 The **NODE/POD column is resizable**: drag the `│` handle on its header to widen
 or narrow it (the width persists). Click any column header to sort by it.
+
+## Screenshots
+
+`kubetop` can render a headless SVG frame for README images, reviews, and visual
+QA. It uses live cluster data when reachable and falls back to a generic
+synthetic frame when not.
+
+![kutop full detail screenshot](docs/kutop-full.svg)
+
+```bash
+kubetop --snapshot /tmp/kubetop.svg
+kubetop --snapshot /tmp/kubetop-wide.svg --detail wide
+kubetop --snapshot /tmp/kubetop-full.svg --detail full
+kubetop --snapshot /tmp/kubetop-full.svg --detail full --size 320x80
+```
+
+The detail presets are one-shot column layouts:
+
+| Detail | Default size | Use |
+|--------|--------------|-----|
+| `normal` | `200x50` | Same visible columns as the interactive default |
+| `wide` | `240x60` | Adds namespace, readiness, phase, age, reason, owner, and node |
+| `full` | `320x80` | Shows every table column and enables the PVC panel |
 
 ## Profiles
 

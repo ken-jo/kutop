@@ -587,6 +587,7 @@ class TopApp(App):
         allow_destructive: bool = False,
         log_tail: int = 150,
         discover_namespaces: bool = True,
+        auto_refresh: bool = True,
         config_path: Optional[str] = None,
     ) -> None:
         super().__init__()
@@ -649,6 +650,8 @@ class TopApp(App):
         self._discovered_ns: list[str] = []
         # guarded off for --self-test so the headless smoke test never shells out
         self._discover_namespaces = discover_namespaces
+        self._auto_refresh = auto_refresh
+        self._refresh_timer = None
         self._loaded = False
 
     def _enabled_plugins(self) -> list:
@@ -775,8 +778,9 @@ class TopApp(App):
                    *(["-"] * (ncols - 1)), key="loading")
 
         self.apply_panel_visibility()
-        self.refresh_snapshot()
-        self._refresh_timer = self.set_interval(self.interval, self.refresh_snapshot)
+        if self._auto_refresh:
+            self.refresh_snapshot()
+            self._refresh_timer = self.set_interval(self.interval, self.refresh_snapshot)
 
         # BUG FIX #4: discover cluster namespaces live and repopulate the
         # sidebar list. Guarded off for --self-test so no kubectl is shelled out.
