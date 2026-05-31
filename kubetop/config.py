@@ -181,11 +181,9 @@ _DEFAULT_COLUMN_ORDER = [
 
 SNAPSHOT_DETAIL_LEVELS = ("normal", "wide", "full")
 _SNAPSHOT_WIDE_COLUMNS = [
-    "name", "namespace", "ready", "phase",
-    "cpu", "cpu_pct", "cpu_gauge",
-    "mem", "mem_pct", "mem_gauge",
-    "storage", "storage_pct", "storage_gauge",
-    "restarts", "age", "last_reason", "owner", "owner_name", "node",
+    "name", "namespace", "ready", "phase", "restarts",
+    "last_reason", "owner", "owner_name", "node",
+    "cpu", "cpu_pct", "mem", "mem_pct", "storage", "storage_pct", "age",
 ]
 
 
@@ -477,9 +475,9 @@ def default_visible_columns() -> list:
 def snapshot_detail_size(detail: Optional[str]) -> "tuple[int, int]":
     """Default terminal size for screenshot detail presets."""
     return {
-        "wide": (240, 60),
-        "full": (320, 80),
-    }.get(detail or "normal", (200, 50))
+        "wide": (160, 44),
+        "full": (220, 54),
+    }.get(detail or "normal", (140, 40))
 
 
 def apply_detail_preset(cfg: "Config", detail: Optional[str]) -> "Config":
@@ -500,11 +498,11 @@ def apply_detail_preset(cfg: "Config", detail: Optional[str]) -> "Config":
     if detail == "wide":
         cfg.columns = list(_SNAPSHOT_WIDE_COLUMNS)
         cfg.summary_style = "compact"
-        cfg.name_width = 24
+        cfg.name_width = 20
         return cfg
     cfg.columns = list(_DEFAULT_COLUMN_ORDER)
     cfg.summary_style = "compact"
-    cfg.name_width = 26
+    cfg.name_width = 20
     cfg.show_pvc = True
     return cfg
 

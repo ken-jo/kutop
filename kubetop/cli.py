@@ -72,19 +72,19 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--detail", choices=SNAPSHOT_DETAIL_LEVELS, default=None,
                     help="one-shot detail preset for columns (normal/wide/full)")
     ap.add_argument("--size", default=None, metavar="WxH",
-                    help="terminal size for --snapshot (default: 200x50, larger with --detail)")
+                    help="terminal size for --snapshot (default depends on --detail)")
     ap.add_argument("--version", action="version",
                     version=f"kubetop {__version__}")
     return ap
 
 
 def _parse_size(spec: str) -> "tuple[int, int]":
-    """Parse a 'WxH' size spec into (width, height); default 200x50 on error."""
+    """Parse a 'WxH' size spec into (width, height); default 140x40 on error."""
     try:
         w, h = spec.lower().split("x", 1)
         return (max(20, int(w)), max(10, int(h)))
     except (ValueError, AttributeError):
-        return (200, 50)
+        return (140, 40)
 
 
 def _snapshot_size(args) -> "tuple[int, int]":

@@ -72,22 +72,22 @@ or narrow it (the width persists). Click any column header to sort by it.
 QA. It uses live cluster data when reachable and falls back to a generic
 synthetic frame when not.
 
-![kutop full detail screenshot](docs/kutop-full.svg)
+![kutop wide detail screenshot](docs/kutop-wide.svg)
 
 ```bash
 kubetop --snapshot /tmp/kubetop.svg
 kubetop --snapshot /tmp/kubetop-wide.svg --detail wide
 kubetop --snapshot /tmp/kubetop-full.svg --detail full
-kubetop --snapshot /tmp/kubetop-full.svg --detail full --size 320x80
+kubetop --snapshot /tmp/kubetop-full.svg --detail full --size 220x54
 ```
 
 The detail presets are one-shot column layouts:
 
 | Detail | Default size | Use |
 |--------|--------------|-----|
-| `normal` | `200x50` | Same visible columns as the interactive default |
-| `wide` | `240x60` | Adds namespace, readiness, phase, age, reason, owner, and node |
-| `full` | `320x80` | Shows every table column and enables the PVC panel |
+| `normal` | `140x40` | Same visible columns as the interactive default |
+| `wide` | `160x44` | Prioritises namespace, readiness, phase, reason, owner, node, and key resources |
+| `full` | `220x54` | Enables every table column and the PVC panel; increase `--size` for far-right columns |
 
 ## Profiles
 
