@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional
 
 from rich.text import Text
@@ -32,12 +32,9 @@ from textual.widgets import (
     Header,
     Input,
     Label,
-    OptionList,
     RichLog,
 )
-from textual.widgets.option_list import Option
 from textual.screen import ModalScreen
-from textual.worker import Worker
 
 from .. import model
 from ..config import (
@@ -92,10 +89,9 @@ class RenderCtx:
         return self._app._pod_name_cell(pod)
 
     def node_name_cell(self, node) -> Text:
-        # In k8s the nodegroup (node.role: eks nodegroup / pool) matters more than
-        # the EC2 instance hostname, so lead with it (prominent) and show the
-        # short instance name secondary/dim. The hostname's region/domain suffix
-        # is dropped (ip-1-2-3-4.<region>.compute.internal -> ip-1-2-3-4).
+        # In k8s the nodegroup (node.role: managed node group / pool) matters more
+        # than the node hostname, so lead with it and show the short node name
+        # secondary/dim. Any provider domain suffix is dropped.
         marker = "◆" if node.ready else "✖"
         mstyle = "bold cyan" if node.ready else "bold red"
         cell = Text(f"{marker} ")
@@ -1471,25 +1467,14 @@ class TopApp(App):
         # AND an alertmanager_url is set.
         alerts_on = self.show_alerts and bool(self.cfg.alertmanager_url)
         self.query_one("#alerts_panel").set_class(not alerts_on, "-hidden")
-        # The health panel is owned by the (optional) health plugin. It is gated
-        # by the health toggle AND the plugin being enabled for the current
-        # config. If the plugin is absent its panel was never mounted, so the
-        # query is best-effort. ``any_plugin_on`` keeps the top row open when any
-        # plugin panel is showing.
-        health_on = self.show_health and self._plugin_panel_visible("health_panel")
+        # Plugin panels are best-effort: absent plugins mount no panel, enabled
+        # plugins are toggled through their declared panel id.
         any_plugin_on = self._apply_plugin_panel_visibility()
         # collapse the whole top row when no panel is shown (no empty band)
         self.query_one("#top_panels").set_class(
             not (alerts_on or any_plugin_on), "-hidden"
         )
         self._persist_state()
-
-    def _plugin_panel_visible(self, panel_id: str) -> bool:
-        """Whether the plugin behind ``panel_id`` is enabled (and thus mounted)."""
-        for plugin in self._enabled_plugins():
-            if getattr(plugin, "panel_id", "") == panel_id:
-                return True
-        return False
 
     def _apply_plugin_panel_visibility(self) -> bool:
         """Show/hide each enabled plugin's panel; return True if any is visible.

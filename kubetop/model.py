@@ -117,14 +117,6 @@ def fmt_age(secs: Optional[int]) -> str:
 
 
 @dataclass
-class Container:
-    name: str
-    restarts: int = 0
-    last_terminated_reason: str = ""   # e.g. "OOMKilled" — drives highlighting
-    ready: bool = False
-
-
-@dataclass
 class Pod:
     name: str
     namespace: str

@@ -11,7 +11,7 @@ core generic.
 ```
 NODES 2/2 │ PODS(R/P/F) 18/1/0 │ RESTARTS 7 │ OOM 1 │ WARN 2 │ ALERTS 3
 CPU OVERALL  ▁▂▃▅▆▇█  62%  5.1/16        MEM OVERALL  ▃▄▅▆▇█  74%  47/64Gi
-◆ ng-workers  ip-10-0-1-7 │
+◆ worker-pool  node-a │
   ● api-0 (1/1)        ███████░░░ 70%   STS
   ● worker-9 OOMKilled (0/1)  █████████░ 95%   Deploy
 ```
@@ -19,8 +19,9 @@ CPU OVERALL  ▁▂▃▅▆▇█  62%  5.1/16        MEM OVERALL  ▃▄▅▆
 ## Install
 
 ```bash
-pip install -e .            # from this directory
-pip install pyyaml          # optional: required only for --profile
+pip install kubetop
+pip install "kubetop[profiles]"   # optional: enables --profile YAML loading
+pip install -e .                  # local development from this directory
 ```
 
 (Pinned deps: `textual==8.2.7`, `rich==15.0.0`. Python 3.9+.)
@@ -29,11 +30,11 @@ pip install pyyaml          # optional: required only for --profile
 
 ```bash
 kubetop                             # generic view, namespace 'default'
-kubetop my-ns 3                     # namespace my-ns, 3s refresh
+kubetop demo-ns 3                   # namespace demo-ns, 3s refresh
 kubetop ns-a,ns-b                   # multiple namespaces (comma list)
 kubetop --profile example           # load a profile (ordering / tz / thresholds)
-python -m kubetop my-ns 3           # module form
-kubetop --context my-cluster my-ns  # pick a kubeconfig context
+python -m kubetop demo-ns 3         # module form
+kubetop --context demo-context demo-ns  # pick a kubeconfig context
 kubetop --allow-destructive         # enable pod delete (still confirm-gated)
 kubetop --dump-config               # print the full annotated config skeleton
 kubetop --self-test                 # headless smoke test (no cluster), exits 0

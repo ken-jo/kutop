@@ -13,6 +13,11 @@ venv/
 # Local user profiles / config (never commit cluster-specific identifiers)
 *.local.yaml
 
+# Local automation state
+.agents/
+.codex/
+.omx/
+
 # OS / editor
 .DS_Store
 *.swp

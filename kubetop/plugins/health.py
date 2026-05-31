@@ -28,7 +28,6 @@ from typing import Any
 
 from rich.text import Text
 
-from ..model import HealthResult
 from ..render.widgets import Panel
 
 #: widget id the health panel mounts under (the app shows/hides it generically).

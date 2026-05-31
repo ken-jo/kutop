@@ -645,19 +645,6 @@ class Fetcher:
         return s
 
 
-# ── module-level discovery helper ─────────────────────────────────────────────
-def namespaces(context: Optional[str] = None) -> list[str]:
-    """Discover all cluster namespaces (``kubectl get ns -o name``).
-
-    Thin module-level convenience wrapper around :meth:`Fetcher.list_namespaces`
-    that reuses the Fetcher's base/context handling. Returns a sorted list with
-    the ``namespace/`` prefix stripped; raises on failure (callers decide the
-    fallback). Never called by ``--self-test`` so the headless smoke test stays
-    kubectl-free.
-    """
-    return Fetcher([], context=context).list_namespaces()
-
-
 # ── node helpers ─────────────────────────────────────────────────────────────
 def _node_role(labels: dict) -> str:
     """Derive a short role/group label from common node labels (generic)."""

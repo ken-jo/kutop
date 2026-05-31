@@ -40,7 +40,7 @@ from ..config import (
     _DEFAULT_COLUMN_ORDER,
     build_column_registry,
 )
-from ..model import Alert, Summary, age_seconds, fmt_age
+from ..model import Summary
 
 # ── threshold color helper ───────────────────────────────────────────────────
 
@@ -602,7 +602,7 @@ class SummaryBar(Static):
         return t
 
 
-# ── alerts panel (M2) + health row (M3) ───────────────────────────────────────
+# ── alerts panel helpers (M2) + health row (M3) ───────────────────────────────
 
 
 _SEVERITY_STYLE = {
@@ -617,53 +617,6 @@ _SEVERITY_STYLE = {
 
 def _severity_style(severity: str) -> str:
     return _SEVERITY_STYLE.get((severity or "").lower(), "white")
-
-
-class AlertsPanel(Panel):
-    """Inline AlertManager alert list (M2): ``alertname · severity · since``.
-
-    Generic monitoring (kept in the core). Fed already-fetched
-    :class:`~kubetop.model.Alert` rows by the app (the network GET happens in the
-    fetch worker — this widget is presentation only). Hidden via the ``-hidden``
-    CSS class when the panel is toggled off or unconfigured.
-
-    Built on :class:`Panel`, so it shares the common titled/bordered chrome and
-    SCROLLS vertically when there are many alerts: ALL active alerts are listed
-    (no "+N more" truncation), and the body scrolls within the panel's fixed
-    height via mouse wheel + keyboard. Robust to an empty list (shows a calm "no
-    active alerts" line).
-    """
-
-    def __init__(self, **kwargs) -> None:
-        super().__init__(title="ALERTS", **kwargs)
-
-    def update_alerts(self, alerts: "list[Alert]") -> None:
-        # title on the border line; count when firing
-        self.set_title(f"ALERTS · {len(alerts)} firing" if alerts else "ALERTS")
-        body = Text()
-        if not alerts:
-            body.append("no active alerts", style="green")
-            self.set_body(body)
-            return
-        # most severe first, then by name
-        order = {"critical": 0, "error": 0, "warning": 1, "warn": 1, "info": 2}
-        ordered = sorted(
-            alerts,
-            key=lambda a: (order.get((a.severity or "").lower(), 3), a.name),
-        )
-        # Show EVERY active alert — the panel scrolls when they overflow its
-        # fixed height (no truncation / "+N more" line).
-        for i, al in enumerate(ordered):
-            if i:
-                body.append("\n")
-            style = _severity_style(al.severity)
-            body.append("● ", style=style)
-            body.append(al.name, style=style)
-            sev = al.severity or "—"
-            body.append(f"  ·  {sev}", style="dim")
-            since = fmt_age(age_seconds(al.starts_at)) if al.starts_at else "-"
-            body.append(f"  ·  {since}", style="dim")
-        self.set_body(body)
 
 
 # ── search / filter bar (key '/') ─────────────────────────────────────────────

@@ -14,7 +14,6 @@ from typing import Optional
 
 from . import __version__
 from .config import (
-    Config,
     Profile,
     dump_config_yaml,
     load_config,

@@ -147,12 +147,6 @@ TrendGraph {
     padding: 0 1;
 }
 
-.trend-title {
-    text-style: bold;
-    color: $accent;
-    height: 1;
-}
-
 .trend-spark {
     height: 3;
 }
@@ -236,12 +230,6 @@ TrendGraph {
     border: none;
     padding: 0;
     background: transparent;
-}
-
-#side_sort_list {
-    height: auto;
-    max-height: 5;
-    border: solid $primary-darken-2;
 }
 
 #side_tip {

@@ -23,7 +23,7 @@ profiles = ["pyyaml>=6"]
 kubetop = "kubetop.cli:main"
 
 [tool.setuptools]
-packages = ["kubetop", "kubetop.render"]
+packages = ["kubetop", "kubetop.render", "kubetop.plugins"]
 
 [tool.setuptools.package-data]
 kubetop = ["profiles/*.yaml", "render/*.tcss"]

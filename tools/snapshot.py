@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -20,7 +21,8 @@ from kubetop.snapshot import render_snapshot
 
 
 def main() -> int:
-    out = sys.argv[1] if len(sys.argv) > 1 else "/tmp/kubetop.svg"
+    out = (sys.argv[1] if len(sys.argv) > 1
+           else os.path.join(tempfile.gettempdir(), "kubetop.svg"))
     size = (200, 50)
     if len(sys.argv) > 2 and "x" in sys.argv[2]:
         w, h = sys.argv[2].split("x")
