@@ -48,6 +48,7 @@ CPU OVERALL  ▁▂▃▅▆▇█  62%  5.1/16        MEM OVERALL  ▃▄▅▆
 python -m pip install kutop
 python -m pip install "kutop[profiles]"   # optional: enables --profile YAML loading
 python -m pip install "kutop[profiles] @ git+https://github.com/ken-jo/kutop.git"
+python -m pip install "kutop @ git+https://github.com/ken-jo/kutop.git@v0.2.0"
 python -m pip install -e ".[profiles]"   # local development from this directory
 ```
 
@@ -64,6 +65,10 @@ python -m kubetop --version
 
 The PyPI name `kubetop` belongs to a different package. Pinned deps:
 `textual==8.2.7`, `rich==15.0.0`. Python 3.9+.
+
+`pip install @ken-jo/kutop` is not valid pip syntax; use `pip install kutop`
+for PyPI releases, or the `kutop @ git+https://...` form for a GitHub branch,
+commit, or tag.
 
 Other package managers after a tagged release:
 

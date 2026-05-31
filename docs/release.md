@@ -106,8 +106,8 @@ sudo apt install kutop
 3. Create and push a matching tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 The tag triggers `.github/workflows/release.yml`, which builds:
