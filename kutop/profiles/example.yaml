@@ -1,4 +1,4 @@
-# Example kutop / kubetop profile.
+# Example kutop profile.
 #
 # Copy to ~/.config/kutop/profiles/<name>.yaml and run `kutop --profile <name>`.
 # Every field is OPTIONAL — with no profile, kutop shows a generic,

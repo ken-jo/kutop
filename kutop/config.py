@@ -1,4 +1,4 @@
-"""Unified configuration system for kutop / kubetop.
+"""Unified configuration system for kutop.
 
 Two layers of structure live here:
 

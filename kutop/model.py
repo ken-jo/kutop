@@ -1,4 +1,4 @@
-"""Domain model for kubetop — generic Kubernetes resource snapshots.
+"""Domain model for kutop — generic Kubernetes resource snapshots.
 
 Deliberately free of any workload-specific knowledge: no namespace names,
 no pod prefixes, no priorities. Workload-specific behaviour is supplied at

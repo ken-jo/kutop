@@ -1,6 +1,6 @@
 # kutop
 
-A modern, btop-style **Kubernetes resource dashboard** for the terminal, built
+A modern, like-btop **Kubernetes resource dashboard** for the terminal, built
 with [Textual](https://textual.textualize.io/). It attaches to any cluster /
 namespace, shows live CPU/MEM trend sparklines, an aggregate counter bar, and
 per-pod usage-vs-limit gauges — so you can read the state of a cluster in a few
@@ -25,12 +25,15 @@ python -m pip install "kutop[profiles] @ git+https://github.com/ken-jo/kutop.git
 python -m pip install -e ".[profiles]"   # local development from this directory
 ```
 
-PyPI distribution name is `kutop`; the import package remains `kubetop` for
-compatibility. Both CLI commands are installed and supported:
+The project name, PyPI distribution, and Python package namespace are `kutop`.
+The `kubetop` command and `python -m kubetop` remain available only as
+compatibility aliases:
 
 ```bash
 kutop --version
 kubetop --version
+python -m kutop --version
+python -m kubetop --version
 ```
 
 The PyPI name `kubetop` belongs to a different package. Pinned deps:
@@ -59,7 +62,8 @@ kutop                               # generic view, namespace 'default'
 kutop demo-ns 3                     # namespace demo-ns, 3s refresh
 kutop ns-a,ns-b                     # multiple namespaces (comma list)
 kutop --profile example             # load a profile (ordering / tz / thresholds)
-python -m kubetop demo-ns 3         # module form
+python -m kutop demo-ns 3           # module form
+python -m kubetop demo-ns 3         # legacy module alias
 kutop --context demo-context demo-ns  # pick a kubeconfig context
 kutop --allow-destructive           # enable pod delete (still confirm-gated)
 kutop --dump-config                 # print the full annotated config skeleton
@@ -120,7 +124,7 @@ The detail presets are one-shot column layouts:
 ## Profiles
 
 A profile externalises everything that would otherwise be hardcoded. See
-[`kubetop/profiles/example.yaml`](kubetop/profiles/example.yaml) for a fully
+[`kutop/profiles/example.yaml`](kutop/profiles/example.yaml) for a fully
 commented template:
 
 ```yaml
@@ -139,7 +143,7 @@ thresholds:
 ```
 
 Profiles resolve by name from `~/.config/kutop/profiles/<name>.yaml` and the
-packaged `kubetop/profiles/` directory, or by explicit path. Without a profile
+packaged `kutop/profiles/` directory, or by explicit path. Without a profile
 the core runs fully (alphabetical ordering, local timezone, generic thresholds).
 
 ## Alerts & health (no port-forward)
@@ -148,7 +152,7 @@ The Alerts and Health panels are opt-in and profile-driven. A `/`-prefixed URL
 in `alertmanager_url` / `health_probes[].url` is fetched via `kubectl get --raw`
 through the Kubernetes **API-server proxy** — so it uses your kubeconfig auth
 with no localhost port-forward. Health is a self-contained plugin
-(`kubetop/plugins/health.py`); the core does not depend on it.
+(`kutop/plugins/health.py`); the core does not depend on it.
 
 ## How it works
 

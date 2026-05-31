@@ -1,9 +1,9 @@
-"""Optional HTTP probes for kubetop — AlertManager alerts (M2) + workload health (M3).
+"""Optional HTTP probes for kutop - AlertManager alerts and workload health.
 
 Both probes are profile/cluster-linked and strictly opt-in: they only run when
 the active Profile (or Config) sets ``alertmanager_url`` / ``health_probes``.
 Everything here uses ONLY the standard library (``urllib.request`` + ``re``) so
-kubetop keeps zero extra runtime dependencies.
+kutop keeps zero extra runtime dependencies.
 
 Robustness contracts (mirroring fetch.py):
   * Every call has a short timeout and NEVER raises — failures return an empty
@@ -145,7 +145,7 @@ def scrape_probe(name: str, url: str, fields: dict,
 
 def scrape_probes(probes: list, timeout: float = _DEFAULT_TIMEOUT,
                   getter=None) -> list[HealthResult]:
-    """Scrape every configured :class:`~kubetop.config.HealthProbe` (best effort).
+    """Scrape every configured :class:`~kutop.config.HealthProbe` (best effort).
 
     Each probe is independent — one unreachable endpoint never affects the
     others. Returns one :class:`HealthResult` per probe (order preserved).

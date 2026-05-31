@@ -1,4 +1,4 @@
-"""kutop / kubetop command-line entrypoint.
+"""kutop command-line entrypoint.
 
 Backward compatible with ``top.sh <ns> <interval>``: positional ``namespaces``
 (comma list) and ``interval`` are optional. A profile may supply default

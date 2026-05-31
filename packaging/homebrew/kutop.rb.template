@@ -13,14 +13,14 @@ class Kutop < Formula
     (bin/"kutop").write <<~EOS
       #!/bin/bash
       export PYTHONPATH="#{libexec}/lib/python${PYTHONPATH:+:$PYTHONPATH}"
-      exec "#{Formula["python@3.12"].opt_bin}/python3" -m kubetop "$@"
+      exec "#{Formula["python@3.12"].opt_bin}/python3" -m kutop "$@"
     EOS
     chmod 0755, bin/"kutop"
 
     (bin/"kubetop").write <<~EOS
       #!/bin/bash
       export PYTHONPATH="#{libexec}/lib/python${PYTHONPATH:+:$PYTHONPATH}"
-      exec "#{Formula["python@3.12"].opt_bin}/python3" -m kubetop "$@"
+      exec "#{Formula["python@3.12"].opt_bin}/python3" -m kutop "$@"
     EOS
     chmod 0755, bin/"kubetop"
   end

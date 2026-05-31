@@ -682,7 +682,7 @@ class TopApp(App):
         """Translate the config's health_probes dicts into HealthProbe objects.
 
         The Fetcher only needs ``.name/.url/.fields`` attributes; we reuse the
-        :class:`~kubetop.config.HealthProbe` dataclass so the probes module gets the
+        :class:`~kutop.config.HealthProbe` dataclass so the probes module gets the
         attribute access it expects. Empty -> [] (no scraping at all).
         """
         from ..config import HealthProbe

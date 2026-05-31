@@ -1,17 +1,17 @@
-"""Workload-health plugin for kubetop (optional, profile-gated).
+"""Workload-health plugin for kutop (optional, profile-gated).
 
 The health-probe feature — scrape a metrics endpoint, regex-extract fields, and
 render them in a compact row — is too domain/workload-specific for the generic
 OSS core, so it lives here as a self-contained plugin behind the seam defined in
-:mod:`kubetop.plugins`. The core (``fetch.py`` + ``render/app.py``) iterates the
+:mod:`kutop.plugins`. The core (``fetch.py`` + ``render/app.py``) iterates the
 plugin registry and never imports this module by name; if this file is deleted
 the core still imports and runs (health simply disappears).
 
 What this plugin owns:
   * :class:`HealthPanel` — the panel widget (built on the common :class:`Panel`).
   * the health-specific fetch orchestration: turn the active config's
-    ``health_probes`` into a list of :class:`~kubetop.model.HealthResult` on the
-    snapshot, using the generic HTTP helpers in :mod:`kubetop.probes`.
+    ``health_probes`` into a list of :class:`~kutop.model.HealthResult` on the
+    snapshot, using the generic HTTP helpers in :mod:`kutop.probes`.
   * activation: enabled iff the config carries ``health_probes`` (a profile
     contributes them — that is the workload-specific config).
 
@@ -38,7 +38,7 @@ def _probe_attr(p: Any, key: str, default: Any) -> Any:
     """Read ``key`` from a probe that may be a dict OR an attribute object.
 
     The unified Config carries health probes as plain ``{name,url,fields}`` dicts,
-    but the core Fetcher mirrors them as :class:`~kubetop.config.HealthProbe`
+    but the core Fetcher mirrors them as :class:`~kutop.config.HealthProbe`
     instances (attribute access). Support both shapes transparently.
     """
     if isinstance(p, dict):
@@ -50,7 +50,7 @@ def _to_health_probes(config: Any) -> list:
     """Translate the config's ``health_probes`` into probe objects.
 
     The scrape helpers only need ``.name/.url/.fields``; reuse the
-    :class:`~kubetop.config.HealthProbe` dataclass for that attribute access.
+    :class:`~kutop.config.HealthProbe` dataclass for that attribute access.
     Each source probe may be a dict or an attribute object (see :func:`_probe_attr`).
     Empty / malformed -> [] (no scraping at all, so no network is touched).
     """
@@ -73,7 +73,7 @@ class HealthPanel(Panel):
     """Compact workload health row: ``probe: field=value field=value``.
 
     One line per configured probe; unreachable probes render dim with their
-    error. Fed already-scraped :class:`~kubetop.model.HealthResult` rows by the
+    error. Fed already-scraped :class:`~kutop.model.HealthResult` rows by the
     app (the HTTP scrape happens in the fetch worker). This is how a user adds
     workload-specific signals (block height / sync lag …) WITHOUT code changes —
     they only edit the profile/config ``health_probes``.
@@ -116,7 +116,7 @@ class HealthPanel(Panel):
 class HealthPlugin:
     """The health feature, packaged behind the generic core plugin seam.
 
-    Satisfies :class:`kubetop.plugins.KubetopPlugin` structurally (no inheritance
+    Satisfies :class:`kutop.plugins.KutopPlugin` structurally (no inheritance
     needed): ``panel_id`` + ``is_enabled`` + ``fetch`` + ``make_panel``.
     """
 

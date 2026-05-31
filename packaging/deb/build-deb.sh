@@ -42,14 +42,14 @@ rm -rf "$PKGROOT/opt/kutop/lib/python/bin"
 cat > "$PKGROOT/usr/bin/kutop" <<'EOF'
 #!/bin/sh
 export PYTHONPATH="/opt/kutop/lib/python${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m kubetop "$@"
+exec python3 -m kutop "$@"
 EOF
 chmod 0755 "$PKGROOT/usr/bin/kutop"
 
 cat > "$PKGROOT/usr/bin/kubetop" <<'EOF'
 #!/bin/sh
 export PYTHONPATH="/opt/kutop/lib/python${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m kubetop "$@"
+exec python3 -m kutop "$@"
 EOF
 chmod 0755 "$PKGROOT/usr/bin/kubetop"
 

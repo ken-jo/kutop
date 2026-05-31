@@ -1,7 +1,7 @@
 # Release and Distribution
 
-The public distribution name is `kutop`. The Python import package remains
-`kubetop`, and releases install both `kutop` and `kubetop` command aliases.
+The public distribution name and Python package namespace are `kutop`. Releases
+install `kutop` as the primary command and `kubetop` as a compatibility alias.
 
 ## GitHub Repository
 

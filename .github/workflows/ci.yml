@@ -27,12 +27,14 @@ jobs:
         run: python -m pip install -e ".[profiles]"
 
       - name: Compile
-        run: python -m compileall -q kubetop tools
+        run: python -m compileall -q kutop kubetop tools
 
       - name: CLI smoke tests
         run: |
           kutop --version
           kubetop --version
+          python -m kutop --version
+          python -m kubetop --version
           kutop --help
           kutop --dump-config --detail wide
           kutop --self-test --detail wide

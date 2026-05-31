@@ -386,7 +386,7 @@ class DualThresholdSlider(Static):
 class Panel(VerticalScroll):
     """One reusable titled, bordered, scrollable side-panel.
 
-    The ONE common spec every kubetop side panel shares so they stop looking
+    The one common spec every kutop side panel shares so they stop looking
     "each different": a rounded border, a left-aligned accent ``border_title``,
     consistent padding, and a scrollable body. The body is a single
     :class:`Static`; :meth:`set_body` swaps its renderable and :meth:`set_title`

@@ -1,4 +1,4 @@
-"""kubectl data acquisition for kubetop.
+"""kubectl data acquisition for kutop.
 
 Produces a :class:`model.Snapshot` from a cluster. All kubectl invocations are
 blocking ``subprocess.run`` calls, so :func:`fetch_snapshot` MUST be run off the
@@ -261,7 +261,7 @@ class Fetcher:
     def _run_plugins(self, snap: Snapshot) -> None:
         """Let each enabled plugin populate ``snap`` (best effort, never raises).
 
-        Uses the generic plugin seam (:func:`kubetop.plugins.iter_enabled`). A
+        Uses the generic plugin seam (:func:`kutop.plugins.iter_enabled`). A
         plugin's activating config is carried on this fetcher (the app mirrors the
         unified Config's probe settings onto it), so we hand the fetcher itself as
         the config-like object. The whole block is guarded: if the plugins package
