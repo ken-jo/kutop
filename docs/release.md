@@ -35,6 +35,12 @@ Environment name: pypi
 The release workflow publishes to PyPI through OIDC; no PyPI API token is needed
 when the Trusted Publisher is configured.
 
+Enable publishing after the Trusted Publisher is ready:
+
+```text
+PUBLISH_PYPI=true
+```
+
 ## Homebrew Tap
 
 Create a tap repository, for example:
