@@ -110,6 +110,7 @@ jobs:
       - name: Publish GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           cd release-assets
           sha256sum * > SHA256SUMS
