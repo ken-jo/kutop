@@ -53,6 +53,10 @@ The PyPI name `kubetop` belongs to a different package. Pinned deps:
 Other package managers after a tagged release:
 
 ```bash
+brew tap ken-jo/tap
+brew install kutop
+
+# One-shot install without a separate tap step:
 brew install ken-jo/tap/kutop
 
 curl -fsSL https://ken-jo.github.io/kutop/apt/kutop.gpg \
