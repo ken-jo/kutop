@@ -1,7 +1,7 @@
 # kutop
 
 [![Latest release](https://img.shields.io/github/v/release/ken-jo/kutop?label=latest%20release&include_prereleases&sort=semver&logo=github)](https://github.com/ken-jo/kutop/releases)
-[![PyPI version](https://img.shields.io/pypi/v/kutop?label=PyPI%20version&logo=pypi&logoColor=white)](https://pypi.org/project/kutop/)
+[![PyPI version](https://img.shields.io/pypi/v/kutop?label=PyPI%20version&logo=pypi&logoColor=white&cacheSeconds=300)](https://pypi.org/project/kutop/)
 [![Wheel](https://img.shields.io/pypi/wheel/kutop?label=wheel&logo=python&logoColor=white)](https://pypi.org/project/kutop/)
 [![CI](https://img.shields.io/github/actions/workflow/status/ken-jo/kutop/ci.yml?branch=master&label=CI&logo=githubactions&logoColor=white)](https://github.com/ken-jo/kutop/actions/workflows/ci.yml)
 [![Release workflow](https://img.shields.io/github/actions/workflow/status/ken-jo/kutop/release.yml?label=release%20workflow&logo=githubactions&logoColor=white)](https://github.com/ken-jo/kutop/actions/workflows/release.yml)
