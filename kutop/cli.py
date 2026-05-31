@@ -28,7 +28,10 @@ from .config import (
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog=_prog_name(),
-        description="A modern btop-style Kubernetes resource dashboard for the terminal.",
+        description=(
+            "A btop-like Kubernetes TUI dashboard for pods, nodes, CPU, "
+            "memory, events, PVC usage, alerts, and health checks."
+        ),
     )
     ap.add_argument(
         "namespaces", nargs="?", default=None,
@@ -74,6 +77,20 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="one-shot detail preset for columns (normal/wide/full)")
     ap.add_argument("--size", default=None, metavar="WxH",
                     help="terminal size for --snapshot (default depends on --detail)")
+    ap.add_argument(
+        "--snapshot-view",
+        default="main",
+        choices=(
+            "main",
+            "options-view",
+            "options-columns",
+            "options-panels",
+            "options-thresholds",
+            "options-cluster",
+            "options-profile",
+        ),
+        help="screen to capture for --snapshot",
+    )
     ap.add_argument("--version", action="version",
                     version=f"kutop {__version__}")
     return ap
@@ -263,6 +280,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             context=cfg.context or None,
             profile=profile,
             app=app,
+            view=args.snapshot_view,
         )
         if code == 0:
             print(f"wrote snapshot SVG -> {args.snapshot}")

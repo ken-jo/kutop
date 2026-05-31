@@ -64,8 +64,10 @@ Architecture: all
 Depends: python3 (>= 3.9), ca-certificates
 Maintainer: kutop contributors
 Homepage: https://github.com/ken-jo/kutop
-Description: btop-style Kubernetes resource dashboard for the terminal
- kutop is a Textual-based terminal dashboard for Kubernetes resource usage.
+Description: btop-like Kubernetes TUI for pods, nodes, events, PVCs, alerts, and health
+ kutop is a Textual-based terminal dashboard for Kubernetes resource usage,
+ pod and node triage, warning events, PVC storage, Alertmanager alerts, and
+ custom health checks.
  It installs both kutop and kubetop command aliases.
 EOF
 

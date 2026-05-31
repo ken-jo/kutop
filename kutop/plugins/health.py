@@ -83,10 +83,10 @@ class HealthPanel(Panel):
     """
 
     def __init__(self, **kwargs) -> None:
-        super().__init__(title="HEALTH", **kwargs)
+        super().__init__(title="CUSTOM HEALTH", **kwargs)
 
     def update_health(self, results: "list[HealthResult]") -> None:
-        self.set_title("HEALTH")
+        self.set_title("CUSTOM HEALTH")
         body = Text()
         if not results:
             body.append("no probes configured", style="dim")
@@ -117,7 +117,8 @@ class HealthPlugin:
     """The health feature, packaged behind the generic core plugin seam.
 
     Satisfies :class:`kutop.plugins.KutopPlugin` structurally (no inheritance
-    needed): ``panel_id`` + ``is_enabled`` + ``fetch`` + ``make_panel``.
+    needed): ``panel_id`` + ``is_enabled`` + ``fetch`` + ``make_panel`` +
+    ``render``.
     """
 
     panel_id = PANEL_ID
@@ -160,6 +161,12 @@ class HealthPlugin:
     def make_panel(self) -> Any:
         """Construct the health panel widget the app mounts."""
         return HealthPanel(id=self.panel_id, classes="-hidden")
+
+    def render(self, panel: Any, snapshot: Any) -> None:
+        """Render the mounted panel from the latest snapshot."""
+        updater = getattr(panel, "update_health", None)
+        if callable(updater):
+            updater(list(getattr(snapshot, "health", []) or []))
 
 
 # Plugin instance discovered by the registry (``getattr(mod, "PLUGIN")``).

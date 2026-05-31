@@ -5,12 +5,59 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kutop"
 version = "0.1.0"
-description = "A modern, like-btop Kubernetes resource dashboard for the terminal."
+description = "A btop-like Kubernetes TUI dashboard for pods, nodes, CPU, memory, events, PVC usage, alerts, and health checks."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 authors = [{ name = "kutop contributors" }]
-keywords = ["kubernetes", "tui", "monitoring", "dashboard", "textual", "btop", "kutop", "kubetop"]
+keywords = [
+    "kubernetes",
+    "k8s",
+    "kubectl",
+    "tui",
+    "terminal",
+    "cli",
+    "monitoring",
+    "observability",
+    "dashboard",
+    "pods",
+    "nodes",
+    "namespace",
+    "metrics",
+    "cpu",
+    "memory",
+    "events",
+    "pvc",
+    "storage",
+    "alertmanager",
+    "health-checks",
+    "textual",
+    "rich",
+    "btop",
+    "ktop",
+    "kubetop",
+    "kutop",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Terminals",
+    "Topic :: Utilities",
+]
 dependencies = [
     "textual==8.2.7",
     "rich==15.0.0",

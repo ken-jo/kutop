@@ -33,6 +33,7 @@ from textual.widgets import (
     Input,
     Label,
     RichLog,
+    Select,
 )
 from textual.screen import ModalScreen
 
@@ -355,6 +356,16 @@ class SidebarPanel(Vertical):
         selected: "Optional[list[str]]" = None,
         show_events: bool = True,
         show_pvc: bool = True,
+        show_summary: bool = True,
+        show_trends: bool = True,
+        show_alerts: bool = True,
+        show_health: bool = True,
+        sort_key: str = "priority",
+        sort_desc: bool = False,
+        group_by_node: bool = False,
+        interval: float = 3.0,
+        context: Optional[str] = None,
+        name_filter: str = "",
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -362,18 +373,67 @@ class SidebarPanel(Vertical):
         self._selected = set(selected if selected is not None else ns_options)
         self._show_events = show_events
         self._show_pvc = show_pvc
+        self._show_summary = show_summary
+        self._show_trends = show_trends
+        self._show_alerts = show_alerts
+        self._show_health = show_health
+        self._sort_key = sort_key if sort_key in SORTABLE_KEYS else "priority"
+        self._sort_desc = sort_desc
+        self._group_by_node = group_by_node
+        self._interval = interval
+        self._context_name = context or ""
+        self._name_filter = name_filter
+        self._syncing = False
+        self._ready_for_input = False
 
     def compose(self) -> ComposeResult:
-        yield Label("CONTROL PANEL", id="side_title")
+        yield Label("kutop", id="side_title")
+        yield Label("", id="side_watch", classes="side_stat")
+        yield Label("", id="side_filter", classes="side_muted")
         with VerticalScroll(id="side_scroll"):
-            yield Label("NAMESPACE  (tick to combine)", classes="side_section")
+            yield Label("NAMESPACES", classes="side_section")
             with VerticalScroll(id="side_ns_box"):
                 yield from self._ns_checkboxes()
+            yield Label("SORT", classes="side_section")
+            yield Select(
+                [(k, k) for k in SORTABLE_KEYS],
+                value=self._sort_key,
+                id="side_sort",
+                allow_blank=False,
+            )
+            yield Checkbox("Descending", value=self._sort_desc, id="chk_sort_desc")
+            yield Checkbox("Group by node", value=self._group_by_node, id="chk_group")
             yield Label("PANELS", classes="side_section")
+            yield Checkbox("Summary", value=self._show_summary, id="chk_summary")
+            yield Checkbox("Trends", value=self._show_trends, id="chk_trends")
             yield Checkbox("Warning Events", value=self._show_events, id="chk_events")
             yield Checkbox("PVC Storage", value=self._show_pvc, id="chk_pvc")
-            yield Label("o: Options/Settings (full config)", id="side_opts_tip")
-            yield Label("Tab / b: toggle sidebar", id="side_tip")
+            yield Checkbox("Alerts", value=self._show_alerts, id="chk_alerts")
+            yield Checkbox("Health", value=self._show_health, id="chk_health")
+
+    def on_mount(self) -> None:
+        self.update_state(
+            selected=list(self._selected),
+            show_events=self._show_events,
+            show_pvc=self._show_pvc,
+            show_summary=self._show_summary,
+            show_trends=self._show_trends,
+            show_alerts=self._show_alerts,
+            show_health=self._show_health,
+            sort_key=self._sort_key,
+            sort_desc=self._sort_desc,
+            group_by_node=self._group_by_node,
+            interval=self._interval,
+            context=self._context_name,
+            name_filter=self._name_filter,
+        )
+        try:
+            self.call_after_refresh(self._enable_input_events)
+        except Exception:
+            self._ready_for_input = True
+
+    def _enable_input_events(self) -> None:
+        self._ready_for_input = True
 
     def _ns_checkboxes(self):
         """One Checkbox per known namespace; the namespace is stored in ``name``."""
@@ -409,18 +469,115 @@ class SidebarPanel(Vertical):
             pass
         return out
 
+    def update_state(
+        self,
+        *,
+        selected: list[str],
+        show_events: bool,
+        show_pvc: bool,
+        show_summary: bool,
+        show_trends: bool,
+        show_alerts: bool,
+        show_health: bool,
+        sort_key: str,
+        sort_desc: bool,
+        group_by_node: bool,
+        interval: float,
+        context: str,
+        name_filter: str,
+    ) -> None:
+        """Refresh compact status text and control values from the app state."""
+        self._selected = set(selected)
+        self._show_events = show_events
+        self._show_pvc = show_pvc
+        self._show_summary = show_summary
+        self._show_trends = show_trends
+        self._show_alerts = show_alerts
+        self._show_health = show_health
+        self._sort_key = sort_key if sort_key in SORTABLE_KEYS else "priority"
+        self._sort_desc = sort_desc
+        self._group_by_node = group_by_node
+        self._interval = interval
+        self._context_name = context or ""
+        self._name_filter = name_filter
+        try:
+            ns_count = len([n for n in selected if n])
+            ctx = self._context_name or "current"
+            self.query_one("#side_watch", Label).update(
+                f"{ns_count} ns · {self._interval:g}s · {ctx}"
+            )
+            filt = self._name_filter or "no filter"
+            self.query_one("#side_filter", Label).update(f"sort {self._sort_key} · {filt}")
+        except Exception:
+            pass
+        self._syncing = True
+        try:
+            self._set_checkbox("chk_summary", show_summary)
+            self._set_checkbox("chk_trends", show_trends)
+            self._set_checkbox("chk_events", show_events)
+            self._set_checkbox("chk_pvc", show_pvc)
+            self._set_checkbox("chk_alerts", show_alerts)
+            self._set_checkbox("chk_health", show_health)
+            self._set_checkbox("chk_sort_desc", sort_desc)
+            self._set_checkbox("chk_group", group_by_node)
+            try:
+                self.query_one("#side_sort", Select).value = self._sort_key
+            except Exception:
+                pass
+        finally:
+            self._syncing = False
+
+    def _set_checkbox(self, widget_id: str, value: bool) -> None:
+        try:
+            cb = self.query_one(f"#{widget_id}", Checkbox)
+            if cb.value != value:
+                cb.value = value
+        except Exception:
+            pass
+
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if self._syncing or not self._ready_for_input:
+            return
         app = self.app  # type: ignore[assignment]
         cb = event.checkbox
         if cb.has_class(self.NS_CLASS):
             # a namespace was ticked/unticked -> hand the app the full ticked set
             app.set_namespaces(self.ns_checkbox_state())  # type: ignore[attr-defined]
+        elif cb.id == "chk_summary":
+            app.cfg.show_summary = event.value  # type: ignore[attr-defined]
+            app.apply_panel_visibility()  # type: ignore[attr-defined]
+        elif cb.id == "chk_trends":
+            app.cfg.show_trends = event.value  # type: ignore[attr-defined]
+            app.apply_panel_visibility()  # type: ignore[attr-defined]
         elif cb.id == "chk_events":
             app.show_events = event.value  # type: ignore[attr-defined]
             app.apply_panel_visibility()  # type: ignore[attr-defined]
         elif cb.id == "chk_pvc":
             app.show_pvc = event.value  # type: ignore[attr-defined]
             app.apply_panel_visibility()  # type: ignore[attr-defined]
+        elif cb.id == "chk_alerts":
+            app.show_alerts = event.value  # type: ignore[attr-defined]
+            app.apply_panel_visibility()  # type: ignore[attr-defined]
+        elif cb.id == "chk_health":
+            app.show_health = event.value  # type: ignore[attr-defined]
+            app.apply_panel_visibility()  # type: ignore[attr-defined]
+        elif cb.id == "chk_sort_desc":
+            app.cfg.sort_desc = event.value  # type: ignore[attr-defined]
+            app._persist_state()  # type: ignore[attr-defined]
+            app._restamp_sort_header()  # type: ignore[attr-defined]
+            if app._loaded:  # type: ignore[attr-defined]
+                app._render_main_table()  # type: ignore[attr-defined]
+        elif cb.id == "chk_group":
+            app.cfg.group_by_node = event.value  # type: ignore[attr-defined]
+            app._persist_state()  # type: ignore[attr-defined]
+            if app._loaded:  # type: ignore[attr-defined]
+                app._render_main_table()  # type: ignore[attr-defined]
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if self._syncing or not self._ready_for_input:
+            return
+        if event.select.id == "side_sort" and event.value is not Select.BLANK:
+            self.app.set_sort_key(str(event.value))  # type: ignore[attr-defined]
 
 
 # ── resizable main table ───────────────────────────────────────────────────────
@@ -708,6 +865,16 @@ class TopApp(App):
                 selected=list(self.namespaces),
                 show_events=self.show_events,
                 show_pvc=self.show_pvc,
+                show_summary=self.cfg.show_summary,
+                show_trends=self.cfg.show_trends,
+                show_alerts=self.show_alerts,
+                show_health=self.show_health,
+                sort_key=self.cfg.sort_key,
+                sort_desc=self.cfg.sort_desc,
+                group_by_node=self.cfg.group_by_node,
+                interval=self.interval,
+                context=self.context,
+                name_filter=self._effective_filter(),
                 id="sidebar",
             )
             with Vertical(id="main_view"):
@@ -976,13 +1143,12 @@ class TopApp(App):
     # ── rendering ──────────────────────────────────────────────────────────────
     def _render(self) -> None:
         snap = self.snapshot
-        p = self.profile
         s = snap.summary
 
         sb = self.query_one("#summary_bar", SummaryBar)
         if sb.style_mode != self.cfg.summary_style:
             sb.set_style_mode(self.cfg.summary_style)
-        sb.update_summary(s, show_alerts=bool(p.alertmanager_url))
+        sb.update_summary(s, show_alerts=bool(self.cfg.alertmanager_url))
 
         cpu_detail = f"{model.fmt_cpu(s.cpu_used_mcpu)}/{model.fmt_cpu(s.cpu_cap_mcpu)}"
         mem_detail = f"{model.fmt_mem(s.mem_used_mi)}/{model.fmt_mem(s.mem_cap_mi)}"
@@ -993,7 +1159,7 @@ class TopApp(App):
         self._render_events()
         self._render_pvc()
         self._render_alerts()
-        self._render_health()
+        self._render_plugin_panels()
 
     def _render_alerts(self) -> None:
         try:
@@ -1026,22 +1192,17 @@ class TopApp(App):
             )
         self._restore_row(at, saved, sx, sy)
 
-    def _render_health(self) -> None:
-        """Render the health plugin's panel from the snapshot, if it is mounted.
-
-        Generic by contract: the core looks the panel up by its plugin-declared
-        ``panel_id`` and calls its ``update_health`` if present. If the health
-        plugin is absent the panel was never mounted, so this simply no-ops.
-        """
+    def _render_plugin_panels(self) -> None:
+        """Let enabled plugins update their mounted custom panels."""
         for plugin in self._enabled_plugins():
             panel_id = getattr(plugin, "panel_id", "")
-            if panel_id != "health_panel":
+            if not panel_id:
                 continue
             try:
                 panel = self.query_one(f"#{panel_id}")
-                updater = getattr(panel, "update_health", None)
-                if callable(updater):
-                    updater(list(self.snapshot.health))
+                renderer = getattr(plugin, "render", None)
+                if callable(renderer):
+                    renderer(panel, self.snapshot)
             except Exception:
                 pass
 
@@ -1414,6 +1575,7 @@ class TopApp(App):
             self._refresh_timer = self.set_interval(self.interval, self.refresh_snapshot)
 
         self.apply_panel_visibility()
+        self._sync_sidebar_state()
         if self._loaded:
             self._render()
 
@@ -1485,6 +1647,29 @@ class TopApp(App):
             not (alerts_on or any_plugin_on), "-hidden"
         )
         self._persist_state()
+        self._sync_sidebar_state()
+
+    def _sync_sidebar_state(self) -> None:
+        """Mirror app state into the sidebar controls without rebuilding rows."""
+        try:
+            sidebar = self.query_one("#sidebar", SidebarPanel)
+        except Exception:
+            return
+        sidebar.update_state(
+            selected=list(self.namespaces),
+            show_events=self.show_events,
+            show_pvc=self.show_pvc,
+            show_summary=self.cfg.show_summary,
+            show_trends=self.cfg.show_trends,
+            show_alerts=self.show_alerts,
+            show_health=self.show_health,
+            sort_key=self.cfg.sort_key,
+            sort_desc=self.cfg.sort_desc,
+            group_by_node=self.cfg.group_by_node,
+            interval=self.interval,
+            context=self.context or "",
+            name_filter=self._effective_filter(),
+        )
 
     def _apply_plugin_panel_visibility(self) -> bool:
         """Show/hide each enabled plugin's panel; return True if any is visible.
@@ -1590,6 +1775,7 @@ class TopApp(App):
         self.notify(f"sort: {key} {'▼' if self.cfg.sort_desc else '▲'}")
         self._persist_state()
         self._restamp_sort_header()
+        self._sync_sidebar_state()
         if self._loaded:
             self._render_main_table()
 
@@ -1631,6 +1817,7 @@ class TopApp(App):
         self.cfg.group_by_node = not self.cfg.group_by_node
         self.notify(f"group by node: {'on' if self.cfg.group_by_node else 'off'}")
         self._persist_state()
+        self._sync_sidebar_state()
         if self._loaded:
             self._render_main_table()
 
@@ -1661,6 +1848,7 @@ class TopApp(App):
         """Live-filter the pod table as the user types in the search bar."""
         if event.input.id == "search_input":
             self._search_term = event.value
+            self._sync_sidebar_state()
             if self._loaded:
                 self._render_main_table()
 
@@ -1694,6 +1882,7 @@ class TopApp(App):
         self.fetcher.namespaces = ns_list
         self.notify(f"namespaces: {', '.join(ns_list)}")
         self._persist_state()
+        self._sync_sidebar_state()
         self.refresh_snapshot()
 
     # legacy shim: a CSV string still routes through the list-based selector
@@ -1713,6 +1902,7 @@ class TopApp(App):
             return
         opts = self._sidebar_ns_options(self._discovered_ns)
         sidebar.rebuild_namespaces(opts, list(self.namespaces))
+        self._sync_sidebar_state()
 
     # ── focused-pod resolution for modals ──────────────────────────────────────
     def _focused_pod(self) -> Optional[Pod]:

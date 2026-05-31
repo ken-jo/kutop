@@ -11,13 +11,28 @@
 [![Stars](https://img.shields.io/github/stars/ken-jo/kutop?style=social)](https://github.com/ken-jo/kutop/stargazers)
 [![Last commit](https://img.shields.io/github/last-commit/ken-jo/kutop)](https://github.com/ken-jo/kutop/commits/master)
 
-A modern, like-btop **Kubernetes resource dashboard** for the terminal, built
-with [Textual](https://textual.textualize.io/). It attaches to any cluster /
-namespace, shows live CPU/MEM trend sparklines, an aggregate counter bar, and
-per-pod usage-vs-limit gauges — so you can read the state of a cluster in a few
-seconds. Workload-specific behaviour (pod ordering, timezone, thresholds, alert
-sources, health probes) is injected declaratively via **profiles**, keeping the
-core generic.
+`kutop` is a modern, like-btop **Kubernetes TUI dashboard** for the terminal. It
+turns `kubectl` and your kubeconfig into a fast, readable view of pods, nodes,
+namespaces, CPU, memory, restarts, OOMKilled pods, warning events, PVC storage,
+Alertmanager alerts, and custom health checks.
+
+It is built with [Textual](https://textual.textualize.io/) and runs locally with
+no in-cluster agent. `kutop` is useful when you want a Kubernetes terminal
+dashboard, pod monitor, node resource view, k8s observability console, or a
+`kubetop`/`ktop` style CLI that feels closer to `btop`.
+
+## Highlights
+
+* Kubernetes pod and node monitoring directly in the terminal.
+* Live CPU and memory trend sparklines plus per-pod usage-vs-limit gauges.
+* Problem-first signals for Pending, Failed, OOMKilled, CrashLoopBackOff, and
+  restarting workloads.
+* Optional Events, PVC storage, Alertmanager, and health-check panels.
+* Multi-namespace views, sorting, filtering, grouping, and a configurable
+  sidebar for fast cluster triage.
+* Profile-driven thresholds, pod ordering, timezone, alert sources, and health
+  probes so the core stays generic.
+* Headless SVG screenshots for README assets, release notes, and visual QA.
 
 ```
 NODES 2/2 │ PODS(R/P/F) 18/1/0 │ RESTARTS 7 │ OOM 1 │ WARN 2 │ ALERTS 3
@@ -98,7 +113,7 @@ load; named profiles are also resolved from those legacy profile directories.
 |-----|--------|
 | `q` | quit |
 | `r` | refresh now |
-| `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster) |
+| `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster, Profile) |
 | `Tab` / `b` | toggle the control sidebar |
 | `/` | search / filter pods by name |
 | `s` / `S` | cycle sort column / flip sort direction (or click a column header) |
@@ -119,13 +134,27 @@ or narrow it (the width persists). Click any column header to sort by it.
 QA. It uses live cluster data when reachable and falls back to a generic
 synthetic frame when not.
 
-![kutop wide detail screenshot](docs/kutop-wide.svg)
+Main dashboard with every panel enabled: Summary, Trends, Alerts, the custom
+Health plugin panel, Pods, Events, and PVC storage:
+
+![kutop main dashboard with alerts, custom health, events, and PVC panels](docs/kutop-main-all-panels.svg)
+
+Options modal views:
+
+| View | Columns | Panels |
+|------|---------|--------|
+| ![kutop options view tab](docs/kutop-options-view.svg) | ![kutop options columns tab](docs/kutop-options-columns.svg) | ![kutop options panels tab](docs/kutop-options-panels.svg) |
+
+| Thresholds | Cluster | Profile |
+|------------|---------|---------|
+| ![kutop options thresholds tab](docs/kutop-options-thresholds.svg) | ![kutop options cluster tab](docs/kutop-options-cluster.svg) | ![kutop options profile tab](docs/kutop-options-profile.svg) |
 
 ```bash
 kutop --snapshot /tmp/kutop.svg
 kutop --snapshot /tmp/kutop-wide.svg --detail wide
 kutop --snapshot /tmp/kutop-full.svg --detail full
 kutop --snapshot /tmp/kutop-full.svg --detail full --size 220x54
+kutop --snapshot /tmp/kutop-options.svg --snapshot-view options-panels --size 96x30
 ```
 
 The detail presets are one-shot column layouts:
@@ -135,6 +164,10 @@ The detail presets are one-shot column layouts:
 | `normal` | `140x40` | Same visible columns as the interactive default |
 | `wide` | `160x44` | Prioritises namespace, readiness, phase, reason, owner, node, and key resources |
 | `full` | `220x54` | Enables every table column and the PVC panel; increase `--size` for far-right columns |
+
+`--snapshot-view` accepts `main`, `options-view`, `options-columns`,
+`options-panels`, `options-thresholds`, `options-cluster`, and
+`options-profile`.
 
 ## Profiles
 
@@ -161,13 +194,42 @@ Profiles resolve by name from `~/.config/kutop/profiles/<name>.yaml` and the
 packaged `kutop/profiles/` directory, or by explicit path. Without a profile
 the core runs fully (alphabetical ordering, local timezone, generic thresholds).
 
-## Alerts & health (no port-forward)
+## Alerts & custom panels (no port-forward)
 
-The Alerts and Health panels are opt-in and profile-driven. A `/`-prefixed URL
-in `alertmanager_url` / `health_probes[].url` is fetched via `kubectl get --raw`
-through the Kubernetes **API-server proxy** — so it uses your kubeconfig auth
-with no localhost port-forward. Health is a self-contained plugin
-(`kutop/plugins/health.py`); the core does not depend on it.
+The Alerts and custom Health panels are opt-in and profile-driven. A
+`/`-prefixed URL in `alertmanager_url` / `health_probes[].url` is fetched via
+`kubectl get --raw` through the Kubernetes **API-server proxy**, so it uses your
+kubeconfig auth with no localhost port-forward. Health is a self-contained
+custom panel plugin (`kutop/plugins/health.py`); the core does not depend on it.
+
+To update the custom panel without changing code, edit a profile or
+`~/.config/kutop/config.yaml`:
+
+```yaml
+panels:
+  health: true
+probes:
+  health_probes:
+    - name: api
+      url: /api/v1/namespaces/default/services/api/proxy/health
+      fields:
+        ready: "ready=(\\w+)"
+        latency: "latency_ms=(\\d+)"
+    - name: worker
+      url: /api/v1/namespaces/default/services/worker/proxy/metrics
+      fields:
+        lag: "queue_lag=(\\d+)"
+```
+
+For a new code-backed custom panel, use the existing plugin seam:
+
+1. Add a module under `kutop/plugins/<name>.py`.
+2. Expose a `PLUGIN` object with `panel_id`, `is_enabled(config)`,
+   `fetch(fetcher, snapshot)`, `make_panel()`, and `render(panel, snapshot)`.
+3. Append the module path to `_BUILTIN_PLUGIN_MODULES` in
+   `kutop/plugins/__init__.py`.
+4. Keep plugin fetch/render best-effort: a custom panel must never crash the
+   main Kubernetes dashboard.
 
 ## How it works
 

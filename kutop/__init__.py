@@ -1,3 +1,3 @@
-"""kutop - a modern, like-btop Kubernetes resource dashboard."""
+"""kutop - a btop-like Kubernetes TUI dashboard for cluster triage."""
 
 __version__ = "0.1.0"

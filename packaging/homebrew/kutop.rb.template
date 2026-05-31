@@ -1,5 +1,5 @@
 class Kutop < Formula
-  desc "btop-style Kubernetes resource dashboard for the terminal"
+  desc "btop-like Kubernetes TUI for pods, nodes, events, PVCs, alerts, and health"
   homepage "https://github.com/ken-jo/kutop"
   url "https://github.com/ken-jo/kutop/releases/download/{{TAG}}/kutop-homebrew-{{VERSION}}.tar.gz"
   sha256 "{{SHA256}}"

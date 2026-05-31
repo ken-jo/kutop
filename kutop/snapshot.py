@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
-from .model import Node, Pod, PVC, Event, Snapshot, Summary
+from .model import Alert, HealthResult, Node, Pod, PVC, Event, Snapshot, Summary
 
 
 def synthetic_snapshot() -> Snapshot:
@@ -81,10 +81,24 @@ def synthetic_snapshot() -> Snapshot:
         Event(ts_utc="2026-05-27T07:15:00Z", name="worker-0",
               reason="OOMKilling", message="Memory cgroup out of memory",
               count=3, type="Warning"),
+        Event(ts_utc="2026-05-27T07:16:20Z", name="pending-0",
+              reason="FailedScheduling", message="No node matched requested resources",
+              count=2, type="Warning"),
+    ]
+    snap.alerts = [
+        Alert(name="PodRestarting", severity="warning", state="active",
+              starts_at="2026-05-27T07:10:00Z", resource="default/worker-0"),
+        Alert(name="PVCFilling", severity="critical", state="active",
+              starts_at="2026-05-27T06:45:00Z", resource="default/data-worker-0"),
+    ]
+    snap.health = [
+        HealthResult(name="api", ok=True, fields={"ready": "true", "latency": "42ms"}),
+        HealthResult(name="worker", ok=False, error="timeout"),
     ]
     snap.summary = Summary(
         nodes_ready=2, nodes_total=2, pods_running=24, pods_pending=1,
         pods_failed=1, restarts_total=3, oomkilled_total=1, warn_events=5,
+        alerts_firing=2,
         cpu_used_mcpu=8757, cpu_cap_mcpu=28000,
         mem_used_mi=90963, mem_cap_mi=165375,
     )
@@ -110,8 +124,20 @@ def _live_snapshot(namespaces, context=None, profile=None) -> Optional[Snapshot]
     return snap
 
 
+_SNAPSHOT_OPTION_TABS = {
+    "options-view": "opt_tab_view",
+    "options-columns": "opt_tab_columns",
+    "options-panels": "opt_tab_panels",
+    "options-thresholds": "opt_tab_thresholds",
+    "options-cluster": "opt_tab_cluster",
+    "options-profile": "opt_tab_profile",
+}
+
+SNAPSHOT_VIEWS = ("main", *_SNAPSHOT_OPTION_TABS.keys())
+
+
 async def _render(out: str, size, namespaces, context, profile, app=None,
-                  config=None) -> None:
+                  config=None, view: str = "main") -> None:
     snap = _live_snapshot(namespaces, context=context, profile=profile) \
         or synthetic_snapshot()
 
@@ -136,6 +162,21 @@ async def _render(out: str, size, namespaces, context, profile, app=None,
         for _ in range(8):
             app._apply_snapshot(snap)
             await pilot.pause()
+        if view in _SNAPSHOT_OPTION_TABS:
+            app.action_open_options()
+            await pilot.pause()
+            try:
+                from textual.widgets import OptionList, TabbedContent
+                tabs = app.screen.query_one("#opt_tabs", TabbedContent)
+                tabs.active = _SNAPSHOT_OPTION_TABS[view]
+                await pilot.pause()
+                if view == "options-columns":
+                    app.screen.query_one("#opt_columns", OptionList).highlighted = 0
+                elif view == "options-cluster":
+                    app.screen.query_one("#opt_namespaces", OptionList).highlighted = 0
+            except Exception:
+                pass
+            await pilot.pause()
         app.save_screenshot(out)
         try:
             app.fetcher.cancel()
@@ -152,6 +193,7 @@ def render_snapshot(
     profile=None,
     app=None,
     config=None,
+    view: str = "main",
 ) -> int:
     """Render ONE frame headlessly to ``out`` (SVG) and return an exit code.
 
@@ -163,8 +205,10 @@ def render_snapshot(
     """
     nslist = namespaces or ["default"]
     try:
+        if view not in SNAPSHOT_VIEWS:
+            view = "main"
         asyncio.run(_render(out, size, nslist, context, profile, app=app,
-                            config=config))
+                            config=config, view=view))
         return 0
     except Exception as exc:  # pragma: no cover - defensive
         import sys

@@ -177,10 +177,10 @@ TrendGraph {
 }
 
 #sidebar {
-    width: 28;
+    width: 32;
     background: $surface;
     border-right: tall $accent;
-    padding: 1;
+    padding: 0 1 1 1;
     height: 1fr;
     layout: vertical;
 }
@@ -202,8 +202,19 @@ TrendGraph {
     text-style: bold;
     background: $accent-darken-1;
     color: $text;
-    height: 3;
+    height: 2;
     margin-bottom: 1;
+}
+
+.side_stat {
+    height: 1;
+    color: $text;
+    text-style: bold;
+}
+
+.side_muted {
+    height: 1;
+    color: $text-muted;
 }
 
 .side_section {
@@ -232,9 +243,17 @@ TrendGraph {
     background: transparent;
 }
 
-#side_tip {
-    margin-top: 2;
-    color: $text-muted;
+#sidebar Select {
+    height: 3;
+    width: 100%;
+    margin: 0 0 1 0;
+}
+
+#sidebar Checkbox {
+    height: 1;
+    width: 100%;
+    margin: 0;
+    padding: 0;
 }
 
 /* ── content view ───────────────────────────────────────────────────────── */

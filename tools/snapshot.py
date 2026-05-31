@@ -6,7 +6,7 @@ same code path as the ``kutop --snapshot`` product feature). Fetches a live
 cluster Snapshot when possible, otherwise falls back to a synthetic frame, and
 writes an SVG. Kept for local visual QA/iteration.
 
-Usage: python tools/snapshot.py OUT.svg [WIDTHxHEIGHT] [namespaces]
+Usage: python tools/snapshot.py OUT.svg [WIDTHxHEIGHT] [namespaces] [view]
 """
 from __future__ import annotations
 
@@ -42,6 +42,8 @@ def main() -> int:
         size = _parse_size(sys.argv[2])
     namespaces = (sys.argv[3].split(",") if len(sys.argv) > 3
                   else ["default"])
+    view = (sys.argv[4] if len(sys.argv) > 4
+            else os.environ.get("KUTOP_SNAPSHOT_VIEW", "main"))
     # Optionally apply a profile (ordering + probes) when one is named via env;
     # render_snapshot falls back to a generic synthetic frame when no cluster.
     # No workload literal is hardcoded here.
@@ -68,7 +70,7 @@ def main() -> int:
             config = load_config(profile=profile)
         apply_detail_preset(config, detail)
     code = render_snapshot(out, size=size, namespaces=namespaces,
-                           profile=profile, config=config)
+                           profile=profile, config=config, view=view)
     if code == 0:
         print(f"[snapshot] wrote {out}")
     return code

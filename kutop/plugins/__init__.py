@@ -17,6 +17,8 @@ satisfies :class:`KutopPlugin`:
                             MUST NOT raise — the core wraps it but a plugin owns
                             its own robustness.
   * ``make_panel()``      — construct the panel widget (mounted by the app).
+  * ``render(panel, snapshot)`` — update the mounted panel from the latest
+                            snapshot on the UI thread.
 
 Discovery is import-guarded: the registry is built by importing each known
 plugin module inside a ``try``/``except`` so the core still imports and runs even
@@ -46,6 +48,10 @@ class KutopPlugin(Protocol):
 
     def make_panel(self) -> Any:
         """Build the panel :class:`~textual.widget.Widget` the app mounts."""
+        ...
+
+    def render(self, panel: Any, snapshot: Any) -> None:
+        """Update the mounted panel from ``snapshot``. Best-effort; never raises."""
         ...
 
 
