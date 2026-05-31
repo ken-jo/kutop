@@ -19,12 +19,14 @@ CPU OVERALL  ▁▂▃▅▆▇█  62%  5.1/16        MEM OVERALL  ▃▄▅▆
 ## Install
 
 ```bash
-pip install kubetop
-pip install "kubetop[profiles]"   # optional: enables --profile YAML loading
-pip install -e .                  # local development from this directory
+python -m pip install "git+https://github.com/ken-jo/kutop.git"
+python -m pip install "kubetop[profiles] @ git+https://github.com/ken-jo/kutop.git"
+python -m pip install -e ".[profiles]"   # local development from this directory
 ```
 
-(Pinned deps: `textual==8.2.7`, `rich==15.0.0`. Python 3.9+.)
+This project is installed from GitHub/source for now; the PyPI name `kubetop`
+belongs to a different package. Pinned deps: `textual==8.2.7`, `rich==15.0.0`.
+Python 3.9+.
 
 ## Run
 
