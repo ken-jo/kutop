@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kutop"
-version = "0.2.1"
+version = "0.2.2"
 description = "A btop-like Kubernetes TUI dashboard for pods, nodes, CPU, memory, events, PVC usage, alerts, and health checks."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -60,6 +60,7 @@ classifiers = [
 dependencies = [
     "textual==8.2.7",
     "rich==15.0.0",
+    "pyyaml>=6",
 ]
 
 [project.urls]
@@ -68,7 +69,7 @@ Repository = "https://github.com/ken-jo/kutop"
 Issues = "https://github.com/ken-jo/kutop/issues"
 
 [project.optional-dependencies]
-profiles = ["pyyaml>=6"]
+profiles = []
 test = ["pytest>=8,<9"]
 
 [project.scripts]

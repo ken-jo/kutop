@@ -21,9 +21,9 @@ Resolution order for a :class:`Config` (later wins):
   4. CLI overrides (namespaces, interval, tz, …)
 
 The core runs fully without any profile or user file — defaults give an
-alphabetical, workload-agnostic view. PyYAML is optional for *reading* profiles
-but is needed to load/save a YAML user config; without it kutop still runs on
-defaults + CLI overrides and persists nothing.
+alphabetical, workload-agnostic view. PyYAML is a runtime dependency so the
+published CLI can read YAML profiles and ``~/.config/kutop/config.yaml`` when
+launched via installers such as ``uvx kutop@latest``.
 
 NO module here imports textual — keep it light so the CLI ``--dump-config`` and
 ``--self-test`` paths stay cheap and cluster-free.
@@ -122,8 +122,8 @@ def load_profile(name_or_path: Optional[str]) -> Profile:
         return Profile()
     if not _HAS_YAML:
         raise RuntimeError(
-            "PyYAML is required to load profiles. Install with: pip install pyyaml "
-            "(or run without --profile for the generic view)."
+            "PyYAML is required to load profiles. Reinstall kutop or run without "
+            "--profile for the generic view."
         )
     path = _profile_path(name_or_path)
     if not path:

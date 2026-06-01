@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2 - 2026-06-01
+
+### Changed
+
+- Promote PyYAML from the optional `profiles` extra to a default runtime
+  dependency so `uvx kutop@latest` can read YAML config and profile files without
+  extra install syntax.
+
 ## 0.2.1 - 2026-06-01
 
 ### Fixed
