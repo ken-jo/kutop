@@ -48,7 +48,7 @@ CPU OVERALL  ▁▂▃▅▆▇█  62%  5.1/16        MEM OVERALL  ▃▄▅▆
 python -m pip install kutop
 python -m pip install "kutop[profiles]"   # optional: enables --profile YAML loading
 python -m pip install "kutop[profiles] @ git+https://github.com/ken-jo/kutop.git"
-python -m pip install "kutop @ git+https://github.com/ken-jo/kutop.git@v0.2.0"
+python -m pip install "kutop @ git+https://github.com/ken-jo/kutop.git@v0.2.1"
 python -m pip install -e ".[profiles]"   # local development from this directory
 ```
 

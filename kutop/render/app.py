@@ -401,15 +401,23 @@ class SidebarPanel(Vertical):
                 id="side_sort",
                 allow_blank=False,
             )
-            yield Checkbox("Descending", value=self._sort_desc, id="chk_sort_desc")
-            yield Checkbox("Group by node", value=self._group_by_node, id="chk_group")
+            yield Checkbox("Descending", value=self._sort_desc, id="chk_sort_desc",
+                           compact=True)
+            yield Checkbox("Group by node", value=self._group_by_node, id="chk_group",
+                           compact=True)
             yield Label("PANELS", classes="side_section")
-            yield Checkbox("Summary", value=self._show_summary, id="chk_summary")
-            yield Checkbox("Trends", value=self._show_trends, id="chk_trends")
-            yield Checkbox("Warning Events", value=self._show_events, id="chk_events")
-            yield Checkbox("PVC Storage", value=self._show_pvc, id="chk_pvc")
-            yield Checkbox("Alerts", value=self._show_alerts, id="chk_alerts")
-            yield Checkbox("Health", value=self._show_health, id="chk_health")
+            yield Checkbox("Summary", value=self._show_summary, id="chk_summary",
+                           compact=True)
+            yield Checkbox("Trends", value=self._show_trends, id="chk_trends",
+                           compact=True)
+            yield Checkbox("Warning Events", value=self._show_events, id="chk_events",
+                           compact=True)
+            yield Checkbox("PVC Storage", value=self._show_pvc, id="chk_pvc",
+                           compact=True)
+            yield Checkbox("Alerts", value=self._show_alerts, id="chk_alerts",
+                           compact=True)
+            yield Checkbox("Health", value=self._show_health, id="chk_health",
+                           compact=True)
 
     def on_mount(self) -> None:
         self.update_state(
@@ -439,7 +447,7 @@ class SidebarPanel(Vertical):
         """One Checkbox per known namespace; the namespace is stored in ``name``."""
         for ns in self._ns_options:
             yield Checkbox(ns, value=ns in self._selected, name=ns,
-                           classes=self.NS_CLASS)
+                           classes=self.NS_CLASS, compact=True)
 
     def rebuild_namespaces(self, ns_options: list[str], selected: list[str]) -> None:
         """Repopulate the namespace checkbox list (live discovery / config sync).

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from kutop.config import HealthProbe
 from kutop.model import HealthResult
 from kutop.plugins.health import HealthPlugin
 from kutop.probes import fetch_alerts, scrape_probe, scrape_probes
-from kutop.snapshot import SNAPSHOT_VIEWS, synthetic_snapshot
+from kutop.snapshot import SNAPSHOT_VIEWS, render_snapshot, synthetic_snapshot
 
 
 def test_fetch_alerts_filters_active_alertmanager_payload() -> None:
@@ -87,3 +88,22 @@ def test_synthetic_snapshot_covers_all_documented_panels() -> None:
     assert "main" in SNAPSHOT_VIEWS
     assert "options-panels" in SNAPSHOT_VIEWS
     assert "options-profile" in SNAPSHOT_VIEWS
+
+
+def test_main_snapshot_keeps_sidebar_checkbox_labels_visible(tmp_path: Path) -> None:
+    out = tmp_path / "kutop.svg"
+
+    assert render_snapshot(str(out), size=(120, 40), namespaces=["default"]) == 0
+    svg = out.read_text(encoding="utf-8")
+
+    for label in (
+        "Descending",
+        "Group",
+        "Summary",
+        "Trends",
+        "Warning",
+        "PVC",
+        "Alerts",
+        "Health",
+    ):
+        assert label in svg
