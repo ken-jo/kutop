@@ -408,24 +408,26 @@ class Panel(VerticalScroll):
     def __init__(self, title: str = "", **kwargs) -> None:
         super().__init__(**kwargs)
         self._title = title
+        self._title_label: "Optional[Label]" = None
         self._body: "Optional[Static]" = None
         #: last renderable handed to :meth:`set_body` (kept so callers/tests can
         #: introspect the rendered content without reaching into Static internals).
         self._last_renderable: RenderableType = ""
 
     def compose(self) -> ComposeResult:
+        self._title_label = Label(self._title, classes="kpanel-title")
+        yield self._title_label
         self._body = Static(id=None, classes="kpanel-body")
         yield self._body
 
     def on_mount(self) -> None:
-        # set the border title on the panel (rendered on the top border line)
-        if self._title:
-            self.border_title = self._title
+        pass
 
     def set_title(self, title: str) -> None:
         self._title = title
         try:
-            self.border_title = title
+            label = self._title_label or self.query_one(".kpanel-title", Label)
+            label.update(title)
         except Exception:
             pass
 
