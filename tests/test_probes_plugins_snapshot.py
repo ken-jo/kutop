@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from kutop.config import HealthProbe
+from kutop.fetch import Fetcher
 from kutop.model import HealthResult
 from kutop.plugins.health import HealthPlugin
 from kutop.probes import fetch_alerts, scrape_probe, scrape_probes
@@ -75,6 +76,78 @@ def test_health_plugin_render_seam_updates_custom_panel() -> None:
     HealthPlugin().render(panel, snapshot)
 
     assert panel.rows == [HealthResult(name="api", ok=True, fields={"ready": "true"})]
+
+
+def test_pod_resources_sum_all_containers() -> None:
+    class FakeFetcher(Fetcher):
+        def _run_safe(self, *args: str) -> str:
+            cmd = " ".join(args)
+            if cmd == "top pods -n default --no-headers --containers":
+                return "\n".join(
+                    [
+                        "indexer-indexer-fe app 100m 128Mi",
+                        "indexer-indexer-fe worker 250m 256Mi",
+                        "indexer-indexer-fe sidecar 50m 64Mi",
+                    ]
+                )
+            if cmd == "get pods -n default -o json":
+                return json.dumps(
+                    {
+                        "items": [
+                            {
+                                "metadata": {
+                                    "name": "indexer-indexer-fe",
+                                    "creationTimestamp": "2026-06-02T00:00:00Z",
+                                },
+                                "spec": {
+                                    "containers": [
+                                        {
+                                            "name": "app",
+                                            "resources": {
+                                                "requests": {"cpu": "100m", "memory": "128Mi"},
+                                                "limits": {"cpu": "500m", "memory": "512Mi"},
+                                            },
+                                        },
+                                        {
+                                            "name": "worker",
+                                            "resources": {
+                                                "requests": {"cpu": "200m", "memory": "256Mi"},
+                                                "limits": {"cpu": "1", "memory": "1Gi"},
+                                            },
+                                        },
+                                        {
+                                            "name": "sidecar",
+                                            "resources": {
+                                                "requests": {"cpu": "50m", "memory": "64Mi"},
+                                                "limits": {"cpu": "100m", "memory": "128Mi"},
+                                            },
+                                        },
+                                    ]
+                                },
+                                "status": {
+                                    "phase": "Running",
+                                    "containerStatuses": [
+                                        {"name": "app", "ready": True, "restartCount": 1},
+                                        {"name": "worker", "ready": True, "restartCount": 2},
+                                        {"name": "sidecar", "ready": False, "restartCount": 3},
+                                    ],
+                                },
+                            }
+                        ]
+                    }
+                )
+            return ""
+
+    pod = FakeFetcher(["default"])._fetch_pods()[0]
+
+    assert pod.cpu_mcpu == 400
+    assert pod.mem_mi == 448
+    assert pod.cpu_req_mcpu == 350
+    assert pod.cpu_cap_mcpu == 1600
+    assert pod.mem_req_mi == 448
+    assert pod.mem_cap_mi == 1664
+    assert pod.ready == "2/3"
+    assert pod.restarts == 6
 
 
 def test_synthetic_snapshot_covers_all_documented_panels() -> None:
