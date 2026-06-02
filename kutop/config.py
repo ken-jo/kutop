@@ -7,7 +7,7 @@ Two layers of structure live here:
   ONLY place workload-specific literals (namespaces, pod prefixes, tz, …) live.
 
 * :class:`Config` — the full user-customisable runtime config: which namespaces
-  to watch, refresh interval, theme accent, alert thresholds, which panels are
+  to watch, refresh interval, app theme, alert thresholds, which panels are
   visible, and which table COLUMNS are shown / in what order. Every option here
   is editable at runtime (the Options modal, key ``o``), persisted to
   ``~/.config/kutop/config.yaml``, and dumpable as an annotated skeleton via
@@ -456,7 +456,6 @@ def build_column_registry() -> "dict[str, ColumnSpec]":
 
 
 _VALID_SORT = ("priority", "cpu", "mem", "name")   # legacy sort_mode values
-_VALID_ACCENTS = ("cyan", "green", "magenta", "blue", "yellow", "red", "purple")
 _VALID_SUMMARY_STYLES = ("tiles", "compact")
 
 # NODE/POD name-column width bounds (cells). The column is mouse-resizable; the
@@ -525,7 +524,7 @@ class Config:
     interval: float = 3.0
     timezone: str = ""                  # "" -> host local
     sort_mode: str = "priority"         # legacy: priority|cpu|mem|name (mirrors sort_key)
-    theme_accent: str = "cyan"
+    theme: str = "textual-dark"          # Textual app theme name
     summary_style: str = "compact"      # tiles | compact
     # Width (in cells) of the NODE/POD name column. The cell content (glyph +
     # name + bracketed annotations) is fit to this width and ellipsised only
@@ -610,7 +609,7 @@ class Config:
                 "timezone": self.timezone,
                 "sort_key": self.sort_key,
                 "sort_desc": self.sort_desc,
-                "theme_accent": self.theme_accent,
+                "theme": self.theme,
                 "summary_style": self.summary_style,
                 "group_by_node": self.group_by_node,
                 "name_width": self.name_width,
@@ -697,9 +696,7 @@ def _config_from_dict(d: dict) -> Config:
     sort_mode = sort_key if sort_key in _VALID_SORT else "priority"
     sort_desc = _coerce_bool(view.get("sort_desc"), False)
 
-    accent = str(view.get("theme_accent", "cyan"))
-    if accent not in _VALID_ACCENTS:
-        accent = "cyan"
+    theme = str(view.get("theme", "textual-dark") or "textual-dark")
     summary_style = str(view.get("summary_style", "compact"))
     if summary_style not in _VALID_SUMMARY_STYLES:
         summary_style = "compact"
@@ -742,7 +739,7 @@ def _config_from_dict(d: dict) -> Config:
         sort_mode=sort_mode,
         sort_key=sort_key,
         sort_desc=sort_desc,
-        theme_accent=accent,
+        theme=theme,
         summary_style=summary_style,
         group_by_node=group_by_node,
         name_width=name_width,
@@ -996,7 +993,7 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append(f"  timezone: {tz}          # IANA tz for timestamps; \"\" = host local")
     lines.append(f"  sort_key: {cfg.sort_key}      # sort column: {' | '.join(SORTABLE_KEYS)}")
     lines.append(f"  sort_desc: {b(cfg.sort_desc)}        # reverse sort direction (▼)")
-    lines.append(f"  theme_accent: {cfg.theme_accent}    # {' | '.join(_VALID_ACCENTS)}")
+    lines.append(f"  theme: {cfg.theme}    # app theme; choose from the hamburger menu")
     lines.append(f"  summary_style: {cfg.summary_style}    # {' | '.join(_VALID_SUMMARY_STYLES)} (top header layout)")
     lines.append(f"  group_by_node: {b(cfg.group_by_node)}   # group pods under their node header rows")
     lines.append(f"  name_width: {cfg.name_width}           # NODE/POD column width in cells (drag its right edge to resize; {NAME_WIDTH_MIN}..{NAME_WIDTH_MAX})")

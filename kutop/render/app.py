@@ -53,6 +53,7 @@ from ..model import Pod, Snapshot, fmt_age, age_seconds
 from .widgets import (
     _severity_style,
     OptionsModal,
+    ThemeMenuModal,
     SearchBar,
     SummaryBar,
     TrendGraph,
@@ -108,6 +109,13 @@ class RenderCtx:
         if secs is None:
             return Text("-", style="dim")
         return Text(model.fmt_age(secs), style="")
+
+
+class ThemeHeader(Header):
+    """Header whose hamburger icon opens kutop's theme menu."""
+
+    def _on_click(self) -> None:
+        self.app.action_open_theme_menu()  # type: ignore[attr-defined]
 
 
 # The NODE/POD name cell is fit to the COLUMN WIDTH (Config.name_width, which the
@@ -786,6 +794,8 @@ class TopApp(App):
             )
             config.columns = config.visible_columns()
         self.cfg = config
+        self.theme = self._coerce_theme(self.cfg.theme)
+        self.cfg.theme = self.theme
 
         self.namespaces = list(self.cfg.namespaces)
         self.interval = self.cfg.interval
@@ -861,9 +871,16 @@ class TopApp(App):
             ))
         return out
 
+    def _coerce_theme(self, theme: str) -> str:
+        """Return a valid Textual theme name, falling back to textual-dark."""
+        name = str(theme or "textual-dark")
+        if name in self.available_themes:
+            return name
+        return "textual-dark"
+
     # ── compose ──────────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True, icon="☰")
+        yield ThemeHeader(show_clock=True, icon="☰")
         yield SummaryBar(id="summary_bar")            # CRITERIA #5: SummaryBar composed
         with Horizontal(id="trends"):
             yield TrendGraph("CPU OVERALL", "cpu", id="cpu_trend")   # CRITERIA #5: Sparkline trend
@@ -1530,11 +1547,13 @@ class TopApp(App):
         """Adopt an edited Config: re-render everything live, optionally persist."""
         prev_interval = self.cfg.interval
         prev_ns = list(self.namespaces)
-        prev_accent = self.cfg.theme_accent
         prev_alertmgr = self.cfg.alertmanager_url
         prev_probes = list(self.cfg.health_probes)
 
         self.cfg = cfg
+        cfg.theme = self._coerce_theme(cfg.theme)
+        if self.theme != cfg.theme:
+            self.theme = cfg.theme
         # mirror onto the app fields the legacy toggle/sort paths still use
         self.sort_mode = cfg.sort_mode
         self.show_events = cfg.show_events
@@ -1549,10 +1568,6 @@ class TopApp(App):
         if cfg.alertmanager_url != prev_alertmgr or cfg.health_probes != prev_probes:
             self.fetcher.alertmanager_url = cfg.alertmanager_url
             self.fetcher.health_probes = self._probe_specs(cfg)
-
-        # theme accent change
-        if cfg.theme_accent != prev_accent:
-            self._apply_accent(cfg.theme_accent)
 
         # summary style change -> reflow the header tiles
         sb = self.query_one("#summary_bar", SummaryBar)
@@ -1607,10 +1622,6 @@ class TopApp(App):
         """Adopt an edited Config: re-render everything live + persist."""
         self._adopt_config(cfg, persist=True)
 
-    def preview_config(self, cfg: Config) -> None:
-        """Adopt a temporary Config preview without writing it to disk."""
-        self._adopt_config(cfg, persist=False)
-
     def export_config(self, cfg: Optional[Config] = None) -> Optional[str]:
         """Write the full config skeleton to the user file; return its path."""
         target = cfg or self.cfg
@@ -1622,12 +1633,22 @@ class TopApp(App):
             self.notify(f"export failed: {exc}", severity="error")
             return None
 
-    def _apply_accent(self, accent: str) -> None:
-        """Best-effort live theme accent change."""
+    def preview_theme(self, theme: str) -> None:
+        """Preview a Textual theme without changing saved config."""
+        self.theme = self._coerce_theme(theme)
+
+    def commit_theme(self, theme: str) -> None:
+        """Persist a selected Textual theme."""
+        self.cfg.theme = self._coerce_theme(theme)
+        self.theme = self.cfg.theme
         try:
-            self.theme_variables = {"accent": accent}  # type: ignore[attr-defined]
+            save_config(self.cfg)
         except Exception:
             pass
+
+    def action_open_theme_menu(self) -> None:
+        themes = list(self.available_themes.keys())
+        self.push_screen(ThemeMenuModal(themes, self.theme))
 
     def action_open_options(self) -> None:
         self._sync_cfg_from_app()

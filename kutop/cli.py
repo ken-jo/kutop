@@ -50,8 +50,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--tz", default=None,
                     help="IANA timezone for timestamps (overrides config; '' = local)")
     ap.add_argument("--context", default=None, help="kubeconfig context to use")
-    ap.add_argument("--theme-accent", default=None,
-                    help="accent color (cyan/green/magenta/blue/yellow/red/purple)")
+    ap.add_argument("--theme", default=None,
+                    help="Textual app theme name (also selectable from the hamburger menu)")
     ap.add_argument("--sort", default=None,
                     help="initial sort key (priority/name/cpu/mem/cpu_pct/mem_pct/"
                          "restarts/phase/node/namespace/age)")
@@ -146,8 +146,8 @@ def _cli_overrides(args) -> dict:
     filters: dict = {}
     if args.tz is not None:
         view["timezone"] = args.tz
-    if args.theme_accent is not None:
-        view["theme_accent"] = args.theme_accent
+    if args.theme is not None:
+        view["theme"] = args.theme
     if args.sort is not None:
         view["sort_key"] = args.sort
     if args.sort_desc:

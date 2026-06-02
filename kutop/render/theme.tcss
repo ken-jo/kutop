@@ -434,14 +434,26 @@ OptionsModal {
     height: 1fr;
     width: 100%;
     scrollbar-size-vertical: 1;
-    padding: 0 1;
+    padding: 0 1 1 1;
 }
 
 .opt_section {
     text-style: bold;
     color: $accent;
-    margin-top: 1;
+    margin: 1 0 1 0;
     border-bottom: solid $primary-darken-2;
+}
+
+.opt_field {
+    width: 100%;
+    height: auto;
+    margin: 0 0 1 0;
+}
+
+.opt_label {
+    height: 1;
+    color: $text;
+    text-style: bold;
 }
 
 .opt_hint {
@@ -451,59 +463,62 @@ OptionsModal {
 
 .opt_input {
     width: 100%;
-    height: 3;
-    border: none;
+    height: 1;
+    border-left: tall $primary-darken-2;
     background: $panel;
     padding: 0 1;
+    margin: 0;
+}
+
+.opt_input:focus {
+    border-left: tall $accent;
+    background: $boost;
 }
 
 .opt_pane Select {
     width: 100%;
-    height: 3;
+    height: 1;
     border: none;
-    background: $panel;
-    padding: 0 1;
+    background: transparent;
+    padding: 0;
+    margin: 0;
 }
 
 .opt_pane Select > SelectCurrent {
-    border: none;
+    border-left: tall $primary-darken-2;
     background: $panel;
-    padding: 0;
+    padding: 0 1;
+    height: 1;
 }
 
 .opt_pane Select .down-arrow,
 .opt_pane Select .up-arrow {
     color: $accent;
     background: $panel;
+    border-left: tall $primary-darken-2;
     content-align: center middle;
 }
 
 .opt_pane Select:focus > SelectCurrent {
-    border: none;
-    background: $boost;
-}
-
-.opt_pane Select:focus {
+    border-left: tall $accent;
     background: $boost;
 }
 
 .opt_pane Select:focus .down-arrow,
 .opt_pane Select:focus .up-arrow {
     background: $boost;
+    border-left: tall $accent;
     color: $text;
 }
 
-.opt_pane Checkbox {
+.opt_pane Checkbox,
+.opt_check {
     width: auto;
     height: 1;
     border: none;
     background: transparent;
     margin: 0 0 1 0;
     padding: 0;
-}
-
-.opt_pane Input:focus {
-    background: $boost;
 }
 
 #opt_columns {
@@ -536,6 +551,39 @@ OptionsModal {
     height: 1;
     content-align: center middle;
     color: $success;
+}
+
+/* ── hamburger theme menu ───────────────────────────────────────────────── */
+ThemeMenuModal {
+    align: left top;
+    background: $background 45%;
+}
+
+#theme_menu {
+    offset: 1 1;
+    width: 46;
+    max-height: 24;
+    border: round $accent;
+    background: $surface;
+    padding: 1;
+}
+
+#theme_menu_title {
+    height: 1;
+    color: $accent;
+    text-style: bold;
+}
+
+#theme_menu_hint {
+    height: 1;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#theme_menu_list {
+    height: 1fr;
+    border: none;
+    background: $panel;
 }
 
 /* ── dual-handle threshold sliders (Thresholds tab) ─────────────────────── */

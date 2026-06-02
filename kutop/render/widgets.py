@@ -34,7 +34,6 @@ from textual.widgets.option_list import Option
 
 from ..config import (
     Config,
-    _VALID_ACCENTS,
     _VALID_SUMMARY_STYLES,
     SORTABLE_KEYS,
     _DEFAULT_COLUMN_ORDER,
@@ -749,6 +748,93 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ThemeMenuModal(ModalScreen):
+    """Hamburger menu: Options action plus theme preview/commit rows."""
+
+    BINDINGS = [
+        ("escape", "cancel", "Cancel"),
+        ("enter", "commit", "Apply"),
+    ]
+
+    def __init__(self, themes: list[str], current: str) -> None:
+        super().__init__()
+        self._themes = themes
+        self._original = current
+        self._preview = current
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="theme_menu"):
+            yield Label("MENU", id="theme_menu_title")
+            yield Label("Up/Down previews themes · Enter applies",
+                        id="theme_menu_hint")
+            yield OptionList(id="theme_menu_list")
+
+    def on_mount(self) -> None:
+        ol = self.query_one("#theme_menu_list", OptionList)
+        ol.add_option(Option("⚙  Options / Settings", id="action::options"))
+        ol.add_option(Option("─ themes ─", id="label::themes", disabled=True))
+        for name in self._themes:
+            mark = "[green]●[/]" if name == self._original else "[grey37]○[/]"
+            ol.add_option(Option(f"{mark} {name}", id=f"theme::{name}"))
+        try:
+            ol.highlighted = self._themes.index(self._original) + 2
+        except ValueError:
+            ol.highlighted = 2
+
+    def _theme_from_option(self, opt: Option) -> Optional[str]:
+        oid = opt.id or ""
+        return oid.split("::", 1)[1] if oid.startswith("theme::") else None
+
+    def _highlighted_theme(self) -> Optional[str]:
+        ol = self.query_one("#theme_menu_list", OptionList)
+        if ol.highlighted is None:
+            return None
+        return self._theme_from_option(ol.get_option_at_index(ol.highlighted))
+
+    def on_option_list_option_highlighted(
+        self, event: OptionList.OptionHighlighted
+    ) -> None:
+        name = self._theme_from_option(event.option)
+        if name:
+            self._preview = name
+            self.app.preview_theme(name)  # type: ignore[attr-defined]
+        elif self._preview != self._original:
+            self._preview = self._original
+            self.app.preview_theme(self._original)  # type: ignore[attr-defined]
+
+    def on_option_list_option_selected(
+        self, event: OptionList.OptionSelected
+    ) -> None:
+        oid = event.option.id or ""
+        if oid == "action::options":
+            self.app.preview_theme(self._original)  # type: ignore[attr-defined]
+            self.dismiss("options")
+            self.app.action_open_options()  # type: ignore[attr-defined]
+            return
+        name = self._theme_from_option(event.option)
+        if name:
+            self.app.commit_theme(name)  # type: ignore[attr-defined]
+            self.dismiss(name)
+
+    def action_commit(self) -> None:
+        ol = self.query_one("#theme_menu_list", OptionList)
+        if ol.highlighted is not None:
+            opt = ol.get_option_at_index(ol.highlighted)
+            if (opt.id or "") == "action::options":
+                self.app.preview_theme(self._original)  # type: ignore[attr-defined]
+                self.dismiss("options")
+                self.app.action_open_options()  # type: ignore[attr-defined]
+                return
+        name = self._highlighted_theme() or self._preview
+        if name:
+            self.app.commit_theme(name)  # type: ignore[attr-defined]
+            self.dismiss(name)
+
+    def action_cancel(self) -> None:
+        self.app.preview_theme(self._original)  # type: ignore[attr-defined]
+        self.dismiss(None)
+
+
 # ── Options / Settings modal — the visible config "skeleton" ──────────────────
 
 
@@ -776,8 +862,6 @@ class OptionsModal(ModalScreen):
         super().__init__()
         self._cfg = cfg
         self._reg = build_column_registry()
-        self._committed_accent = cfg.theme_accent
-        self._accent_preview_dirty = False
         # All namespaces we know about for the multi-select: the live cluster
         # discovery (if any), unioned with whatever is currently selected so a
         # config-only namespace is never dropped from the list.
@@ -797,46 +881,50 @@ class OptionsModal(ModalScreen):
                 # View ──────────────────────────────────────────────────────
                 with TabPane("View", id="opt_tab_view"):
                     with VerticalScroll(classes="opt_pane"):
-                        yield Input(value=str(c.interval), placeholder="seconds",
-                                    id="opt_interval", classes="opt_input")
-                        yield Label("  interval (refresh seconds, min 1.0)",
-                                    classes="opt_hint")
-                        yield Select(
-                            [(m, m) for m in SORTABLE_KEYS],
-                            value=c.sort_key, id="opt_sort", allow_blank=False,
-                        )
-                        yield Label("  sort_key (sort by any column; 's' cycles in-app)",
-                                    classes="opt_hint")
+                        with Vertical(classes="opt_field"):
+                            yield Label("interval", classes="opt_label")
+                            yield Input(value=str(c.interval), placeholder="seconds",
+                                        id="opt_interval", classes="opt_input",
+                                        compact=True)
+                            yield Label("refresh seconds, min 1.0", classes="opt_hint")
+                        with Vertical(classes="opt_field"):
+                            yield Label("sort_key", classes="opt_label")
+                            yield Select(
+                                [(m, m) for m in SORTABLE_KEYS],
+                                value=c.sort_key, id="opt_sort", allow_blank=False,
+                                compact=True,
+                            )
+                            yield Label("sort by any column; 's' cycles in-app",
+                                        classes="opt_hint")
                         yield Checkbox("Sort descending (▼)", value=c.sort_desc,
-                                       id="opt_sort_desc")
-                        yield Select(
-                            [(a, a) for a in _VALID_ACCENTS],
-                            value=c.theme_accent, id="opt_accent", allow_blank=False,
-                        )
-                        yield Label(
-                            "  theme_accent (borders, section titles, focus)",
-                            classes="opt_hint",
-                        )
-                        yield Select(
-                            [(s, s) for s in _VALID_SUMMARY_STYLES],
-                            value=c.summary_style, id="opt_summary_style",
-                            allow_blank=False,
-                        )
-                        yield Label("  summary_style (top header layout)",
-                                    classes="opt_hint")
+                                       id="opt_sort_desc", classes="opt_check",
+                                       compact=True)
+                        with Vertical(classes="opt_field"):
+                            yield Label("summary_style", classes="opt_label")
+                            yield Select(
+                                [(s, s) for s in _VALID_SUMMARY_STYLES],
+                                value=c.summary_style, id="opt_summary_style",
+                                allow_blank=False, compact=True,
+                            )
+                            yield Label("top header layout", classes="opt_hint")
                         yield Checkbox("Group pods by node (topology)",
-                                       value=c.group_by_node, id="opt_group_by_node")
+                                       value=c.group_by_node, id="opt_group_by_node",
+                                       classes="opt_check", compact=True)
 
                         # Filters live alongside View (which pods the table shows)
                         yield Label("FILTERS", classes="opt_section")
-                        yield Input(value=c.name_filter, id="opt_name_filter",
-                                    classes="opt_input", placeholder="name substring")
-                        yield Label("  name_filter (case-insensitive substring)",
-                                    classes="opt_hint")
+                        with Vertical(classes="opt_field"):
+                            yield Label("name_filter", classes="opt_label")
+                            yield Input(value=c.name_filter, id="opt_name_filter",
+                                        classes="opt_input", placeholder="name substring",
+                                        compact=True)
+                            yield Label("case-insensitive substring", classes="opt_hint")
                         yield Checkbox("Hide completed (Succeeded/Completed) pods",
-                                       value=c.hide_completed, id="opt_hide_completed")
+                                       value=c.hide_completed, id="opt_hide_completed",
+                                       classes="opt_check", compact=True)
                         yield Checkbox("Only problems (non-Running / restarts>0 / oom)",
-                                       value=c.only_problems, id="opt_only_problems")
+                                       value=c.only_problems, id="opt_only_problems",
+                                       classes="opt_check", compact=True)
 
                 # Columns ───────────────────────────────────────────────────
                 with TabPane("Columns", id="opt_tab_columns"):
@@ -854,18 +942,25 @@ class OptionsModal(ModalScreen):
                 with TabPane("Panels", id="opt_tab_panels"):
                     with VerticalScroll(classes="opt_pane"):
                         yield Checkbox("Summary bar", value=c.show_summary,
-                                       id="opt_p_summary")
+                                       id="opt_p_summary", classes="opt_check",
+                                       compact=True)
                         yield Checkbox("Trend graphs", value=c.show_trends,
-                                       id="opt_p_trends")
+                                       id="opt_p_trends", classes="opt_check",
+                                       compact=True)
                         yield Checkbox("Pod table", value=c.show_podtable,
-                                       id="opt_p_podtable")
+                                       id="opt_p_podtable", classes="opt_check",
+                                       compact=True)
                         yield Checkbox("Warning events", value=c.show_events,
-                                       id="opt_p_events")
-                        yield Checkbox("PVC storage", value=c.show_pvc, id="opt_p_pvc")
+                                       id="opt_p_events", classes="opt_check",
+                                       compact=True)
+                        yield Checkbox("PVC storage", value=c.show_pvc, id="opt_p_pvc",
+                                       classes="opt_check", compact=True)
                         yield Checkbox("Alerts (AlertManager)", value=c.show_alerts,
-                                       id="opt_p_alerts")
+                                       id="opt_p_alerts", classes="opt_check",
+                                       compact=True)
                         yield Checkbox("Health row (workload probes)",
-                                       value=c.show_health, id="opt_p_health")
+                                       value=c.show_health, id="opt_p_health",
+                                       classes="opt_check", compact=True)
 
                 # Thresholds ─────────────────────────────────────────────────
                 with TabPane("Thresholds", id="opt_tab_thresholds"):
@@ -894,10 +989,13 @@ class OptionsModal(ModalScreen):
                         yield Label("  namespaces (space toggles; multi-select)",
                                     classes="opt_hint")
                         yield OptionList(id="opt_namespaces")
-                        yield Input(value=c.context, id="opt_context",
-                                    classes="opt_input", placeholder="kube context")
-                        yield Label("  context (kubeconfig context; blank = current)",
-                                    classes="opt_hint")
+                        with Vertical(classes="opt_field"):
+                            yield Label("context", classes="opt_label")
+                            yield Input(value=c.context, id="opt_context",
+                                        classes="opt_input", placeholder="kube context",
+                                        compact=True)
+                            yield Label("kubeconfig context; blank = current",
+                                        classes="opt_hint")
 
                 # Profile (read-only) + cluster-linked probes ────────────────
                 with TabPane("Profile", id="opt_tab_profile"):
@@ -906,11 +1004,13 @@ class OptionsModal(ModalScreen):
                                     classes="opt_hint", id="opt_profile_lbl")
                         yield Label("PROBES  (cluster-linked; opt-in)",
                                     classes="opt_section")
-                        yield Input(value=c.alertmanager_url, id="opt_alertmanager_url",
-                                    classes="opt_input",
-                                    placeholder="http://…/api/v2/alerts")
-                        yield Label("  alertmanager_url (blank = alerts panel hidden)",
-                                    classes="opt_hint")
+                        with Vertical(classes="opt_field"):
+                            yield Label("alertmanager_url", classes="opt_label")
+                            yield Input(value=c.alertmanager_url, id="opt_alertmanager_url",
+                                        classes="opt_input",
+                                        placeholder="http://…/api/v2/alerts",
+                                        compact=True)
+                            yield Label("blank = alerts panel hidden", classes="opt_hint")
                         hp_n = len(c.health_probes)
                         yield Label(
                             f"  health_probes: {hp_n} configured "
@@ -1013,76 +1113,7 @@ class OptionsModal(ModalScreen):
     # ── apply + persist ───────────────────────────────────────────────────
     def _apply(self) -> None:
         """Push the working config to the app (live re-render + persist)."""
-        if not self._accent_preview_dirty:
-            self.app.apply_config(self._cfg)  # type: ignore[attr-defined]
-            return
-
-        preview_accent = self._cfg.theme_accent
-        self._cfg.theme_accent = self._committed_accent
         self.app.apply_config(self._cfg)  # type: ignore[attr-defined]
-        self._cfg.theme_accent = preview_accent
-        try:
-            self.app._apply_accent(preview_accent)  # type: ignore[attr-defined]
-            self.app.preview_config(self._cfg)  # type: ignore[attr-defined]
-        except AttributeError:
-            pass
-
-    def _preview_accent(self, accent: str) -> None:
-        """Preview an accent in-place; Enter commits, ESC/close restores."""
-        if accent not in _VALID_ACCENTS:
-            return
-        self._cfg.theme_accent = accent
-        self._accent_preview_dirty = accent != self._committed_accent
-        try:
-            self.app._apply_accent(accent)  # type: ignore[attr-defined]
-        except AttributeError:
-            pass
-        try:
-            self.app.preview_config(self._cfg)  # type: ignore[attr-defined]
-        except AttributeError:
-            self.app.apply_config(self._cfg)  # type: ignore[attr-defined]
-        self._set_status("theme preview: Enter to apply, Esc to restore")
-
-    def _set_accent_select(self, accent: str) -> None:
-        try:
-            sel = self.query_one("#opt_accent", Select)
-            sel.value = accent
-        except Exception:
-            pass
-
-    def _cycle_accent(self, delta: int) -> None:
-        current = self._cfg.theme_accent
-        try:
-            idx = _VALID_ACCENTS.index(current)
-        except ValueError:
-            idx = 0
-        accent = _VALID_ACCENTS[(idx + delta) % len(_VALID_ACCENTS)]
-        self._set_accent_select(accent)
-        self._preview_accent(accent)
-
-    def _commit_accent_preview(self) -> None:
-        if not self._accent_preview_dirty:
-            return
-        self._committed_accent = self._cfg.theme_accent
-        self._accent_preview_dirty = False
-        self._apply()
-        self._set_status("theme applied")
-
-    def _restore_accent_preview(self) -> None:
-        if not self._accent_preview_dirty:
-            return
-        self._cfg.theme_accent = self._committed_accent
-        self._accent_preview_dirty = False
-        self._set_accent_select(self._committed_accent)
-        try:
-            self.app._apply_accent(self._committed_accent)  # type: ignore[attr-defined]
-        except AttributeError:
-            pass
-        try:
-            self.app.preview_config(self._cfg)  # type: ignore[attr-defined]
-        except AttributeError:
-            self.app.apply_config(self._cfg)  # type: ignore[attr-defined]
-        self._set_status("theme restored")
 
     def _set_status(self, msg: str) -> None:
         try:
@@ -1117,10 +1148,6 @@ class OptionsModal(ModalScreen):
             self._cfg.sort_mode = (str(event.value)
                                    if str(event.value) in ("priority", "cpu", "mem", "name")
                                    else "priority")
-        elif event.select.id == "opt_accent":
-            self._preview_accent(str(event.value))
-            event.stop()
-            return
         elif event.select.id == "opt_summary_style":
             self._cfg.summary_style = str(event.value)
         self._apply()
@@ -1210,20 +1237,6 @@ class OptionsModal(ModalScreen):
             if event.key == "space":
                 self._toggle_ns()
                 event.stop()
-        elif focused is not None and focused.id == "opt_accent":
-            if event.key in ("up", "left"):
-                self._cycle_accent(-1)
-                event.stop()
-            elif event.key in ("down", "right"):
-                self._cycle_accent(1)
-                event.stop()
-            elif event.key == "enter":
-                self._commit_accent_preview()
-                event.stop()
-            elif event.key == "escape":
-                self._restore_accent_preview()
-                event.stop()
 
     def action_close(self) -> None:
-        self._restore_accent_preview()
         self.dismiss()
