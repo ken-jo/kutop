@@ -1732,8 +1732,7 @@ class TopApp(App):
             pass
 
     def action_open_theme_menu(self) -> None:
-        themes = self._theme_options()
-        self.push_screen(ThemeMenuModal(themes, self.theme))
+        self.push_screen(ThemeMenuModal())
 
     def action_open_options(self) -> None:
         self._sync_cfg_from_app()

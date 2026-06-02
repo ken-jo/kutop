@@ -159,38 +159,6 @@ def test_app_applies_previews_and_persists_real_theme(monkeypatch) -> None:
     assert saved[-1]["view"]["theme"] == "monokai"
 
 
-def test_theme_menu_arrow_preview_and_escape_restore(monkeypatch) -> None:
-    from kutop.render.app import TopApp
-
-    monkeypatch.setattr("kutop.render.app.save_config", lambda cfg: "/tmp/kutop-config.yaml")
-
-    async def drive() -> None:
-        app = TopApp(
-            ["default"],
-            config=Config(theme="textual-dark"),
-            discover_namespaces=False,
-            auto_refresh=False,
-        )
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            app.action_open_theme_menu()
-            await pilot.pause()
-
-            await pilot.press("down")
-            await pilot.pause()
-            assert app.theme == "textual-light"
-            assert app.cfg.theme == "textual-dark"
-
-            await pilot.press("escape")
-            await pilot.pause()
-            assert app.theme == "textual-dark"
-            assert app.cfg.theme == "textual-dark"
-
-            await pilot.exit(None)
-
-    asyncio.run(drive())
-
-
 def test_header_hamburger_opens_kutop_menu() -> None:
     from kutop.render.app import ThemeHeaderIcon, TopApp
 
@@ -215,9 +183,8 @@ def test_header_hamburger_opens_kutop_menu() -> None:
     asyncio.run(drive())
 
 
-def test_theme_menu_has_options_action_and_hover_preview(monkeypatch) -> None:
+def test_theme_menu_has_native_actions_and_no_theme_rows(monkeypatch) -> None:
     from kutop.render.app import TopApp
-    from kutop.render.widgets import ThemeMenuList
 
     monkeypatch.setattr("kutop.render.app.save_config", lambda cfg: "/tmp/kutop-config.yaml")
 
@@ -233,17 +200,14 @@ def test_theme_menu_has_options_action_and_hover_preview(monkeypatch) -> None:
             app.action_open_theme_menu()
             await pilot.pause()
 
-            menu = app.screen.query_one("#theme_menu_list", ThemeMenuList)
+            from textual.widgets import OptionList
+            menu = app.screen.query_one("#theme_menu_list", OptionList)
             option_ids = [opt.id for opt in menu.options]
             assert "action::keys" in option_ids
             assert "action::screenshot" in option_ids
             assert "action::quit" in option_ids
             assert "action::options" in option_ids
-
-            menu._mouse_hovering_over = 6
-            await pilot.pause()
-            assert app.theme == "textual-light"
-            assert app.cfg.theme == "textual-dark"
+            assert not any(str(oid).startswith("theme::") for oid in option_ids)
 
             await pilot.exit(None)
 

@@ -750,44 +750,19 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class ThemeMenuList(OptionList):
-    """OptionList that reports mouse hover for theme preview."""
-
-    class Preview(Message):
-        def __init__(self, option: Option) -> None:
-            super().__init__()
-            self.option = option
-
-    def watch__mouse_hovering_over(self, option_index: Optional[int]) -> None:
-        if option_index is None:
-            return
-        if not 0 <= option_index < self.option_count:
-            return
-        opt = self.get_option_at_index(option_index)
-        if not opt.disabled:
-            self.post_message(self.Preview(opt))
-
-
 class ThemeMenuModal(ModalScreen):
-    """Hamburger menu: Options action plus theme preview/commit rows."""
+    """Hamburger menu with native actions and Options entry."""
 
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
         ("enter", "commit", "Apply"),
     ]
 
-    def __init__(self, themes: list[str], current: str) -> None:
-        super().__init__()
-        self._themes = themes
-        self._original = current
-        self._preview = current
-
     def compose(self) -> ComposeResult:
         with Vertical(id="theme_menu"):
             yield Label("MENU", id="theme_menu_title")
-            yield Label("Up/Down previews themes · Enter applies",
-                        id="theme_menu_hint")
-            yield ThemeMenuList(id="theme_menu_list")
+            yield Label("Keys · Screenshot · Quit · Options", id="theme_menu_hint")
+            yield OptionList(id="theme_menu_list")
 
     def on_mount(self) -> None:
         ol = self.query_one("#theme_menu_list", OptionList)
@@ -795,54 +770,14 @@ class ThemeMenuModal(ModalScreen):
         ol.add_option(Option("Screenshot", id="action::screenshot"))
         ol.add_option(Option("Quit", id="action::quit"))
         ol.add_option(Option("Options / Settings", id="action::options"))
-        ol.add_option(Option("─ themes ─", id="label::themes", disabled=True))
-        for name in self._themes:
-            mark = "[green]●[/]" if name == self._original else "[grey37]○[/]"
-            ol.add_option(Option(f"{mark} {name}", id=f"theme::{name}"))
-        try:
-            ol.highlighted = self._themes.index(self._original) + 5
-        except ValueError:
-            ol.highlighted = 5
-
-    def _theme_from_option(self, opt: Option) -> Optional[str]:
-        oid = opt.id or ""
-        return oid.split("::", 1)[1] if oid.startswith("theme::") else None
-
-    def _highlighted_theme(self) -> Optional[str]:
-        ol = self.query_one("#theme_menu_list", OptionList)
-        if ol.highlighted is None:
-            return None
-        return self._theme_from_option(ol.get_option_at_index(ol.highlighted))
-
-    def on_option_list_option_highlighted(
-        self, event: OptionList.OptionHighlighted
-    ) -> None:
-        name = self._theme_from_option(event.option)
-        if name:
-            self._preview = name
-            self.app.preview_theme(name)  # type: ignore[attr-defined]
-        elif self._preview != self._original:
-            self._preview = self._original
-            self.app.preview_theme(self._original)  # type: ignore[attr-defined]
-
-    def on_theme_menu_list_preview(self, event: ThemeMenuList.Preview) -> None:
-        name = self._theme_from_option(event.option)
-        if name:
-            self._preview = name
-            self.app.preview_theme(name)  # type: ignore[attr-defined]
+        ol.highlighted = 0
 
     def on_option_list_option_selected(
         self, event: OptionList.OptionSelected
     ) -> None:
         oid = event.option.id or ""
         if oid.startswith("action::"):
-            self.app.preview_theme(self._original)  # type: ignore[attr-defined]
             self._run_action(oid)
-            return
-        name = self._theme_from_option(event.option)
-        if name:
-            self.app.commit_theme(name)  # type: ignore[attr-defined]
-            self.dismiss(name)
 
     def action_commit(self) -> None:
         ol = self.query_one("#theme_menu_list", OptionList)
@@ -850,16 +785,9 @@ class ThemeMenuModal(ModalScreen):
             opt = ol.get_option_at_index(ol.highlighted)
             oid = opt.id or ""
             if oid.startswith("action::"):
-                self.app.preview_theme(self._original)  # type: ignore[attr-defined]
                 self._run_action(oid)
-                return
-        name = self._highlighted_theme() or self._preview
-        if name:
-            self.app.commit_theme(name)  # type: ignore[attr-defined]
-            self.dismiss(name)
 
     def action_cancel(self) -> None:
-        self.app.preview_theme(self._original)  # type: ignore[attr-defined]
         self.dismiss(None)
 
     def _run_action(self, oid: str) -> None:
