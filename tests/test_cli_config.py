@@ -414,7 +414,10 @@ def test_interval_indicator_sits_left_of_clock_and_tracks_value() -> None:
             clock = app.query_one(HeaderClock)
             # btop placement: docked to the LEFT of the header clock
             assert ind.region.x < clock.region.x
-            assert "2s" in ind.render().plain  # 2.0 -> "2s" via :g
+            # '-' and '+' flank the value (btop-style), spinner kept
+            plain = ind.render().plain
+            assert "⟳" in plain
+            assert plain.index("-") < plain.index("2s") < plain.index("+")
             await pilot.exit(None)
 
     asyncio.run(drive())
@@ -441,6 +444,44 @@ def test_interval_nudge_keys_clamp_and_update() -> None:
             assert abs(app.cfg.interval - 1.1) < 1e-9
             ind = app.query_one("#interval_indicator", IntervalIndicator)
             assert "1.1s" in ind.render().plain
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_options_interval_is_stepper_and_syncs_app_and_header() -> None:
+    from textual.widgets import Button, Static
+
+    from kutop.render.app import IntervalIndicator, TopApp
+    from kutop.render.widgets import OptionsModal
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(interval=2.0),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+            modal = app.screen
+            assert isinstance(modal, OptionsModal)
+            # interval is now a +/- stepper, not a free text Input
+            assert list(modal.query("#opt_interval_value"))
+            assert not list(modal.query("#opt_interval"))
+            assert list(modal.query("#opt_interval_up"))
+            assert list(modal.query("#opt_interval_down"))
+
+            # press '+' once: 2.0 -> 2.1, and the change reaches the app + header
+            modal.query_one("#opt_interval_up", Button).press()
+            await pilot.pause()
+            assert abs(app.cfg.interval - 2.1) < 1e-9
+            assert abs(app.interval - 2.1) < 1e-9
+            assert "2.1s" in modal.query_one("#opt_interval_value", Static).render().plain
+            ind = app.query_one("#interval_indicator", IntervalIndicator)
+            assert "2.1s" in ind.render().plain
             await pilot.exit(None)
 
     asyncio.run(drive())

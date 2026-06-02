@@ -475,6 +475,23 @@ def clamp_name_width(v) -> int:
     return max(NAME_WIDTH_MIN, min(NAME_WIDTH_MAX, n))
 
 
+# Refresh-interval bounds, shared by the header +/- control and the Options
+# stepper so both adjust the cadence with identical semantics.
+INTERVAL_MIN = 1.0      # seconds; floor avoids hammering the kube API
+INTERVAL_MAX = 60.0
+INTERVAL_STEP = 0.1     # 100 ms per +/- step (btop-style)
+INTERVAL_DEFAULT = 3.0
+
+
+def clamp_interval(v) -> float:
+    """Coerce ``v`` to a float, clamp into the INTERVAL bounds, round to 100 ms."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        f = INTERVAL_DEFAULT
+    return round(max(INTERVAL_MIN, min(INTERVAL_MAX, f)), 1)
+
+
 def default_visible_columns() -> list:
     """Return the built-in visible table columns in default display order."""
     reg = build_column_registry()

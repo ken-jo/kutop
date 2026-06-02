@@ -46,11 +46,13 @@ from textual.screen import ModalScreen
 from .. import model
 from ..config import (
     Config,
+    INTERVAL_STEP,
     Profile,
     SORTABLE_KEYS,
     SORT_KEY_TO_COLUMN,
     COLUMN_TO_SORT_KEY,
     build_column_registry,
+    clamp_interval,
     load_config,
     save_config,
 )
@@ -1724,7 +1726,7 @@ class TopApp(App):
             if idx is not None:
                 self._apply_name_width(mt, idx)
 
-        # interval change -> reset the timer
+        # interval change -> reset the timer and re-sync the header readout
         if abs(cfg.interval - prev_interval) > 1e-9:
             self.interval = cfg.interval
             try:
@@ -1732,6 +1734,7 @@ class TopApp(App):
             except Exception:
                 pass
             self._refresh_timer = self.set_interval(self.interval, self.refresh_snapshot)
+            self._update_interval_indicator()
 
         self.apply_panel_visibility()
         self._sync_sidebar_state()
@@ -1941,22 +1944,16 @@ class TopApp(App):
         self.notify("refreshing...")
 
     # ── refresh-cadence control (btop-style +/- in 100 ms steps) ──────────────
-    _INTERVAL_STEP = 0.1   # 100 ms per key press
-    _INTERVAL_MIN = 1.0    # floor: avoid hammering the kube API
-    _INTERVAL_MAX = 60.0
-
     def action_interval_up(self) -> None:
         """Slower refresh (+100 ms)."""
-        self._nudge_interval(self._INTERVAL_STEP)
+        self._nudge_interval(INTERVAL_STEP)
 
     def action_interval_down(self) -> None:
         """Faster refresh (-100 ms)."""
-        self._nudge_interval(-self._INTERVAL_STEP)
+        self._nudge_interval(-INTERVAL_STEP)
 
     def _nudge_interval(self, delta: float) -> None:
-        new = round(
-            max(self._INTERVAL_MIN, min(self._INTERVAL_MAX, self.interval + delta)), 1
-        )
+        new = clamp_interval(self.interval + delta)
         if abs(new - self.interval) < 1e-9:
             return  # already at the clamp edge
         self.interval = new
@@ -1974,15 +1971,22 @@ class TopApp(App):
         self._persist_state()
 
     def _update_interval_indicator(self) -> None:
-        """Keep the top-right header readout in sync with ``self.interval``."""
+        """Keep the top-right header readout in sync with ``self.interval``.
+
+        Renders ``⟳ - <value> +`` with clickable ``-``/``+`` flanking the value
+        (btop-style); the spinner glyph stays put.
+        """
         try:
             indicator = self.query_one("#interval_indicator", Static)
         except Exception:
             return
-        text = Text()
-        text.append("⟳ ", style="dim")
-        text.append(f"{self.interval:g}s", style="bold cyan")
-        indicator.update(text)
+        value = f"{self.interval:g}s"
+        indicator.update(
+            "⟳ "
+            "[@click=app.interval_down][b]-[/b][/] "
+            f"[b cyan]{value}[/] "
+            "[@click=app.interval_up][b]+[/b][/]"
+        )
 
     def action_cycle_sort(self) -> None:
         """Cycle the active sort_key through every sortable column."""

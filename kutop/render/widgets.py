@@ -34,10 +34,12 @@ from textual.widgets.option_list import Option
 
 from ..config import (
     Config,
+    INTERVAL_STEP,
     _VALID_SUMMARY_STYLES,
     SORTABLE_KEYS,
     _DEFAULT_COLUMN_ORDER,
     build_column_registry,
+    clamp_interval,
 )
 from ..model import Summary
 
@@ -977,10 +979,16 @@ class OptionsModal(ModalScreen):
                     with VerticalScroll(classes="opt_pane"):
                         with Vertical(classes="opt_field"):
                             yield Label("interval", classes="opt_label")
-                            yield Input(value=str(c.interval), placeholder="seconds",
-                                        id="opt_interval", classes="opt_input",
-                                        compact=True)
-                            yield Label("refresh seconds, min 1.0", classes="opt_hint")
+                            with Horizontal(classes="opt_stepper"):
+                                yield Button("-", id="opt_interval_down",
+                                             classes="opt_step_btn", compact=True)
+                                yield Static(self._interval_label(c.interval),
+                                             id="opt_interval_value",
+                                             classes="opt_step_value")
+                                yield Button("+", id="opt_interval_up",
+                                             classes="opt_step_btn", compact=True)
+                            yield Label("refresh seconds · 100 ms steps · 1.0–60.0",
+                                        classes="opt_hint")
                         with Vertical(classes="opt_field"):
                             yield Label("sort_key", classes="opt_label")
                             yield Select(
@@ -1231,6 +1239,24 @@ class OptionsModal(ModalScreen):
             return
         self.app.apply_config(self._cfg)  # type: ignore[attr-defined]
 
+    # ── interval stepper (btop-style +/-, mirrors the header control) ─────────
+    @staticmethod
+    def _interval_label(value: float) -> str:
+        return f"{value:g}s"
+
+    def _nudge_interval(self, delta: float) -> None:
+        new = clamp_interval(self._cfg.interval + delta)
+        if abs(new - self._cfg.interval) < 1e-9:
+            return  # already at the clamp edge
+        self._cfg.interval = new
+        try:
+            self.query_one("#opt_interval_value", Static).update(
+                self._interval_label(new)
+            )
+        except Exception:
+            pass
+        self._apply()
+
     def _set_theme_select(self, theme: str) -> None:
         try:
             self.query_one("#opt_theme", Select).value = theme
@@ -1330,9 +1356,7 @@ class OptionsModal(ModalScreen):
         iid = inp.id or ""
         val = inp.value
         try:
-            if iid == "opt_interval":
-                self._cfg.interval = max(1.0, float(val or "3"))
-            elif iid == "opt_alertmanager_url":
+            if iid == "opt_alertmanager_url":
                 self._cfg.alertmanager_url = val.strip()
             # thresholds are edited via DualThresholdSlider (Thresholds tab),
             # not numeric inputs — see on_dual_threshold_slider_threshold_changed.
@@ -1391,7 +1415,11 @@ class OptionsModal(ModalScreen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
-        if bid == "opt_col_toggle":
+        if bid == "opt_interval_down":
+            self._nudge_interval(-INTERVAL_STEP)
+        elif bid == "opt_interval_up":
+            self._nudge_interval(INTERVAL_STEP)
+        elif bid == "opt_col_toggle":
             self._toggle_col()
         elif bid == "opt_col_up":
             self._move_col(-1)
