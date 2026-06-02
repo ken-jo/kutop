@@ -586,7 +586,6 @@ class SidebarPanel(Vertical):
         try:
             ns_count = len([n for n in selected if n])
             ctx = self._context_name or "current"
-            filt = self._name_filter or "no filter"
             direction = "desc" if self._sort_desc else "asc"
             status = Text()
             status.append("ns=", style="dim")
@@ -599,8 +598,11 @@ class SidebarPanel(Vertical):
             status.append(self._sort_key, style="bold magenta")
             status.append(" | dir=", style="dim")
             status.append(direction, style="bold yellow")
-            status.append("\nfilter=", style="dim")
-            status.append(filt[:22], style=("bold" if self._name_filter else "dim"))
+            # only show the filter line when a filter is active, so the common
+            # case stays 3 lines and leaves more room for the panel toggles
+            if self._name_filter:
+                status.append("\nfilter=", style="dim")
+                status.append(self._name_filter[:22], style="bold")
             self.query_one("#side_status", Static).update(status)
         except Exception:
             pass

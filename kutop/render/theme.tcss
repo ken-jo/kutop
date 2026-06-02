@@ -254,12 +254,13 @@ Screen.-panel-backgrounds-on TrendGraph {
 }
 
 #side_status {
-    height: 6;
+    height: auto;
     width: 100%;
-    border: solid $primary-darken-2;
     background: $background;
     padding: 0 1;
-    margin-bottom: 1;
+    /* a single rule line instead of a full box-in-box inside the panel border */
+    border-bottom: solid $primary-darken-2;
+    margin-bottom: 0;
 }
 
 /* BUG FIX #3: scroll the sidebar body so SORT BY / PANELS stay reachable on
@@ -272,7 +273,7 @@ Screen.-panel-backgrounds-on TrendGraph {
 
 .side_section {
     text-style: bold;
-    margin-top: 1;
+    margin-top: 0;
     color: $accent;
 }
 
@@ -281,7 +282,7 @@ Screen.-panel-backgrounds-on TrendGraph {
  * namespaces never push the lower controls (SORT BY / PANELS) off-screen. */
 #side_ns_box {
     height: auto;
-    max-height: 10;
+    max-height: 7;
     width: 100%;
     border: solid $primary-darken-2;
     scrollbar-size-vertical: 1;
