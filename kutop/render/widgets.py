@@ -30,6 +30,7 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
+from textual.widgets._select import SelectCurrent, SelectOverlay
 from textual.widgets.option_list import Option
 
 from ..config import (
@@ -835,6 +836,39 @@ class ThemeMenuModal(ModalScreen):
         self.dismiss(None)
 
 
+class ThemePreviewOverlay(SelectOverlay):
+    """Select overlay that exposes highlight/escape as theme preview events."""
+
+    class Preview(Message):
+        def __init__(self, overlay: "ThemePreviewOverlay", option_index: int) -> None:
+            super().__init__()
+            self.overlay = overlay
+            self.option_index = option_index
+
+    class Restore(Message):
+        pass
+
+    def on_option_list_option_highlighted(
+        self, event: OptionList.OptionHighlighted
+    ) -> None:
+        event.stop()
+        self.post_message(self.Preview(self, event.option_index))
+
+    def action_dismiss(self) -> None:
+        self.post_message(self.Restore())
+        super().action_dismiss()
+
+
+class ThemePreviewSelect(Select):
+    """A normal Select whose open menu previews highlighted theme rows."""
+
+    def compose(self) -> ComposeResult:
+        yield SelectCurrent(self.prompt)
+        yield ThemePreviewOverlay(type_to_search=self._type_to_search).data_bind(
+            compact=Select.compact
+        )
+
+
 # ── Options / Settings modal — the visible config "skeleton" ──────────────────
 
 
@@ -918,7 +952,7 @@ class OptionsModal(ModalScreen):
                                        compact=True)
                         with Vertical(classes="opt_field"):
                             yield Label("theme", classes="opt_label")
-                            yield Select(
+                            yield ThemePreviewSelect(
                                 [(name, name) for name in self._themes],
                                 value=c.theme, id="opt_theme", allow_blank=False,
                                 compact=True,
@@ -1171,16 +1205,6 @@ class OptionsModal(ModalScreen):
         else:
             self._set_status("")
 
-    def _cycle_theme(self, delta: int) -> None:
-        current = self._preview_theme_name
-        try:
-            idx = self._themes.index(current)
-        except ValueError:
-            idx = 0
-        theme = self._themes[(idx + delta) % len(self._themes)]
-        self._set_theme_select(theme)
-        self._preview_theme(theme)
-
     def _commit_theme_preview(self) -> None:
         if not self._theme_preview_dirty:
             return
@@ -1237,7 +1261,8 @@ class OptionsModal(ModalScreen):
                                    if str(event.value) in ("priority", "cpu", "mem", "name")
                                    else "priority")
         elif event.select.id == "opt_theme":
-            self._preview_theme(str(event.value))
+            self._preview_theme_name = str(event.value)
+            self._commit_theme_preview()
             event.stop()
             return
         elif event.select.id == "opt_context":
@@ -1296,6 +1321,25 @@ class OptionsModal(ModalScreen):
     ) -> None:
         pass  # highlight only; toggle/move via buttons or keys
 
+    def on_theme_preview_overlay_preview(
+        self, event: ThemePreviewOverlay.Preview
+    ) -> None:
+        select = event.overlay.parent
+        if select is None or select.id != "opt_theme":
+            return
+        try:
+            theme = str(select._options[event.option_index][1])  # type: ignore[attr-defined]
+        except Exception:
+            return
+        self._preview_theme(theme)
+
+    def on_theme_preview_overlay_restore(
+        self, event: ThemePreviewOverlay.Restore
+    ) -> None:
+        if self._theme_preview_dirty:
+            self._restore_theme_preview()
+            event.stop()
+
     def on_option_list_option_selected(
         self, event: OptionList.OptionSelected
     ) -> None:
@@ -1334,19 +1378,6 @@ class OptionsModal(ModalScreen):
         elif focused is not None and focused.id == "opt_namespaces":
             if event.key == "space":
                 self._toggle_ns()
-                event.stop()
-        elif focused is not None and focused.id == "opt_theme":
-            if event.key in ("up", "left"):
-                self._cycle_theme(-1)
-                event.stop()
-            elif event.key in ("down", "right"):
-                self._cycle_theme(1)
-                event.stop()
-            elif event.key == "enter":
-                self._commit_theme_preview()
-                event.stop()
-            elif event.key == "escape":
-                self._restore_theme_preview()
                 event.stop()
 
     def action_close(self) -> None:

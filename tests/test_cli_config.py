@@ -218,6 +218,8 @@ def test_options_modal_theme_preview_enter_persists(monkeypatch) -> None:
             select = app.screen.query_one("#opt_theme", Select)
             select.focus()
 
+            await pilot.press("enter")
+            await pilot.pause()
             await pilot.press("down")
             await pilot.pause()
             assert app.theme == "textual-light"
@@ -263,6 +265,8 @@ def test_options_modal_theme_escape_restores_without_persist(monkeypatch) -> Non
             select = app.screen.query_one("#opt_theme", Select)
             select.focus()
 
+            await pilot.press("enter")
+            await pilot.pause()
             await pilot.press("down")
             await pilot.pause()
             await pilot.press("escape")
