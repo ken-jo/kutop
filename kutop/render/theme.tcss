@@ -223,27 +223,11 @@ Screen.-panel-backgrounds-on TrendGraph {
     border-title-background: $surface;
 }
 
-.trend-spark {
-    height: 3;
-}
-
-.trend-spark.cpu > .sparkline--max-color {
-    color: $success;
-}
-.trend-spark.cpu > .sparkline--min-color {
-    color: $success-darken-2;
-}
-.trend-spark.mem > .sparkline--max-color {
-    color: $secondary;
-}
-.trend-spark.mem > .sparkline--min-color {
-    color: $secondary-darken-2;
-}
-
-.trend-value {
-    height: 1;
-    text-style: bold;
-    color: $text;
+.trend-meter {
+    height: 4;
+    width: 100%;
+    background: $background;
+    color: $text-muted;
 }
 
 /* ── main horizontal: sidebar + content ─────────────────────────────────── */

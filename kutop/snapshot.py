@@ -158,7 +158,7 @@ async def _render(out: str, size, namespaces, context, profile, app=None,
         )
 
     async with app.run_test(size=size) as pilot:
-        # Feed several frames so the trend sparklines have history to draw.
+        # Feed several frames so the trend meters have history to draw.
         for _ in range(8):
             app._apply_snapshot(snap)
             await pilot.pause()

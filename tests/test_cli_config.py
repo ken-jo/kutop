@@ -79,12 +79,41 @@ def test_load_config_reads_saved_theme(tmp_path: Path) -> None:
     assert cfg.to_dict()["view"]["panel_backgrounds"] is False
 
 
+def test_load_config_ignores_saved_name_filter_but_keeps_cli_filter(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text(
+        "filters:\n  name_filter: stale\n  hide_completed: true\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_config(user_path=str(user_config))
+
+    assert cfg.name_filter == ""
+    assert cfg.hide_completed is True
+
+    cfg = load_config(
+        user_path=str(user_config),
+        cli_overrides={"filters": {"name_filter": "typed"}},
+    )
+
+    assert cfg.name_filter == "typed"
+
+
 def test_dump_config_includes_panel_backgrounds() -> None:
     from kutop.config import dump_config_yaml
 
     text = dump_config_yaml(Config(panel_backgrounds=False))
 
     assert "panel_backgrounds: false" in text
+
+
+def test_dump_config_does_not_persist_name_filter() -> None:
+    from kutop.config import dump_config_yaml
+
+    text = dump_config_yaml(Config(name_filter="stale"))
+
+    assert 'name_filter: ""' in text
+    assert "stale" not in text
 
 
 def test_load_config_layers_profile_user_and_cli(tmp_path: Path) -> None:
@@ -207,6 +236,36 @@ def test_app_applies_panel_background_theme_chrome(monkeypatch) -> None:
     assert saved[-1]["view"]["panel_backgrounds"] is True
 
 
+def test_live_search_term_is_not_persisted(monkeypatch) -> None:
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(name_filter="initial"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert app._effective_filter() == "initial"
+            assert app.cfg.name_filter == ""
+            app._search_term = "typed-live"
+            app.action_toggle_group()
+            await pilot.pause()
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    assert saved[-1]["filters"]["name_filter"] == ""
+
+
 def test_options_modal_toggles_panel_backgrounds(monkeypatch) -> None:
     from textual.widgets import Checkbox
 
@@ -257,6 +316,7 @@ def test_panel_background_css_covers_datatable_layers() -> None:
     assert "Screen.-panel-backgrounds-on .kpanel,\nScreen.-panel-backgrounds-on TrendGraph {\n    border-title-background: $surface;" in css
     assert ".kpanel-title" not in css
     assert ".kpanel-widget" not in css
+    assert "sparkline--" not in css
 
 
 def test_text_panel_uses_border_title_not_internal_title_row() -> None:
@@ -305,6 +365,79 @@ def test_preload_bottom_panels_hold_skeleton_area() -> None:
             assert bottom.region.height >= 6
             assert events.region.height == bottom.region.height
             assert pvc.region.height == bottom.region.height
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_trend_graph_renders_thin_meter_canvas() -> None:
+    from kutop.render.widgets import TrendGraph
+
+    graph = TrendGraph("CPU OVERALL", "cpu")
+    meter = graph._meter([10, 20, 30, 90], 30, "2.4/36", 32)
+    lines = meter.plain.splitlines()
+
+    assert len(lines) == 4
+    assert lines[0].startswith("now")
+    assert "2.4/36" in lines[0]
+    assert "━" in lines[0]
+    assert "─" in lines[0]
+    assert lines[1].startswith("heat ")
+    assert lines[2].startswith("     ")
+    assert lines[3].startswith("     ")
+    heat_cells = [line[5:] for line in lines[1:]]
+    assert all(cells.strip() for cells in heat_cells)
+    assert "·" in heat_cells[0]
+    assert "·" in heat_cells[1]
+
+
+def test_initial_refresh_applies_core_snapshot_before_enrichment() -> None:
+    from kutop.model import Node, Pod, Snapshot
+    from kutop.render.app import TopApp
+
+    class FakeFetcher:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def fetch_core(self) -> Snapshot:
+            self.calls.append("core")
+            snap = Snapshot()
+            snap.nodes = [
+                Node(name="node-a", cpu_mcpu=1, cpu_cap_mcpu=10, ready=True)
+            ]
+            snap.pods = [
+                Pod(name="pod-a", namespace="default", node="node-a", phase="Running")
+            ]
+            return snap
+
+        def enrich_snapshot(self, snap: Snapshot) -> Snapshot:
+            self.calls.append("enrich")
+            return snap
+
+        def fetch(self) -> Snapshot:
+            self.calls.append("full")
+            return self.enrich_snapshot(self.fetch_core())
+
+        def cancel(self) -> None:
+            pass
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        fake = FakeFetcher()
+        app.fetcher = fake  # type: ignore[assignment]
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.refresh_snapshot()
+            await pilot.pause()
+
+            assert app._loaded is True
+            assert fake.calls[:2] == ["core", "enrich"]
 
             await pilot.exit(None)
 

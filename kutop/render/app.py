@@ -2,7 +2,7 @@
 
 Composes a modern dashboard:
   * SummaryBar (aggregate counters)
-  * two TrendGraph sparklines (CPU / MEM overall) — fed by rolling history
+  * two TrendGraph meters (CPU / MEM overall) — fed by rolling history
   * main Node/Pod DataTable with per-pod usage-vs-limit gauges + status
     highlighting (OOMKilled / CrashLoopBackOff / Pending)
   * Events panel + PVC panel (with kubelet-sourced usage)
@@ -879,10 +879,11 @@ class TopApp(App):
         self.show_pvc = self.cfg.show_pvc
         self.show_alerts = self.cfg.show_alerts
         self.show_health = self.cfg.show_health
-        # Live search term (key '/'); separate from the persisted name_filter so
-        # an ad-hoc search never clobbers the saved config. The effective filter
-        # is the union of both (see _visible_pods).
-        self._search_term = ""
+        # Live search term (key '/'). Config.name_filter is only an initial
+        # CLI --filter seed; it is cleared before any save so ad-hoc searches
+        # cannot survive a relaunch.
+        self._search_term = (self.cfg.name_filter or "").strip()
+        self.cfg.name_filter = ""
         # Namespaces discovered live on the cluster (for the Options multi-select).
         self._discovered_ns: list[str] = []
         self._discovered_contexts: list[str] = []
@@ -976,8 +977,8 @@ class TopApp(App):
         yield ThemeHeader(show_clock=True, icon="☰")
         yield SummaryBar(id="summary_bar")            # CRITERIA #5: SummaryBar composed
         with Horizontal(id="trends"):
-            yield TrendGraph("CPU OVERALL", "cpu", id="cpu_trend")   # CRITERIA #5: Sparkline trend
-            yield TrendGraph("MEM OVERALL", "mem", id="mem_trend")   # CRITERIA #5: Sparkline trend
+            yield TrendGraph("CPU OVERALL", "cpu", id="cpu_trend")
+            yield TrendGraph("MEM OVERALL", "mem", id="mem_trend")
         with Horizontal(id="main_horizontal"):
             yield SidebarPanel(
                 self._sidebar_ns_options(),
@@ -1197,7 +1198,15 @@ class TopApp(App):
 
     def _fetch_worker(self) -> None:
         try:
-            snap = self.fetcher.fetch()
+            if not self._loaded:
+                snap = self.fetcher.fetch_core()
+                try:
+                    self.call_from_thread(self._apply_snapshot, snap)
+                except Exception:
+                    pass
+                snap = self.fetcher.enrich_snapshot(snap)
+            else:
+                snap = self.fetcher.fetch()
             # marshal back to the UI thread; if the app is tearing down the call
             # may be rejected — swallow it so the worker thread returns cleanly.
             try:
@@ -1235,12 +1244,12 @@ class TopApp(App):
             return
         self.snapshot = snap
         self._loaded = True
-        # Feed rolling history every refresh for the sparklines.
+        # Feed rolling history every refresh for the trend meters.
         #
         # BUG FIX #2: never append a spurious 0/None. A partial refresh can
         # produce cap==0 (node fetch failed) or used==0 (metrics-server lag),
         # which would otherwise inject a 0 into an otherwise flat ~55% series
-        # and make the Sparkline render as isolated fat blocks with big gaps.
+        # and render as isolated fat blocks with big gaps.
         # When a sample is not trustworthy we repeat the prior value (so the
         # line stays smooth) and only seed an initial value when we have none.
         s = snap.summary
@@ -1330,8 +1339,8 @@ class TopApp(App):
                 pass
 
     def _effective_filter(self) -> str:
-        """The active name substring: live search overrides the persisted filter."""
-        return (self._search_term or self.cfg.name_filter or "").strip().lower()
+        """The active runtime name substring."""
+        return (self._search_term or "").strip().lower()
 
     @staticmethod
     def _is_problem(pod: Pod) -> bool:
@@ -1605,10 +1614,7 @@ class TopApp(App):
         self.cfg.show_alerts = self.show_alerts
         self.cfg.show_health = self.show_health
         self.cfg.namespaces = list(self.namespaces)
-        # persist the live search term as the saved name_filter so a typed search
-        # survives a relaunch (matches the user's "cluster data is adjustable" goal)
-        if self._search_term:
-            self.cfg.name_filter = self._search_term
+        self.cfg.name_filter = ""
 
     def _persist_state(self) -> None:
         """Persist current config to ~/.config/kutop/config.yaml. Best effort."""
@@ -1648,6 +1654,9 @@ class TopApp(App):
         prev_alertmgr = self.cfg.alertmanager_url
         prev_probes = list(self.cfg.health_probes)
 
+        if cfg.name_filter:
+            self._search_term = str(cfg.name_filter).strip()
+        cfg.name_filter = ""
         self.cfg = cfg
         cfg.theme = self._coerce_theme(cfg.theme)
         if self.theme != cfg.theme:

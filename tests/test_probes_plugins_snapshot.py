@@ -5,7 +5,7 @@ from pathlib import Path
 
 from kutop.config import HealthProbe
 from kutop.fetch import Fetcher
-from kutop.model import HealthResult
+from kutop.model import Event, HealthResult, Node, Pod, PVC
 from kutop.plugins.health import HealthPlugin
 from kutop.probes import fetch_alerts, scrape_probe, scrape_probes
 from kutop.snapshot import SNAPSHOT_VIEWS, render_snapshot, synthetic_snapshot
@@ -160,6 +160,71 @@ def test_pod_resources_sum_all_containers() -> None:
     assert pod.mem_cap_mi == 1664
     assert pod.ready == "2/3"
     assert pod.restarts == 6
+
+
+def test_fetch_core_returns_first_paint_before_auxiliary_panels() -> None:
+    class FakeFetcher(Fetcher):
+        def _fetch_nodes(self) -> dict[str, Node]:
+            return {
+                "node-a": Node(
+                    name="node-a",
+                    ready=True,
+                    cpu_mcpu=100,
+                    cpu_cap_mcpu=1000,
+                    mem_mi=200,
+                    mem_cap_mi=1000,
+                )
+            }
+
+        def _fetch_pods(self) -> list[Pod]:
+            return [
+                Pod(
+                    name="pod-a",
+                    namespace="default",
+                    node="node-a",
+                    phase="Running",
+                    cpu_mcpu=10,
+                    cpu_cap_mcpu=100,
+                    mem_mi=20,
+                    mem_cap_mi=100,
+                )
+            ]
+
+        def _fetch_events(self) -> list[Event]:
+            return [
+                Event(
+                    ts_utc="2026-06-02T00:00:00Z",
+                    name="pod-a",
+                    reason="Started",
+                    message="started",
+                    count=1,
+                    type="Warning",
+                )
+            ]
+
+        def _fetch_pvcs(self) -> list[PVC]:
+            return [PVC(name="data-pod-a", namespace="default", capacity_mi=100)]
+
+        def _node_summaries(self, node_names: list[str]) -> dict[str, dict]:
+            return {}
+
+    fetcher = FakeFetcher(["default"])
+
+    core = fetcher.fetch_core()
+
+    assert core.nodes
+    assert core.pods
+    assert core.nodes[0].pod_count == 1
+    assert core.events == []
+    assert core.pvcs == []
+    assert core.summary.nodes_total == 1
+    assert core.summary.warn_events == 0
+
+    full = fetcher.enrich_snapshot(core)
+
+    assert full.events
+    assert full.pvcs
+    assert full.summary.warn_events == 1
 
 
 def test_synthetic_snapshot_covers_all_documented_panels() -> None:

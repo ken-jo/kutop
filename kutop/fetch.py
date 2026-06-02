@@ -160,18 +160,26 @@ class Fetcher:
     # ── public entrypoint ────────────────────────────────────────────────────
     def fetch(self) -> Snapshot:
         """Acquire one full snapshot. Safe to call from a worker thread."""
-        snap = Snapshot()
-        try:
-            nodes_by_name = self._fetch_nodes()
-            snap.nodes = list(nodes_by_name.values())
-        except Exception as exc:  # node fetch is foundational; surface but continue
-            snap.error = f"nodes: {exc}"
-            nodes_by_name = {}
+        snap = self.fetch_core()
+        return self.enrich_snapshot(snap)
 
-        try:
-            snap.pods = self._fetch_pods()
-        except Exception as exc:
-            snap.error = snap.error or f"pods: {exc}"
+    def fetch_core(self) -> Snapshot:
+        """Acquire the first-paint snapshot: nodes, pods, and summary only."""
+        snap = Snapshot()
+        nodes_by_name: dict[str, Node] = {}
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            nodes_future = pool.submit(self._fetch_nodes)
+            pods_future = pool.submit(self._fetch_pods)
+            try:
+                nodes_by_name = nodes_future.result()
+                snap.nodes = list(nodes_by_name.values())
+            except Exception as exc:  # node fetch is foundational; surface but continue
+                snap.error = f"nodes: {exc}"
+
+            try:
+                snap.pods = pods_future.result()
+            except Exception as exc:
+                snap.error = snap.error or f"pods: {exc}"
 
         # pod_count per node (from the pods we just listed in the target ns;
         # node objects may carry more from other namespaces but this is a useful
@@ -180,15 +188,23 @@ class Fetcher:
             if pod.node and pod.node in nodes_by_name:
                 nodes_by_name[pod.node].pod_count += 1
 
-        try:
-            snap.events = self._fetch_events()
-        except Exception as exc:
-            snap.error = snap.error or f"events: {exc}"
+        snap.summary = self._build_summary(snap)
+        return snap
 
-        try:
-            snap.pvcs = self._fetch_pvcs()
-        except Exception as exc:
-            snap.error = snap.error or f"pvcs: {exc}"
+    def enrich_snapshot(self, snap: Snapshot) -> Snapshot:
+        """Fill slower auxiliary panels and storage details into ``snap``."""
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            events_future = pool.submit(self._fetch_events)
+            pvcs_future = pool.submit(self._fetch_pvcs)
+            try:
+                snap.events = events_future.result()
+            except Exception as exc:
+                snap.error = snap.error or f"events: {exc}"
+
+            try:
+                snap.pvcs = pvcs_future.result()
+            except Exception as exc:
+                snap.error = snap.error or f"pvcs: {exc}"
 
         # Kubelet stats summary (BUG FIX #2) drives both the cluster-wide PVC
         # panel usage AND per-pod storage attribution. Fetch each node's summary
@@ -318,39 +334,54 @@ class Fetcher:
     # ── pods ─────────────────────────────────────────────────────────────────
     def _fetch_pods(self) -> list[Pod]:
         """Build Pod objects per namespace from `top pods` + `get pods -o json`."""
+        if not self.namespaces:
+            return []
+        if len(self.namespaces) == 1:
+            return self._fetch_pods_for_namespace(self.namespaces[0])
         pods: list[Pod] = []
-        for ns in self.namespaces:
-            # usage map: pod name -> (cpu_mcpu, mem_mi) summed across containers
-            usage: dict[str, tuple[int, int]] = {}
-            tp = self._run_safe("top", "pods", "-n", ns, "--no-headers", "--containers")
-            if tp:
-                for line in tp.splitlines():
-                    parts = line.split()
-                    # POD  NAME(container)  CPU  MEM
-                    if len(parts) < 4:
-                        continue
-                    pod_name = parts[0]
-                    cpu = model.to_mcpu(parts[2])
-                    mem = model.to_mi(parts[3])
-                    pc, pm = usage.get(pod_name, (0, 0))
-                    usage[pod_name] = (pc + cpu, pm + mem)
-            else:
-                # fall back to pod-level top if --containers unsupported
-                tp = self._run_safe("top", "pods", "-n", ns, "--no-headers")
-                for line in tp.splitlines():
-                    parts = line.split()
-                    if len(parts) < 3:
-                        continue
-                    usage[parts[0]] = (model.to_mcpu(parts[1]), model.to_mi(parts[2]))
+        max_workers = max(1, min(8, len(self.namespaces)))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for ns_pods in pool.map(self._fetch_pods_for_namespace, self.namespaces):
+                pods.extend(ns_pods)
+        return pods
 
-            gj = self._run_safe("get", "pods", "-n", ns, "-o", "json")
-            if not gj:
-                continue
+    def _fetch_pods_for_namespace(self, ns: str) -> list[Pod]:
+        """Build Pod objects for one namespace."""
+        pods: list[Pod] = []
+        # usage map: pod name -> (cpu_mcpu, mem_mi) summed across containers
+        usage: dict[str, tuple[int, int]] = {}
+        tp = self._run_safe("top", "pods", "-n", ns, "--no-headers", "--containers")
+        if tp:
+            for line in tp.splitlines():
+                parts = line.split()
+                # POD  NAME(container)  CPU  MEM
+                if len(parts) < 4:
+                    continue
+                pod_name = parts[0]
+                cpu = model.to_mcpu(parts[2])
+                mem = model.to_mi(parts[3])
+                pc, pm = usage.get(pod_name, (0, 0))
+                usage[pod_name] = (pc + cpu, pm + mem)
+        else:
+            # fall back to pod-level top if --containers unsupported
+            tp = self._run_safe("top", "pods", "-n", ns, "--no-headers")
+            for line in tp.splitlines():
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                usage[parts[0]] = (model.to_mcpu(parts[1]), model.to_mi(parts[2]))
+
+        gj = self._run_safe("get", "pods", "-n", ns, "-o", "json")
+        if not gj:
+            return pods
+        try:
             data = json.loads(gj)
-            for item in data.get("items", []):
-                pod = self._parse_pod(item, ns, usage)
-                if pod is not None:
-                    pods.append(pod)
+        except Exception:
+            return pods
+        for item in data.get("items", []):
+            pod = self._parse_pod(item, ns, usage)
+            if pod is not None:
+                pods.append(pod)
         return pods
 
     def _parse_pod(

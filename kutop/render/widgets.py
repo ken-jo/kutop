@@ -9,7 +9,6 @@ here.
 from __future__ import annotations
 
 import asyncio
-from statistics import mean
 from typing import Optional
 
 from rich.console import RenderableType
@@ -26,7 +25,6 @@ from textual.widgets import (
     Label,
     OptionList,
     Select,
-    Sparkline,
     Static,
     TabbedContent,
     TabPane,
@@ -649,31 +647,22 @@ class SearchBar(Horizontal):
             pass
 
 
-# ── trend graph (Sparkline + live label) ──────────────────────────────────────
+# ── trend graph (thin history meter + live label) ─────────────────────────────
 
 
 class TrendGraph(Vertical):
-    """A labeled live sparkline (CPU or MEM overall trend).
+    """A compact btop-style live meter for CPU or MEM overall trend.
 
-    Wraps Textual's ``Sparkline`` widget (available in 8.2.7) fed by a rolling
-    history of percentages. Shows the current value alongside the trend.
-
-    BUG FIX #2 (chunky/gappy MEM sparkline): the Sparkline auto-scales between
-    the min and max of its data, so a single spurious 0 in an otherwise flat
-    ~55% series collapses every real sample into the top bucket and renders the
-    line as isolated fat blocks with gaps. We fix this two ways:
-
-      * the app never appends 0/None samples (see ``app._apply_snapshot``), and
-      * we render on a *fixed* 0..100 scale by anchoring the data so a flat
-        ~55% series shows as a smooth, consistent band rather than bimodal
-        blocks. Both CPU and MEM graphs use the same ``summary_function`` (mean)
-        for identical visual behaviour.
+    Textual's multi-line ``Sparkline`` reads like a large rectangular fill in a
+    short panel. This widget instead renders a one-line historical spark strip
+    plus one current-value gauge, both on a fixed 0..100 scale so CPU and MEM
+    remain visually comparable.
     """
 
-    # render against a fixed full-range scale so flat series look smooth and
-    # CPU/MEM are visually comparable (not each auto-scaled to its own range)
     _SCALE_MIN = 0
     _SCALE_MAX = 100
+    _HEAT_ROWS = 3
+    _HEAT_CHARS = "⠂⠆⡆⣆⣧⣷⣿"
 
     def __init__(self, title: str, accent: str, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -681,29 +670,90 @@ class TrendGraph(Vertical):
         self._accent = accent
 
     def compose(self) -> ComposeResult:
-        # title sits on the border line (border_title, set on_mount) like the
-        # data panels; the body is the sparkline + the summary value line.
-        yield Sparkline([0], summary_function=mean, classes="trend-spark")
-        yield Label("--", classes="trend-value")
+        yield Static("--", classes=f"trend-meter {self._accent}")
 
     def on_mount(self) -> None:
         self.border_title = self._title
-        self.query_one(Sparkline).add_class(self._accent)
 
     def update_trend(self, history: list[int], detail: str) -> None:
-        spark = self.query_one(Sparkline)
-        # Clamp every sample to [0, 100] and anchor the series to the fixed
-        # scale so the Sparkline's internal min/max never collapses a flat
-        # series into bimodal blocks. The leading anchors fall off the left as
-        # real history fills the rolling window.
         clamped = [max(self._SCALE_MIN, min(self._SCALE_MAX, int(v))) for v in history]
-        if clamped:
-            data = [self._SCALE_MIN, self._SCALE_MAX, *clamped]
-        else:
-            data = [self._SCALE_MIN, self._SCALE_MAX]
-        spark.data = data
         cur = clamped[-1] if clamped else 0
-        self.query_one(".trend-value", Label).update(f"{cur}%  {detail}")
+        width = max(24, min(96, self.size.width - 4))
+        self.query_one(".trend-meter", Static).update(self._meter(clamped, cur, detail, width))
+
+    def _meter(self, history: list[int], cur: int, detail: str, width: int) -> Text:
+        spark_width = max(10, width - 5)
+        spark_values = self._fit_history(history, spark_width)
+        text = Text()
+        self._append_now_line(text, cur, detail, width)
+        text.append("\n")
+        text.append("heat ", style="dim")
+        for idx, row in enumerate(self._heat_rows(spark_values)):
+            if idx:
+                text.append("\n")
+                text.append("     ", style="dim")
+            text.append(row)
+        return text
+
+    def _append_now_line(self, text: Text, cur: int, detail: str, width: int) -> None:
+        value = f"{cur:>3}%"
+        left_len = len("now ") + len(value) + 1
+        min_bar_width = 10
+        detail_width = max(0, width - left_len - min_bar_width - 1)
+        right = detail[:detail_width]
+        bar_width = max(min_bar_width, width - left_len - len(right) - 1)
+        text.append("now ", style="dim")
+        text.append(value, style=self._style_for(cur))
+        text.append(" ")
+        text.append(self._inline_bar(cur, bar_width))
+        if right:
+            text.append(" ")
+            text.append(right, style="bold")
+
+    def _inline_bar(self, cur: int, width: int) -> Text:
+        fill = max(0, min(width, int(round(cur * width / 100))))
+        bar = Text()
+        for idx in range(width):
+            if idx < fill:
+                bar.append("━", style=self._style_for(cur))
+            else:
+                bar.append("─", style="grey23")
+        return bar
+
+    def _heat_rows(self, values: list[Optional[int]]) -> tuple[Text, ...]:
+        rows = tuple(Text() for _ in range(self._HEAT_ROWS))
+        for value in values:
+            if value is None:
+                for row in rows:
+                    row.append("·", style="grey23")
+                continue
+            idx = max(0, min(len(self._HEAT_CHARS) - 1, int(value * len(self._HEAT_CHARS) / 101)))
+            char = self._HEAT_CHARS[idx]
+            style = self._style_for(value)
+            active_rows = max(1, min(self._HEAT_ROWS, (value + 32) // 33))
+            for row_index, row in enumerate(rows):
+                if row_index >= self._HEAT_ROWS - active_rows:
+                    row.append(char, style=style)
+                else:
+                    row.append("·", style="grey37")
+        return rows
+
+    @staticmethod
+    def _fit_history(history: list[int], width: int) -> list[Optional[int]]:
+        if width <= 0:
+            return []
+        if not history:
+            return [None] * width
+        tail = history[-width:]
+        pad_value = tail[0]
+        return [pad_value] * (width - len(tail)) + tail
+
+    def _style_for(self, value: int) -> str:
+        if value >= 85:
+            return "bold red"
+        if value >= 70:
+            return "bold yellow"
+        return "bold cyan" if self._accent == "mem" else "bold green"
 
 
 # ── confirm modal for destructive actions ─────────────────────────────────────
@@ -950,14 +1000,10 @@ class OptionsModal(ModalScreen):
                                        value=c.group_by_node, id="opt_group_by_node",
                                        classes="opt_check", compact=True)
 
-                        # Filters live alongside View (which pods the table shows)
+                        # Filters live alongside View (which pods the table shows).
+                        # Name search is intentionally runtime-only via '/' and
+                        # is not exposed here so it cannot look like saved config.
                         yield Label("FILTERS", classes="opt_section")
-                        with Vertical(classes="opt_field"):
-                            yield Label("name_filter", classes="opt_label")
-                            yield Input(value=c.name_filter, id="opt_name_filter",
-                                        classes="opt_input", placeholder="name substring",
-                                        compact=True)
-                            yield Label("case-insensitive substring", classes="opt_hint")
                         yield Checkbox("Hide completed (Succeeded/Completed) pods",
                                        value=c.hide_completed, id="opt_hide_completed",
                                        classes="opt_check", compact=True)
@@ -1268,8 +1314,6 @@ class OptionsModal(ModalScreen):
         try:
             if iid == "opt_interval":
                 self._cfg.interval = max(1.0, float(val or "3"))
-            elif iid == "opt_name_filter":
-                self._cfg.name_filter = val.strip()
             elif iid == "opt_alertmanager_url":
                 self._cfg.alertmanager_url = val.strip()
             # thresholds are edited via DualThresholdSlider (Thresholds tab),

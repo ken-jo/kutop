@@ -539,6 +539,7 @@ class Config:
     sort_desc: bool = False
 
     # Filtering / search (M-iter2): adjust which cluster pods are shown.
+    # Runtime-only initial search term (CLI --filter); saved configs scrub it.
     name_filter: str = ""               # case-insensitive substring on pod name
     hide_completed: bool = True         # drop Succeeded/Completed pods
     only_problems: bool = False         # show only non-Running / restarts>0 / oom
@@ -845,6 +846,27 @@ def _read_user_file(path: str) -> dict:
         return {}
 
 
+def _drop_transient_filter_state(layer: dict) -> dict:
+    """Remove live-search state from persisted user config layers.
+
+    ``filters.name_filter`` is a transient table search term. Older versions
+    could persist it, so loading a saved config must scrub it before merging.
+    CLI ``--filter`` overrides still merge after this and remain effective.
+    """
+    if not isinstance(layer, dict):
+        return {}
+    out = dict(layer)
+    filters = out.get("filters")
+    if isinstance(filters, dict) and "name_filter" in filters:
+        kept = dict(filters)
+        kept.pop("name_filter", None)
+        if kept:
+            out["filters"] = kept
+        else:
+            out.pop("filters", None)
+    return out
+
+
 def _migrate_legacy_config() -> dict:
     """Adopt a pre-rename config file into the new kutop location.
 
@@ -939,7 +961,7 @@ def load_config(
     if base_overrides:
         merged = _deep_merge(merged, base_overrides)
     path = user_path or CONFIG_PATH
-    merged = _deep_merge(merged, _read_user_file(path))
+    merged = _deep_merge(merged, _drop_transient_filter_state(_read_user_file(path)))
     if cli_overrides:
         merged = _deep_merge(merged, cli_overrides)
     return _config_from_dict(merged)
@@ -1010,8 +1032,7 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append(f"  context: {ctx}             # kubeconfig context; \"\" = current")
     lines.append("")
     lines.append("filters:                  # adjust which pods the table shows")
-    nf = cfg.name_filter or '""'
-    lines.append(f"  name_filter: {nf}        # case-insensitive substring on pod name")
+    lines.append('  name_filter: ""        # transient live search is not persisted')
     lines.append(f"  hide_completed: {b(cfg.hide_completed)}   # drop Succeeded/Completed pods")
     lines.append(f"  only_problems: {b(cfg.only_problems)}    # only non-Running / restarts>0 / oom")
     lines.append("")
@@ -1025,7 +1046,7 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append("")
     lines.append("panels:                   # show/hide each dashboard panel")
     lines.append(f"  summary: {b(cfg.show_summary)}         # top aggregate counter bar")
-    lines.append(f"  trends: {b(cfg.show_trends)}          # CPU/MEM trend sparklines")
+    lines.append(f"  trends: {b(cfg.show_trends)}          # CPU/MEM trend meters")
     lines.append(f"  podtable: {b(cfg.show_podtable)}        # main node/pod table")
     lines.append(f"  events: {b(cfg.show_events)}          # warning events panel")
     lines.append(f"  pvc: {b(cfg.show_pvc)}             # cluster-wide PVC list panel (off by default; storage is per-pod)")
