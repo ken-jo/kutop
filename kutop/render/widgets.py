@@ -858,10 +858,22 @@ class OptionsModal(ModalScreen):
         ("o", "close", "Close"),
     ]
 
-    def __init__(self, cfg: Config, discovered_ns: "Optional[list[str]]" = None) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        discovered_ns: "Optional[list[str]]" = None,
+        themes: "Optional[list[str]]" = None,
+    ) -> None:
         super().__init__()
         self._cfg = cfg
         self._reg = build_column_registry()
+        self._themes = list(themes or [cfg.theme])
+        if cfg.theme not in self._themes:
+            self._themes.insert(0, cfg.theme)
+        self._committed_theme = cfg.theme
+        self._preview_theme_name = cfg.theme
+        self._theme_preview_dirty = False
+        self._ready_for_input = False
         # All namespaces we know about for the multi-select: the live cluster
         # discovery (if any), unioned with whatever is currently selected so a
         # config-only namespace is never dropped from the list.
@@ -899,6 +911,15 @@ class OptionsModal(ModalScreen):
                         yield Checkbox("Sort descending (▼)", value=c.sort_desc,
                                        id="opt_sort_desc", classes="opt_check",
                                        compact=True)
+                        with Vertical(classes="opt_field"):
+                            yield Label("theme", classes="opt_label")
+                            yield Select(
+                                [(name, name) for name in self._themes],
+                                value=c.theme, id="opt_theme", allow_blank=False,
+                                compact=True,
+                            )
+                            yield Label("Up/Down preview, Enter apply, Esc restore",
+                                        classes="opt_hint")
                         with Vertical(classes="opt_field"):
                             yield Label("summary_style", classes="opt_label")
                             yield Select(
@@ -1026,6 +1047,10 @@ class OptionsModal(ModalScreen):
     def on_mount(self) -> None:
         self._rebuild_columns()
         self._rebuild_namespaces()
+        self.call_after_refresh(self._enable_input)
+
+    def _enable_input(self) -> None:
+        self._ready_for_input = True
 
     # ── namespace multi-select ────────────────────────────────────────────
     def _rebuild_namespaces(self) -> None:
@@ -1113,7 +1138,59 @@ class OptionsModal(ModalScreen):
     # ── apply + persist ───────────────────────────────────────────────────
     def _apply(self) -> None:
         """Push the working config to the app (live re-render + persist)."""
+        if self._theme_preview_dirty:
+            preview_theme = self._cfg.theme
+            self._cfg.theme = self._committed_theme
+            self.app.apply_config(self._cfg)  # type: ignore[attr-defined]
+            self._cfg.theme = preview_theme
+            self.app.preview_theme(preview_theme)  # type: ignore[attr-defined]
+            return
         self.app.apply_config(self._cfg)  # type: ignore[attr-defined]
+
+    def _set_theme_select(self, theme: str) -> None:
+        try:
+            self.query_one("#opt_theme", Select).value = theme
+        except Exception:
+            pass
+
+    def _preview_theme(self, theme: str) -> None:
+        if theme not in self._themes:
+            return
+        self._preview_theme_name = theme
+        self._theme_preview_dirty = theme != self._committed_theme
+        self.app.preview_theme(theme)  # type: ignore[attr-defined]
+        if self._theme_preview_dirty:
+            self._set_status("theme preview: Enter to apply, Esc to restore")
+        else:
+            self._set_status("")
+
+    def _cycle_theme(self, delta: int) -> None:
+        current = self._preview_theme_name
+        try:
+            idx = self._themes.index(current)
+        except ValueError:
+            idx = 0
+        theme = self._themes[(idx + delta) % len(self._themes)]
+        self._set_theme_select(theme)
+        self._preview_theme(theme)
+
+    def _commit_theme_preview(self) -> None:
+        if not self._theme_preview_dirty:
+            return
+        self._cfg.theme = self._preview_theme_name
+        self.app.commit_theme(self._cfg.theme)  # type: ignore[attr-defined]
+        self._committed_theme = self._cfg.theme
+        self._theme_preview_dirty = False
+        self._set_status("theme applied")
+
+    def _restore_theme_preview(self) -> None:
+        if not self._theme_preview_dirty:
+            return
+        self._preview_theme_name = self._committed_theme
+        self._theme_preview_dirty = False
+        self._set_theme_select(self._committed_theme)
+        self.app.preview_theme(self._committed_theme)  # type: ignore[attr-defined]
+        self._set_status("theme restored")
 
     def _set_status(self, msg: str) -> None:
         try:
@@ -1123,6 +1200,8 @@ class OptionsModal(ModalScreen):
 
     # ── events ──────────────────────────────────────────────────────────
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if not self._ready_for_input:
+            return
         cid = event.checkbox.id or ""
         mapping = {
             "opt_p_summary": "show_summary", "opt_p_trends": "show_trends",
@@ -1140,6 +1219,8 @@ class OptionsModal(ModalScreen):
             self._apply()
 
     def on_select_changed(self, event: Select.Changed) -> None:
+        if not self._ready_for_input:
+            return
         if event.value is Select.BLANK:
             return
         if event.select.id == "opt_sort":
@@ -1148,14 +1229,22 @@ class OptionsModal(ModalScreen):
             self._cfg.sort_mode = (str(event.value)
                                    if str(event.value) in ("priority", "cpu", "mem", "name")
                                    else "priority")
+        elif event.select.id == "opt_theme":
+            self._preview_theme(str(event.value))
+            event.stop()
+            return
         elif event.select.id == "opt_summary_style":
             self._cfg.summary_style = str(event.value)
         self._apply()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        if not self._ready_for_input:
+            return
         self._consume_input(event.input)
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        if not self._ready_for_input:
+            return
         # apply numeric/text inputs on change (validated/coerced in app)
         self._consume_input(event.input)
 
@@ -1180,6 +1269,8 @@ class OptionsModal(ModalScreen):
     def on_dual_threshold_slider_threshold_changed(
         self, event: "DualThresholdSlider.ThresholdChanged"
     ) -> None:
+        if not self._ready_for_input:
+            return
         """Live-apply a dragged threshold slider into the working config.
 
         Maps the slider's metric -> the matching ``<metric>_warn/_crit`` config
@@ -1237,6 +1328,20 @@ class OptionsModal(ModalScreen):
             if event.key == "space":
                 self._toggle_ns()
                 event.stop()
+        elif focused is not None and focused.id == "opt_theme":
+            if event.key in ("up", "left"):
+                self._cycle_theme(-1)
+                event.stop()
+            elif event.key in ("down", "right"):
+                self._cycle_theme(1)
+                event.stop()
+            elif event.key == "enter":
+                self._commit_theme_preview()
+                event.stop()
+            elif event.key == "escape":
+                self._restore_theme_preview()
+                event.stop()
 
     def action_close(self) -> None:
+        self._restore_theme_preview()
         self.dismiss()

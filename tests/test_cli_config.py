@@ -191,6 +191,130 @@ def test_theme_menu_arrow_preview_and_escape_restore(monkeypatch) -> None:
     asyncio.run(drive())
 
 
+def test_options_modal_theme_preview_enter_persists(monkeypatch) -> None:
+    from textual.widgets import Select
+
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+            saved.clear()
+
+            select = app.screen.query_one("#opt_theme", Select)
+            select.focus()
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.theme == "textual-light"
+            assert app.cfg.theme == "textual-dark"
+            assert saved == []
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.theme == "textual-light"
+            assert app.cfg.theme == "textual-light"
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    assert saved[-1]["view"]["theme"] == "textual-light"
+
+
+def test_options_modal_theme_escape_restores_without_persist(monkeypatch) -> None:
+    from textual.widgets import Select
+
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+            saved.clear()
+
+            select = app.screen.query_one("#opt_theme", Select)
+            select.focus()
+
+            await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert app.theme == "textual-dark"
+            assert app.cfg.theme == "textual-dark"
+            assert saved == []
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_options_modal_context_input_persists(monkeypatch) -> None:
+    from textual.widgets import Input
+
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(context="old-ctx"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+            saved.clear()
+
+            context = app.screen.query_one("#opt_context", Input)
+            context.focus()
+            context.value = "new-ctx"
+            await pilot.pause()
+
+            assert app.cfg.context == "new-ctx"
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    assert saved[-1]["cluster"]["context"] == "new-ctx"
+
+
 def test_app_falls_back_from_unknown_theme() -> None:
     from kutop.render.app import TopApp
 

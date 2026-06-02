@@ -1657,7 +1657,11 @@ class TopApp(App):
         # discovered namespace list powers the multi-select.
         import copy
         self.push_screen(
-            OptionsModal(copy.deepcopy(self.cfg), discovered_ns=list(self._discovered_ns))
+            OptionsModal(
+                copy.deepcopy(self.cfg),
+                discovered_ns=list(self._discovered_ns),
+                themes=list(self.available_themes.keys()),
+            )
         )
 
     # ── panel visibility ─────────────────────────────────────────────────────────
