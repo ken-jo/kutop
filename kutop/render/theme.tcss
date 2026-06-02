@@ -51,7 +51,7 @@ Header {
 #search_bar {
     height: 3;
     layout: horizontal;
-    background: transparent;
+    background: $surface;
     border: round $accent;
     padding: 0 1;
 }
@@ -70,7 +70,7 @@ Header {
 #search_input {
     width: 1fr;
     border: none;
-    background: transparent;
+    background: $surface;
 }
 
 /* ── common panel chrome (.kpanel) ──────────────────────────────────────── */
@@ -96,20 +96,16 @@ Header {
  *   -panel-backgrounds-on -> restore the theme's panel/surface fills.
  */
 DataTable,
-DataTable > .datatable--header,
 DataTable > .datatable--odd-row,
 DataTable > .datatable--even-row,
 DataTable > .datatable--fixed {
     background: transparent;
 }
 
-DataTable:focus,
-DataTable:focus > .datatable--header {
+DataTable:focus {
     background-tint: transparent;
 }
 
-Screen.-panel-backgrounds-on #search_bar,
-Screen.-panel-backgrounds-on #search_input,
 Screen.-panel-backgrounds-on TrendGraph,
 Screen.-panel-backgrounds-on .kpanel,
 Screen.-panel-backgrounds-on .kpanel-body,
@@ -125,11 +121,11 @@ Screen.-panel-backgrounds-on DataTable:dark > .datatable--even-row {
     background: $surface-darken-1 40%;
 }
 
-Screen.-panel-backgrounds-on DataTable > .datatable--header {
+DataTable > .datatable--header {
     background: $panel;
 }
 
-Screen.-panel-backgrounds-on DataTable:focus > .datatable--header {
+DataTable:focus > .datatable--header {
     background-tint: $foreground 5%;
 }
 
@@ -139,6 +135,14 @@ Screen.-panel-backgrounds-on DataTable > .datatable--even-row {
 
 Screen.-panel-backgrounds-on DataTable > .datatable--fixed {
     background: $secondary-muted;
+}
+
+Screen.-panel-backgrounds-on #main_table,
+Screen.-panel-backgrounds-on #events_table,
+Screen.-panel-backgrounds-on #pvc_table,
+Screen.-panel-backgrounds-on .kpanel,
+Screen.-panel-backgrounds-on TrendGraph {
+    border-title-background: $surface;
 }
 
 DataTable > .datatable--cursor,
@@ -154,6 +158,7 @@ DataTable:focus > .datatable--fixed-cursor {
 #main_table, #events_table, #pvc_table, .kpanel {
     border-title-align: left;
     border-title-color: $accent;
+    border-title-background: transparent;
 }
 
 .kpanel-body {
@@ -214,6 +219,7 @@ TrendGraph {
     background: transparent;
     border-title-align: left;
     border-title-color: $accent;
+    border-title-background: transparent;
     padding: 0 1;
 }
 

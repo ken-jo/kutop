@@ -249,8 +249,9 @@ def test_options_modal_toggles_panel_backgrounds(monkeypatch) -> None:
 def test_panel_background_css_covers_datatable_layers() -> None:
     css = Path("kutop/render/theme.tcss").read_text(encoding="utf-8")
 
+    assert "#search_bar {\n    height: 3;\n    layout: horizontal;\n    background: $surface;" in css
+    assert "DataTable > .datatable--header {\n    background: $panel;" in css
     assert "Screen.-panel-backgrounds-on DataTable" in css
-    assert "Screen.-panel-backgrounds-on DataTable > .datatable--header" in css
     assert "Screen.-panel-backgrounds-on DataTable > .datatable--even-row" in css
     assert "Screen.-panel-backgrounds-on DataTable > .datatable--fixed" in css
 
