@@ -255,8 +255,12 @@ Screen.-panel-backgrounds-on TrendGraph {
 #sidebar {
     width: 32;
     background: $surface;
-    border-right: tall $accent;
+    border: round $accent;
+    border-title-align: center;
+    border-title-color: $accent;
+    border-title-background: $surface;
     padding: 0 1 1 1;
+    margin: 0 1 0 0;
     height: 1fr;
     layout: vertical;
 }
@@ -271,15 +275,6 @@ Screen.-panel-backgrounds-on TrendGraph {
     height: 1fr;
     width: 100%;
     scrollbar-size-vertical: 1;
-}
-
-#side_title {
-    content-align: center middle;
-    text-style: bold;
-    background: $accent-darken-1;
-    color: $text;
-    height: 2;
-    margin-bottom: 1;
 }
 
 .side_stat {
@@ -368,6 +363,8 @@ Screen.-panel-backgrounds-on TrendGraph {
 
 #events_table {
     width: 1fr;
+    height: 100%;
+    min-height: 6;
     border: round $primary;
 }
 
@@ -377,6 +374,8 @@ Screen.-panel-backgrounds-on TrendGraph {
 
 #pvc_table {
     width: 1fr;
+    height: 100%;
+    min-height: 6;
     border: round $success;
 }
 

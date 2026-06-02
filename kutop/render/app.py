@@ -438,7 +438,6 @@ class SidebarPanel(Vertical):
         self._ready_for_input = False
 
     def compose(self) -> ComposeResult:
-        yield Label("kutop", id="side_title")
         yield Label("", id="side_watch", classes="side_stat")
         yield Label("", id="side_filter", classes="side_muted")
         with VerticalScroll(id="side_scroll"):
@@ -471,6 +470,7 @@ class SidebarPanel(Vertical):
                            compact=True)
 
     def on_mount(self) -> None:
+        self.border_title = "KUTOP"
         self.update_state(
             selected=list(self._selected),
             show_events=self._show_events,

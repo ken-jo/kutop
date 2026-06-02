@@ -285,6 +285,32 @@ def test_text_panel_uses_border_title_not_internal_title_row() -> None:
     asyncio.run(drive())
 
 
+def test_preload_bottom_panels_hold_skeleton_area() -> None:
+    from kutop.render.app import TopApp
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(show_events=True, show_pvc=True),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            bottom = app.query_one("#bottom_box")
+            events = app.query_one("#events_table")
+            pvc = app.query_one("#pvc_table")
+
+            assert bottom.region.height >= 6
+            assert events.region.height == bottom.region.height
+            assert pvc.region.height == bottom.region.height
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_header_hamburger_opens_kutop_menu() -> None:
     from kutop.render.app import ThemeHeaderIcon, TopApp
 
