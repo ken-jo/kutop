@@ -6,6 +6,8 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/ken-jo/kutop/ci.yml?branch=master&label=CI&logo=githubactions&logoColor=white)](https://github.com/ken-jo/kutop/actions/workflows/ci.yml)
 [![Release workflow](https://img.shields.io/github/actions/workflow/status/ken-jo/kutop/release.yml?label=release%20workflow&logo=githubactions&logoColor=white)](https://github.com/ken-jo/kutop/actions/workflows/release.yml)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](pyproject.toml)
+[![kubectl](https://img.shields.io/badge/kubectl-%C2%B11%20minor%20of%20cluster-326ce5?logo=kubernetes&logoColor=white)](https://kubernetes.io/releases/version-skew-policy/)
+[![Metrics Server](https://img.shields.io/badge/metrics--server-0.6.x%2B%20%7C%20K8s%201.19%2B-326ce5?logo=kubernetes&logoColor=white)](https://kubernetes-sigs.github.io/metrics-server/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Issues](https://img.shields.io/github/issues/ken-jo/kutop)](https://github.com/ken-jo/kutop/issues)
 [![Stars](https://img.shields.io/github/stars/ken-jo/kutop?style=social)](https://github.com/ken-jo/kutop/stargazers)
@@ -41,6 +43,42 @@ CPU OVERALL  ▁▂▃▅▆▇█  62%  5.1/16        MEM OVERALL  ▃▄▅▆
   ● api-0 (1/1)        ███████░░░ 70%   STS
   ● worker-9 OOMKilled (0/1)  █████████░ 95%   Deploy
 ```
+
+## Requirements
+
+`kutop` is a local terminal app. It does not install an in-cluster agent; it
+uses your local `kubectl` and kubeconfig exactly as `kubectl` would.
+
+| Dependency | Required version / contract | Used for |
+|------------|-----------------------------|----------|
+| Python | 3.9+ | running the installed `kutop` package |
+| Textual / Rich | `textual==8.2.7`, `rich==15.0.0` | terminal UI rendering |
+| kubectl | installed on `PATH`; use a client within +/- 1 minor version of your cluster's kube-apiserver | all live cluster reads and actions |
+| kubeconfig | current context from `~/.kube/config`, `KUBECONFIG`, or `--context` | cluster auth and target selection |
+| Metrics Server | 0.6.x+ on Kubernetes 1.19+ recommended | `kubectl top` CPU/MEM metrics |
+
+Live dashboard mode requires `kubectl`. `kutop --self-test` and
+`kutop --dump-config` are cluster-free and do not require `kubectl`.
+
+CPU and memory values use `kubectl top nodes` and
+`kubectl top pods --containers`, then sum container rows so multi-container pods
+show pod-level usage. If container-level `top` is unavailable, `kutop` falls
+back to pod-level `kubectl top pods`.
+
+PVC storage usage is fetched through the Kubernetes API-server proxy with
+`kubectl get --raw /api/v1/nodes/<node>/proxy/stats/summary`; this reuses the
+same kubeconfig auth and does not need a localhost port-forward.
+
+RBAC needs depend on which panels/actions you use:
+
+* Core dashboard: `get/list` pods, nodes, events, and PVCs in the selected
+  namespaces.
+* CPU/MEM metrics: access to the Metrics API used by `kubectl top`.
+* PVC usage and profile proxy URLs: permission for `get --raw` API-server proxy
+  paths.
+* Logs/describe/delete: the corresponding pod `logs`, `get`, or `delete`
+  permissions. Delete remains disabled unless `--allow-destructive` is set and
+  the confirmation prompt is accepted.
 
 ## Install
 
