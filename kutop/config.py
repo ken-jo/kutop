@@ -525,6 +525,7 @@ class Config:
     timezone: str = ""                  # "" -> host local
     sort_mode: str = "priority"         # legacy: priority|cpu|mem|name (mirrors sort_key)
     theme: str = "textual-dark"          # Textual app theme name
+    panel_backgrounds: bool = True       # fill dashboard panels/search with surface color
     summary_style: str = "compact"      # tiles | compact
     # Width (in cells) of the NODE/POD name column. The cell content (glyph +
     # name + bracketed annotations) is fit to this width and ellipsised only
@@ -610,6 +611,7 @@ class Config:
                 "sort_key": self.sort_key,
                 "sort_desc": self.sort_desc,
                 "theme": self.theme,
+                "panel_backgrounds": self.panel_backgrounds,
                 "summary_style": self.summary_style,
                 "group_by_node": self.group_by_node,
                 "name_width": self.name_width,
@@ -697,6 +699,7 @@ def _config_from_dict(d: dict) -> Config:
     sort_desc = _coerce_bool(view.get("sort_desc"), False)
 
     theme = str(view.get("theme", "textual-dark") or "textual-dark")
+    panel_backgrounds = _coerce_bool(view.get("panel_backgrounds"), True)
     summary_style = str(view.get("summary_style", "compact"))
     if summary_style not in _VALID_SUMMARY_STYLES:
         summary_style = "compact"
@@ -740,6 +743,7 @@ def _config_from_dict(d: dict) -> Config:
         sort_key=sort_key,
         sort_desc=sort_desc,
         theme=theme,
+        panel_backgrounds=panel_backgrounds,
         summary_style=summary_style,
         group_by_node=group_by_node,
         name_width=name_width,
@@ -994,6 +998,7 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append(f"  sort_key: {cfg.sort_key}      # sort column: {' | '.join(SORTABLE_KEYS)}")
     lines.append(f"  sort_desc: {b(cfg.sort_desc)}        # reverse sort direction (▼)")
     lines.append(f"  theme: {cfg.theme}    # app theme; choose from the hamburger menu")
+    lines.append(f"  panel_backgrounds: {b(cfg.panel_backgrounds)} # fill panel/search backgrounds with the theme surface color")
     lines.append(f"  summary_style: {cfg.summary_style}    # {' | '.join(_VALID_SUMMARY_STYLES)} (top header layout)")
     lines.append(f"  group_by_node: {b(cfg.group_by_node)}   # group pods under their node header rows")
     lines.append(f"  name_width: {cfg.name_width}           # NODE/POD column width in cells (drag its right edge to resize; {NAME_WIDTH_MIN}..{NAME_WIDTH_MAX})")

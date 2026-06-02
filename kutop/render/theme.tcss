@@ -89,6 +89,14 @@ Header {
     scrollbar-size-vertical: 1;
 }
 
+Screen.-panel-backgrounds-off #search_bar,
+Screen.-panel-backgrounds-off #search_input,
+Screen.-panel-backgrounds-off TrendGraph,
+Screen.-panel-backgrounds-off .kpanel,
+Screen.-panel-backgrounds-off .kpanel-body {
+    background: transparent;
+}
+
 #main_table, #events_table, #pvc_table, .kpanel {
     border-title-align: left;
     border-title-color: $accent;
@@ -96,7 +104,8 @@ Header {
 
 .kpanel-body {
     width: 100%;
-    height: auto;
+    height: 1fr;
+    background: $surface;
 }
 
 /* ── alerts panel (core) + plugin panels (e.g. health) ──────────────────── */
@@ -148,6 +157,7 @@ Header {
 TrendGraph {
     width: 1fr;
     border: round $primary-darken-2;
+    background: $surface;
     border-title-align: left;
     border-title-color: $accent;
     padding: 0 1;

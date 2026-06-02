@@ -1031,6 +1031,7 @@ class TopApp(App):
         return opts
 
     def on_mount(self) -> None:
+        self.apply_theme_chrome()
         self.query_one("#summary_bar", SummaryBar).set_style_mode(self.cfg.summary_style)
 
         mt = self.query_one("#main_table", DataTable)
@@ -1646,6 +1647,7 @@ class TopApp(App):
         cfg.theme = self._coerce_theme(cfg.theme)
         if self.theme != cfg.theme:
             self.theme = cfg.theme
+        self.apply_theme_chrome()
         # mirror onto the app fields the legacy toggle/sort paths still use
         self.sort_mode = cfg.sort_mode
         self.show_events = cfg.show_events
@@ -1760,6 +1762,13 @@ class TopApp(App):
         )
 
     # ── panel visibility ─────────────────────────────────────────────────────────
+    def apply_theme_chrome(self) -> None:
+        """Apply visual theme toggles that are stored in Config.view."""
+        try:
+            self.screen.set_class(not self.cfg.panel_backgrounds, "-panel-backgrounds-off")
+        except Exception:
+            self.set_class(not self.cfg.panel_backgrounds, "-panel-backgrounds-off")
+
     def apply_panel_visibility(self) -> None:
         self.cfg.show_events = self.show_events
         self.cfg.show_pvc = self.show_pvc

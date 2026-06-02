@@ -971,6 +971,10 @@ class OptionsModal(ModalScreen):
                             )
                             yield Label("Up/Down preview, Enter apply, Esc restore",
                                         classes="opt_hint")
+                        yield Checkbox("Fill panel backgrounds",
+                                       value=c.panel_backgrounds,
+                                       id="opt_panel_backgrounds",
+                                       classes="opt_check", compact=True)
                         with Vertical(classes="opt_field"):
                             yield Label("summary_style", classes="opt_label")
                             yield Select(
@@ -1252,6 +1256,7 @@ class OptionsModal(ModalScreen):
             "opt_p_pvc": "show_pvc",
             "opt_p_alerts": "show_alerts", "opt_p_health": "show_health",
             "opt_sort_desc": "sort_desc",
+            "opt_panel_backgrounds": "panel_backgrounds",
             "opt_group_by_node": "group_by_node",
             "opt_hide_completed": "hide_completed",
             "opt_only_problems": "only_problems",

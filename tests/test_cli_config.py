@@ -67,11 +67,24 @@ def test_invalid_summary_style_falls_back_to_compact(tmp_path: Path) -> None:
 
 def test_load_config_reads_saved_theme(tmp_path: Path) -> None:
     user_config = tmp_path / "config.yaml"
-    user_config.write_text("view:\n  theme: nord\n", encoding="utf-8")
+    user_config.write_text(
+        "view:\n  theme: nord\n  panel_backgrounds: false\n",
+        encoding="utf-8",
+    )
 
     cfg = load_config(user_path=str(user_config))
 
     assert cfg.theme == "nord"
+    assert cfg.panel_backgrounds is False
+    assert cfg.to_dict()["view"]["panel_backgrounds"] is False
+
+
+def test_dump_config_includes_panel_backgrounds() -> None:
+    from kutop.config import dump_config_yaml
+
+    text = dump_config_yaml(Config(panel_backgrounds=False))
+
+    assert "panel_backgrounds: false" in text
 
 
 def test_load_config_layers_profile_user_and_cli(tmp_path: Path) -> None:
@@ -157,6 +170,77 @@ def test_app_applies_previews_and_persists_real_theme(monkeypatch) -> None:
     asyncio.run(drive())
 
     assert saved[-1]["view"]["theme"] == "monokai"
+
+
+def test_app_applies_panel_background_theme_chrome(monkeypatch) -> None:
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(panel_backgrounds=False),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+
+            assert app.screen.has_class("-panel-backgrounds-off")
+
+            app.apply_config(Config(panel_backgrounds=True))
+            await pilot.pause()
+
+            assert not app.screen.has_class("-panel-backgrounds-off")
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    assert saved[-1]["view"]["panel_backgrounds"] is True
+
+
+def test_options_modal_toggles_panel_backgrounds(monkeypatch) -> None:
+    from textual.widgets import Checkbox
+
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(panel_backgrounds=True),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+            saved.clear()
+
+            checkbox = app.screen.query_one("#opt_panel_backgrounds", Checkbox)
+            checkbox.value = False
+            await pilot.pause()
+
+            assert app.cfg.panel_backgrounds is False
+            assert app.screen.has_class("-panel-backgrounds-off")
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    assert saved[-1]["view"]["panel_backgrounds"] is False
 
 
 def test_header_hamburger_opens_kutop_menu() -> None:
