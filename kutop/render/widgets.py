@@ -1018,10 +1018,10 @@ class OptionsModal(ModalScreen):
                             yield Label("kubeconfig context; blank = current",
                                         classes="opt_hint")
 
-                # Profile (read-only) + cluster-linked probes ────────────────
+                # Profile identity + cluster-linked probe config ─────────────
                 with TabPane("Profile", id="opt_tab_profile"):
                     with VerticalScroll(classes="opt_pane"):
-                        yield Label(f"  active profile: {c.profile_name}  (read-only)",
+                        yield Label(f"  active profile: {c.profile_name}  (name only)",
                                     classes="opt_hint", id="opt_profile_lbl")
                         yield Label("PROBES  (cluster-linked; opt-in)",
                                     classes="opt_section")
