@@ -123,6 +123,17 @@ class Fetcher:
         except Exception:
             return ""
 
+    def current_context_name(self) -> str:
+        """Best-effort active kube context name for display ('' if unknown).
+
+        Returns the explicit ``--context`` override when set, otherwise asks
+        kubectl for the active context so the UI can show the real name instead
+        of a generic "current".
+        """
+        if self.context:
+            return self.context
+        return self._run_safe("config", "current-context").strip()
+
     def _probe_body(self, url: str, timeout: float):
         """Fetch an alert/health probe body.
 

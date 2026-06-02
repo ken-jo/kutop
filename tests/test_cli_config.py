@@ -487,6 +487,39 @@ def test_options_interval_is_stepper_and_syncs_app_and_header() -> None:
     asyncio.run(drive())
 
 
+def test_sidebar_shows_resolved_kube_context_name() -> None:
+    from textual.widgets import Static
+
+    from kutop.render.app import TopApp
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            # no explicit override -> show the resolved current-context, and for
+            # a long EKS ARN show the trailing cluster name, not "current"
+            app.context = None
+            app._resolved_context = (
+                "arn:aws:eks:ap-northeast-2:054865923942:cluster/spm-eks"
+            )
+            app._sync_sidebar_state()
+            await pilot.pause()
+            status = app.query_one("#side_status", Static).render().plain
+            assert "spm-eks" in status
+            assert "ctx=current" not in status
+            # an explicit --context override takes precedence
+            app.context = "staging"
+            assert app._display_context() == "staging"
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_startup_does_not_persist_config(monkeypatch) -> None:
     """Launching must never rewrite the user config (data-loss regression).
 

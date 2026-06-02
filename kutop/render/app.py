@@ -586,6 +586,12 @@ class SidebarPanel(Vertical):
         try:
             ns_count = len([n for n in selected if n])
             ctx = self._context_name or "current"
+            # long contexts (e.g. EKS ARNs) hold the useful name at the end —
+            # show the last path segment, then tail-truncate, not the prefix
+            if len(ctx) > 24:
+                ctx = ctx.rsplit("/", 1)[-1] if "/" in ctx else ctx
+                if len(ctx) > 24:
+                    ctx = "…" + ctx[-23:]
             direction = "desc" if self._sort_desc else "asc"
             status = Text()
             status.append("ns=", style="dim")
@@ -884,6 +890,8 @@ class TopApp(App):
         self.namespaces = list(self.cfg.namespaces)
         self.interval = self.cfg.interval
         self.context = self.cfg.context or None
+        # actual kube context name for display, resolved from kubectl on mount
+        self._resolved_context = ""
         self.allow_destructive = allow_destructive
         self.log_tail = log_tail
         self.tz = _resolve_tz(self.cfg.timezone)
@@ -1022,7 +1030,7 @@ class TopApp(App):
                 sort_desc=self.cfg.sort_desc,
                 group_by_node=self.cfg.group_by_node,
                 interval=self.interval,
-                context=self.context,
+                context=self._display_context(),
                 name_filter=self._effective_filter(),
                 id="sidebar",
             )
@@ -1071,6 +1079,10 @@ class TopApp(App):
         return opts
 
     def on_mount(self) -> None:
+        if self._auto_refresh:
+            # resolve the real kube context name once so the sidebar shows it
+            # instead of a generic "current" (skipped in --self-test)
+            self._resolved_context = self.fetcher.current_context_name()
         self.apply_theme_chrome()
         self.query_one("#summary_bar", SummaryBar).set_style_mode(self.cfg.summary_style)
 
@@ -1850,6 +1862,11 @@ class TopApp(App):
             self._persist_state()
         self._sync_sidebar_state()
 
+    def _display_context(self) -> str:
+        """Context name for the UI: explicit override, else the resolved kubectl
+        current-context, else '' (the sidebar then falls back to 'current')."""
+        return self.context or self._resolved_context or ""
+
     def _sync_sidebar_state(self) -> None:
         """Mirror app state into the sidebar controls without rebuilding rows."""
         try:
@@ -1868,7 +1885,7 @@ class TopApp(App):
             sort_desc=self.cfg.sort_desc,
             group_by_node=self.cfg.group_by_node,
             interval=self.interval,
-            context=self.context or "",
+            context=self._display_context(),
             name_filter=self._effective_filter(),
         )
 
