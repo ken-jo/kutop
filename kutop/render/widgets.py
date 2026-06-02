@@ -776,6 +776,8 @@ class OptionsModal(ModalScreen):
         super().__init__()
         self._cfg = cfg
         self._reg = build_column_registry()
+        self._committed_accent = cfg.theme_accent
+        self._accent_preview_dirty = False
         # All namespaces we know about for the multi-select: the live cluster
         # discovery (if any), unioned with whatever is currently selected so a
         # config-only namespace is never dropped from the list.
@@ -1008,7 +1010,76 @@ class OptionsModal(ModalScreen):
     # ── apply + persist ───────────────────────────────────────────────────
     def _apply(self) -> None:
         """Push the working config to the app (live re-render + persist)."""
+        if not self._accent_preview_dirty:
+            self.app.apply_config(self._cfg)  # type: ignore[attr-defined]
+            return
+
+        preview_accent = self._cfg.theme_accent
+        self._cfg.theme_accent = self._committed_accent
         self.app.apply_config(self._cfg)  # type: ignore[attr-defined]
+        self._cfg.theme_accent = preview_accent
+        try:
+            self.app._apply_accent(preview_accent)  # type: ignore[attr-defined]
+            self.app.preview_config(self._cfg)  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+
+    def _preview_accent(self, accent: str) -> None:
+        """Preview an accent in-place; Enter commits, ESC/close restores."""
+        if accent not in _VALID_ACCENTS:
+            return
+        self._cfg.theme_accent = accent
+        self._accent_preview_dirty = accent != self._committed_accent
+        try:
+            self.app._apply_accent(accent)  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+        try:
+            self.app.preview_config(self._cfg)  # type: ignore[attr-defined]
+        except AttributeError:
+            self.app.apply_config(self._cfg)  # type: ignore[attr-defined]
+        self._set_status("theme preview: Enter to apply, Esc to restore")
+
+    def _set_accent_select(self, accent: str) -> None:
+        try:
+            sel = self.query_one("#opt_accent", Select)
+            sel.value = accent
+        except Exception:
+            pass
+
+    def _cycle_accent(self, delta: int) -> None:
+        current = self._cfg.theme_accent
+        try:
+            idx = _VALID_ACCENTS.index(current)
+        except ValueError:
+            idx = 0
+        accent = _VALID_ACCENTS[(idx + delta) % len(_VALID_ACCENTS)]
+        self._set_accent_select(accent)
+        self._preview_accent(accent)
+
+    def _commit_accent_preview(self) -> None:
+        if not self._accent_preview_dirty:
+            return
+        self._committed_accent = self._cfg.theme_accent
+        self._accent_preview_dirty = False
+        self._apply()
+        self._set_status("theme applied")
+
+    def _restore_accent_preview(self) -> None:
+        if not self._accent_preview_dirty:
+            return
+        self._cfg.theme_accent = self._committed_accent
+        self._accent_preview_dirty = False
+        self._set_accent_select(self._committed_accent)
+        try:
+            self.app._apply_accent(self._committed_accent)  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+        try:
+            self.app.preview_config(self._cfg)  # type: ignore[attr-defined]
+        except AttributeError:
+            self.app.apply_config(self._cfg)  # type: ignore[attr-defined]
+        self._set_status("theme restored")
 
     def _set_status(self, msg: str) -> None:
         try:
@@ -1044,7 +1115,9 @@ class OptionsModal(ModalScreen):
                                    if str(event.value) in ("priority", "cpu", "mem", "name")
                                    else "priority")
         elif event.select.id == "opt_accent":
-            self._cfg.theme_accent = str(event.value)
+            self._preview_accent(str(event.value))
+            event.stop()
+            return
         elif event.select.id == "opt_summary_style":
             self._cfg.summary_style = str(event.value)
         self._apply()
@@ -1134,6 +1207,20 @@ class OptionsModal(ModalScreen):
             if event.key == "space":
                 self._toggle_ns()
                 event.stop()
+        elif focused is not None and focused.id == "opt_accent":
+            if event.key in ("up", "left"):
+                self._cycle_accent(-1)
+                event.stop()
+            elif event.key in ("down", "right"):
+                self._cycle_accent(1)
+                event.stop()
+            elif event.key == "enter":
+                self._commit_accent_preview()
+                event.stop()
+            elif event.key == "escape":
+                self._restore_accent_preview()
+                event.stop()
 
     def action_close(self) -> None:
+        self._restore_accent_preview()
         self.dismiss()

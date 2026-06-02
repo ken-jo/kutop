@@ -14,6 +14,12 @@ Screen {
     padding-right: 1;
 }
 
+Header {
+    background: $panel;
+    color: $text;
+    text-style: bold;
+}
+
 /* ── summary counter bar ────────────────────────────────────────────────── */
 /* compact (legacy) one-line bar; the -tiles variant grows to a 2-line strip of
  * boxed, color-coded stat tiles for fast 5-second situational awareness. */
@@ -444,8 +450,33 @@ OptionsModal {
 }
 
 .opt_input {
-    width: 30;
+    width: 100%;
+    height: 3;
+    border: none;
+    background: $panel;
+    padding: 0 1;
+}
+
+.opt_pane Select {
+    width: 100%;
+    height: 3;
+    border: none;
+    background: $panel;
+    padding: 0 1;
+}
+
+.opt_pane Checkbox {
+    width: auto;
     height: 1;
+    border: none;
+    background: transparent;
+    margin: 0 0 1 0;
+    padding: 0;
+}
+
+.opt_pane Input:focus,
+.opt_pane Select:focus {
+    background: $boost;
 }
 
 #opt_columns {

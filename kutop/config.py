@@ -526,7 +526,7 @@ class Config:
     timezone: str = ""                  # "" -> host local
     sort_mode: str = "priority"         # legacy: priority|cpu|mem|name (mirrors sort_key)
     theme_accent: str = "cyan"
-    summary_style: str = "tiles"        # tiles | compact
+    summary_style: str = "compact"      # tiles | compact
     # Width (in cells) of the NODE/POD name column. The cell content (glyph +
     # name + bracketed annotations) is fit to this width and ellipsised only
     # when it overflows — so a wider column shows more of the name. The user
@@ -700,9 +700,9 @@ def _config_from_dict(d: dict) -> Config:
     accent = str(view.get("theme_accent", "cyan"))
     if accent not in _VALID_ACCENTS:
         accent = "cyan"
-    summary_style = str(view.get("summary_style", "tiles"))
+    summary_style = str(view.get("summary_style", "compact"))
     if summary_style not in _VALID_SUMMARY_STYLES:
-        summary_style = "tiles"
+        summary_style = "compact"
     group_by_node = _coerce_bool(view.get("group_by_node"), False)
     name_width = clamp_name_width(view.get("name_width", NAME_WIDTH_DEFAULT))
 

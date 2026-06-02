@@ -720,6 +720,7 @@ class ResizableDataTable(DataTable):
 
 class TopApp(App):
     CSS_PATH = os.path.join(os.path.dirname(__file__), "theme.tcss")
+    TITLE = "kutop"
 
     BINDINGS = [
         ("q", "quit", "Quit"),
@@ -862,7 +863,7 @@ class TopApp(App):
 
     # ── compose ──────────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield Header(show_clock=True, icon="☰")
         yield SummaryBar(id="summary_bar")            # CRITERIA #5: SummaryBar composed
         with Horizontal(id="trends"):
             yield TrendGraph("CPU OVERALL", "cpu", id="cpu_trend")   # CRITERIA #5: Sparkline trend
@@ -1525,8 +1526,8 @@ class TopApp(App):
             self._render_main_table()
 
     # ── live config application (from the Options modal) ─────────────────────────
-    def apply_config(self, cfg: Config) -> None:
-        """Adopt an edited Config: re-render everything live + persist."""
+    def _adopt_config(self, cfg: Config, *, persist: bool) -> None:
+        """Adopt an edited Config: re-render everything live, optionally persist."""
         prev_interval = self.cfg.interval
         prev_ns = list(self.namespaces)
         prev_accent = self.cfg.theme_accent
@@ -1596,10 +1597,19 @@ class TopApp(App):
             self._sync_sidebar_ns()
             self.refresh_snapshot()
 
-        try:
-            save_config(self.cfg)
-        except Exception:
-            pass
+        if persist:
+            try:
+                save_config(self.cfg)
+            except Exception:
+                pass
+
+    def apply_config(self, cfg: Config) -> None:
+        """Adopt an edited Config: re-render everything live + persist."""
+        self._adopt_config(cfg, persist=True)
+
+    def preview_config(self, cfg: Config) -> None:
+        """Adopt a temporary Config preview without writing it to disk."""
+        self._adopt_config(cfg, persist=False)
 
     def export_config(self, cfg: Optional[Config] = None) -> Optional[str]:
         """Write the full config skeleton to the user file; return its path."""

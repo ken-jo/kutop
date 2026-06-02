@@ -45,6 +45,19 @@ def test_detail_presets_adjust_columns_and_panels() -> None:
     assert "owner_name" in full.columns
 
 
+def test_summary_style_defaults_to_compact() -> None:
+    assert Config().summary_style == "compact"
+
+
+def test_invalid_summary_style_falls_back_to_compact(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("view:\n  summary_style: broken\n", encoding="utf-8")
+
+    cfg = load_config(user_path=str(user_config))
+
+    assert cfg.summary_style == "compact"
+
+
 def test_load_config_layers_profile_user_and_cli(tmp_path: Path) -> None:
     user_config = tmp_path / "config.yaml"
     user_config.write_text(
