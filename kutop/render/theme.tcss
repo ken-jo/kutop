@@ -461,8 +461,33 @@ OptionsModal {
     width: 100%;
     height: 3;
     border: none;
+    background: transparent;
+    padding: 0;
+}
+
+.opt_pane Select > SelectCurrent {
+    border: none;
     background: $panel;
     padding: 0 1;
+}
+
+.opt_pane Select .down-arrow,
+.opt_pane Select .up-arrow {
+    width: 3;
+    color: $accent;
+    background: $panel;
+    content-align: center middle;
+}
+
+.opt_pane Select:focus > SelectCurrent {
+    border: none;
+    background: $boost;
+}
+
+.opt_pane Select:focus .down-arrow,
+.opt_pane Select:focus .up-arrow {
+    background: $boost;
+    color: $text;
 }
 
 .opt_pane Checkbox {
@@ -474,8 +499,7 @@ OptionsModal {
     padding: 0;
 }
 
-.opt_pane Input:focus,
-.opt_pane Select:focus {
+.opt_pane Input:focus {
     background: $boost;
 }
 
