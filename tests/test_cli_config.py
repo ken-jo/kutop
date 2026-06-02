@@ -266,7 +266,7 @@ def test_text_panel_uses_border_title_not_internal_title_row() -> None:
 
     class Harness(App[None]):
         def compose(self) -> ComposeResult:
-            yield Panel("CUSTOM HEALTH", id="health_panel")
+            yield Panel("CUSTOM HEALTH", id="health_panel", classes="-hidden")
 
     async def drive() -> None:
         app = Harness()
@@ -275,6 +275,8 @@ def test_text_panel_uses_border_title_not_internal_title_row() -> None:
 
             panel = app.query_one("#health_panel", Panel)
             assert panel.border_title == "CUSTOM HEALTH"
+            assert panel.has_class("kpanel")
+            assert panel.has_class("-hidden")
             assert not list(panel.query(".kpanel-title"))
             assert panel.DEFAULT_CLASSES == "kpanel"
 

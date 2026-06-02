@@ -78,6 +78,18 @@ def test_health_plugin_render_seam_updates_custom_panel() -> None:
     assert panel.rows == [HealthResult(name="api", ok=True, fields={"ready": "true"})]
 
 
+def test_health_plugin_panel_keeps_common_chrome_class() -> None:
+    panel = HealthPlugin().make_panel()
+
+    assert panel.has_class("kpanel")
+    assert panel.has_class("-hidden")
+
+    panel.remove_class("-hidden")
+
+    assert panel.has_class("kpanel")
+    assert not panel.has_class("-hidden")
+
+
 def test_pod_resources_sum_all_containers() -> None:
     class FakeFetcher(Fetcher):
         def _run_safe(self, *args: str) -> str:

@@ -398,7 +398,11 @@ class Panel(VerticalScroll):
     DEFAULT_CLASSES = "kpanel"
 
     def __init__(self, title: str = "", **kwargs) -> None:
-        super().__init__(**kwargs)
+        classes = str(kwargs.pop("classes", "") or "")
+        merged_classes = " ".join(
+            dict.fromkeys([*self.DEFAULT_CLASSES.split(), *classes.split()])
+        )
+        super().__init__(classes=merged_classes, **kwargs)
         self._title = title
         self._body: "Optional[Static]" = None
         #: last renderable handed to :meth:`set_body` (kept so callers/tests can
