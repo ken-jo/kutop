@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.1 - 2026-06-03
+
+### Fixed
+
+- Launching no longer overwrites `~/.config/kutop/config.yaml`. `on_mount`
+  ended in a `_persist_state()` that rewrote the loaded config on every start,
+  so a launch where the load silently fell back to defaults — e.g. PyYAML
+  unavailable (it was an optional extra before 0.2.2), or an unrecognized
+  legacy key — reset the user's real settings (profile, probes, view options).
+  Persistence is now opt-in for genuine user actions (panel toggles, Options
+  apply) only; render-time callers never touch the file.
+
+### Changed
+
+- The sidebar fits short terminals: the status block is a single rule instead
+  of a bordered box-in-box, the `filter=` line shows only when a filter is
+  active, and tighter spacing keeps the SORT / PANELS controls reachable.
+- The sidebar shows the real kube context name (resolved via
+  `kubectl config current-context`) instead of a generic "current"; long EKS
+  ARNs show the trailing cluster segment (`…/cluster/spm-eks` → `spm-eks`).
+- Alerts and Health panels that are toggled on but unconfigured now render a
+  setup hint (`set probes.alertmanager_url to enable`, `no probes configured`)
+  instead of silently showing nothing.
+
 ## 0.3.0 - 2026-06-03
 
 ### Added
