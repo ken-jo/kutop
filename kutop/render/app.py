@@ -1758,10 +1758,13 @@ class TopApp(App):
     # ── panel visibility ─────────────────────────────────────────────────────────
     def apply_theme_chrome(self) -> None:
         """Apply visual theme toggles that are stored in Config.view."""
-        try:
-            self.screen.set_class(not self.cfg.panel_backgrounds, "-panel-backgrounds-off")
-        except Exception:
-            self.set_class(not self.cfg.panel_backgrounds, "-panel-backgrounds-off")
+        on = bool(self.cfg.panel_backgrounds)
+        self.set_class(on, "-panel-backgrounds-on")
+        for screen in list(getattr(self, "screen_stack", [])):
+            try:
+                screen.set_class(on, "-panel-backgrounds-on")
+            except Exception:
+                continue
 
     def apply_panel_visibility(self) -> None:
         self.cfg.show_events = self.show_events

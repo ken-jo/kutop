@@ -51,7 +51,7 @@ Header {
 #search_bar {
     height: 3;
     layout: horizontal;
-    background: $surface;
+    background: transparent;
     border: round $accent;
     padding: 0 1;
 }
@@ -70,7 +70,7 @@ Header {
 #search_input {
     width: 1fr;
     border: none;
-    background: $surface;
+    background: transparent;
 }
 
 /* ── common panel chrome (.kpanel) ──────────────────────────────────────── */
@@ -84,28 +84,71 @@ Header {
  * body scrolls vertically when content overflows the fixed height. */
 .kpanel {
     border: round $accent;
-    background: $surface;
+    background: transparent;
     padding: 0 1;
     scrollbar-size-vertical: 1;
 }
 
-Screen.-panel-backgrounds-off #search_bar,
-Screen.-panel-backgrounds-off #search_input,
-Screen.-panel-backgrounds-off TrendGraph,
-Screen.-panel-backgrounds-off .kpanel,
-Screen.-panel-backgrounds-off .kpanel-body,
-Screen.-panel-backgrounds-off DataTable,
-Screen.-panel-backgrounds-off DataTable > .datatable--header,
-Screen.-panel-backgrounds-off DataTable > .datatable--odd-row,
-Screen.-panel-backgrounds-off DataTable > .datatable--even-row,
-Screen.-panel-backgrounds-off DataTable > .datatable--fixed,
-Screen.-panel-backgrounds-off DataTable > .datatable--fixed-cursor {
+/* ── panel fill source of truth ───────────────────────────────────────────
+ * Base dashboard panel bodies are transparent: borders, titles, semantic bars,
+ * cursor, and gauges still draw, but panel interiors do not get a separate fill.
+ * Config.view.panel_backgrounds toggles exactly one Screen class:
+ *   -panel-backgrounds-on -> restore the theme's panel/surface fills.
+ */
+DataTable,
+DataTable > .datatable--header,
+DataTable > .datatable--odd-row,
+DataTable > .datatable--even-row,
+DataTable > .datatable--fixed {
     background: transparent;
 }
 
-Screen.-panel-backgrounds-off DataTable:focus,
-Screen.-panel-backgrounds-off DataTable:focus > .datatable--header {
+DataTable:focus,
+DataTable:focus > .datatable--header {
     background-tint: transparent;
+}
+
+Screen.-panel-backgrounds-on #search_bar,
+Screen.-panel-backgrounds-on #search_input,
+Screen.-panel-backgrounds-on TrendGraph,
+Screen.-panel-backgrounds-on .kpanel,
+Screen.-panel-backgrounds-on .kpanel-body,
+Screen.-panel-backgrounds-on DataTable {
+    background: $surface;
+}
+
+Screen.-panel-backgrounds-on DataTable:focus {
+    background-tint: $foreground 5%;
+}
+
+Screen.-panel-backgrounds-on DataTable:dark > .datatable--even-row {
+    background: $surface-darken-1 40%;
+}
+
+Screen.-panel-backgrounds-on DataTable > .datatable--header {
+    background: $panel;
+}
+
+Screen.-panel-backgrounds-on DataTable:focus > .datatable--header {
+    background-tint: $foreground 5%;
+}
+
+Screen.-panel-backgrounds-on DataTable > .datatable--even-row {
+    background: $surface-lighten-1 50%;
+}
+
+Screen.-panel-backgrounds-on DataTable > .datatable--fixed {
+    background: $secondary-muted;
+}
+
+DataTable > .datatable--cursor,
+DataTable > .datatable--fixed-cursor {
+    background: $block-cursor-blurred-background;
+}
+
+DataTable:focus > .datatable--cursor,
+DataTable:focus > .datatable--fixed-cursor {
+    background: $block-cursor-background;
 }
 
 #main_table, #events_table, #pvc_table, .kpanel {
@@ -116,7 +159,7 @@ Screen.-panel-backgrounds-off DataTable:focus > .datatable--header {
 .kpanel-body {
     width: 100%;
     height: 1fr;
-    background: $surface;
+    background: transparent;
 }
 
 /* ── alerts panel (core) + plugin panels (e.g. health) ──────────────────── */
@@ -168,7 +211,7 @@ Screen.-panel-backgrounds-off DataTable:focus > .datatable--header {
 TrendGraph {
     width: 1fr;
     border: round $primary-darken-2;
-    background: $surface;
+    background: transparent;
     border-title-align: left;
     border-title-color: $accent;
     padding: 0 1;

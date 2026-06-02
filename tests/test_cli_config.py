@@ -191,12 +191,14 @@ def test_app_applies_panel_background_theme_chrome(monkeypatch) -> None:
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
 
-            assert app.screen.has_class("-panel-backgrounds-off")
+            assert not app.has_class("-panel-backgrounds-on")
+            assert not any(s.has_class("-panel-backgrounds-on") for s in app.screen_stack)
 
             app.apply_config(Config(panel_backgrounds=True))
             await pilot.pause()
 
-            assert not app.screen.has_class("-panel-backgrounds-off")
+            assert app.has_class("-panel-backgrounds-on")
+            assert all(s.has_class("-panel-backgrounds-on") for s in app.screen_stack)
 
             await pilot.exit(None)
 
@@ -234,7 +236,8 @@ def test_options_modal_toggles_panel_backgrounds(monkeypatch) -> None:
             await pilot.pause()
 
             assert app.cfg.panel_backgrounds is False
-            assert app.screen.has_class("-panel-backgrounds-off")
+            assert not app.has_class("-panel-backgrounds-on")
+            assert not any(s.has_class("-panel-backgrounds-on") for s in app.screen_stack)
 
             await pilot.exit(None)
 
@@ -246,10 +249,10 @@ def test_options_modal_toggles_panel_backgrounds(monkeypatch) -> None:
 def test_panel_background_css_covers_datatable_layers() -> None:
     css = Path("kutop/render/theme.tcss").read_text(encoding="utf-8")
 
-    assert "Screen.-panel-backgrounds-off DataTable" in css
-    assert "Screen.-panel-backgrounds-off DataTable > .datatable--header" in css
-    assert "Screen.-panel-backgrounds-off DataTable > .datatable--even-row" in css
-    assert "Screen.-panel-backgrounds-off DataTable > .datatable--fixed" in css
+    assert "Screen.-panel-backgrounds-on DataTable" in css
+    assert "Screen.-panel-backgrounds-on DataTable > .datatable--header" in css
+    assert "Screen.-panel-backgrounds-on DataTable > .datatable--even-row" in css
+    assert "Screen.-panel-backgrounds-on DataTable > .datatable--fixed" in css
 
 
 def test_header_hamburger_opens_kutop_menu() -> None:
