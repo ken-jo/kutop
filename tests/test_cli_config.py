@@ -4,6 +4,8 @@ import asyncio
 import re
 from pathlib import Path
 
+from textual.binding import Binding
+
 import kutop
 from kutop.cli import _build_parser, _parse_size
 from kutop.config import Config, Profile, apply_detail_preset, load_config
@@ -394,6 +396,56 @@ def test_trend_graph_renders_thin_meter_canvas() -> None:
     assert " " in heat_cells[0]
 
 
+def test_interval_indicator_sits_left_of_clock_and_tracks_value() -> None:
+    from textual.widgets._header import HeaderClock
+
+    from kutop.render.app import IntervalIndicator, TopApp
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(interval=2.0),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            ind = app.query_one("#interval_indicator", IntervalIndicator)
+            clock = app.query_one(HeaderClock)
+            # btop placement: docked to the LEFT of the header clock
+            assert ind.region.x < clock.region.x
+            assert "2s" in ind.render().plain  # 2.0 -> "2s" via :g
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_interval_nudge_keys_clamp_and_update() -> None:
+    from kutop.render.app import IntervalIndicator, TopApp
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(interval=1.0),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            # '-' at the 1.0s floor is a no-op
+            app.action_interval_down()
+            assert app.interval == 1.0
+            # '+' adds 100 ms and the indicator + config follow
+            app.action_interval_up()
+            assert abs(app.interval - 1.1) < 1e-9
+            assert abs(app.cfg.interval - 1.1) < 1e-9
+            ind = app.query_one("#interval_indicator", IntervalIndicator)
+            assert "1.1s" in ind.render().plain
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_initial_refresh_applies_core_snapshot_before_enrichment() -> None:
     from kutop.model import Node, Pod, Snapshot
     from kutop.render.app import TopApp
@@ -532,7 +584,10 @@ def test_theme_menu_dismisses_on_outside_click() -> None:
 def test_q_shows_quit_hint_toast_and_ctrl_q_keeps_real_quit_binding(monkeypatch) -> None:
     from kutop.render.app import TopApp
 
-    bindings = {(key, action) for key, action, *_ in TopApp.BINDINGS}
+    bindings = {
+        (b.key, b.action) if isinstance(b, Binding) else (b[0], b[1])
+        for b in TopApp.BINDINGS
+    }
     assert ("q", "quit_hint") in bindings
     assert ("q", "quit") not in bindings
     assert ("ctrl+q", "quit") in bindings

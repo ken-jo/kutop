@@ -25,6 +25,7 @@ from typing import Optional
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import Reactive
 from textual.widgets import (
@@ -146,12 +147,33 @@ class ThemeHeaderIcon(Widget):
         return str(self.icon)
 
 
+class IntervalIndicator(Static):
+    """Top-right refresh-cadence readout, adjustable with +/- (btop-style).
+
+    Docked to the right of the header clock; the app keeps its text in sync via
+    :meth:`TopApp._update_interval_indicator`.
+    """
+
+    DEFAULT_CSS = """
+    IntervalIndicator {
+        dock: right;
+        width: auto;
+        padding: 0 1;
+        /* clear the 10-wide header clock zone so we sit to its left */
+        margin-right: 10;
+    }
+    """
+
+
 class ThemeHeader(Header):
     """Header whose hamburger icon opens kutop's theme menu."""
 
     def compose(self) -> ComposeResult:
         yield ThemeHeaderIcon().data_bind(Header.icon)
         yield HeaderTitle()
+        # Yielded before the clock: among right-docked widgets the earlier one
+        # sits further left, so this lands to the clock's left, like btop.
+        yield IntervalIndicator(id="interval_indicator")
         yield (
             HeaderClock().data_bind(Header.time_format)
             if self._show_clock
@@ -804,6 +826,9 @@ class TopApp(App):
         ("a", "toggle_alerts", "Alerts"),
         ("h", "toggle_health", "Health"),
         ("R", "reload_config", "Reload"),
+        Binding("plus", "interval_up", "Slower", show=True),
+        Binding("equals_sign", "interval_up", "Slower", show=False),
+        Binding("minus", "interval_down", "Faster", show=True),
     ]
 
     def __init__(
@@ -1072,6 +1097,7 @@ class TopApp(App):
                    *(["-"] * (ncols - 1)), key="loading")
 
         self.apply_panel_visibility()
+        self._update_interval_indicator()
         if self._auto_refresh:
             self.refresh_snapshot()
             self._refresh_timer = self.set_interval(self.interval, self.refresh_snapshot)
@@ -1615,6 +1641,7 @@ class TopApp(App):
         self.cfg.show_health = self.show_health
         self.cfg.namespaces = list(self.namespaces)
         self.cfg.name_filter = ""
+        self.cfg.interval = self.interval
 
     def _persist_state(self) -> None:
         """Persist current config to ~/.config/kutop/config.yaml. Best effort."""
@@ -1912,6 +1939,50 @@ class TopApp(App):
     def action_refresh(self) -> None:
         self.refresh_snapshot()
         self.notify("refreshing...")
+
+    # ── refresh-cadence control (btop-style +/- in 100 ms steps) ──────────────
+    _INTERVAL_STEP = 0.1   # 100 ms per key press
+    _INTERVAL_MIN = 1.0    # floor: avoid hammering the kube API
+    _INTERVAL_MAX = 60.0
+
+    def action_interval_up(self) -> None:
+        """Slower refresh (+100 ms)."""
+        self._nudge_interval(self._INTERVAL_STEP)
+
+    def action_interval_down(self) -> None:
+        """Faster refresh (-100 ms)."""
+        self._nudge_interval(-self._INTERVAL_STEP)
+
+    def _nudge_interval(self, delta: float) -> None:
+        new = round(
+            max(self._INTERVAL_MIN, min(self._INTERVAL_MAX, self.interval + delta)), 1
+        )
+        if abs(new - self.interval) < 1e-9:
+            return  # already at the clamp edge
+        self.interval = new
+        self.cfg.interval = new
+        # restart the auto-refresh timer so the new cadence takes effect live
+        if self._refresh_timer is not None:
+            try:
+                self._refresh_timer.stop()
+            except Exception:
+                pass
+            self._refresh_timer = self.set_interval(self.interval, self.refresh_snapshot)
+        self._update_interval_indicator()
+        self._sync_sidebar_state()
+        self.notify(f"refresh: {self.interval:g}s")
+        self._persist_state()
+
+    def _update_interval_indicator(self) -> None:
+        """Keep the top-right header readout in sync with ``self.interval``."""
+        try:
+            indicator = self.query_one("#interval_indicator", Static)
+        except Exception:
+            return
+        text = Text()
+        text.append("⟳ ", style="dim")
+        text.append(f"{self.interval:g}s", style="bold cyan")
+        indicator.update(text)
 
     def action_cycle_sort(self) -> None:
         """Cycle the active sort_key through every sortable column."""
