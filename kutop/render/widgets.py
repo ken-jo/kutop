@@ -8,6 +8,7 @@ here.
 
 from __future__ import annotations
 
+import asyncio
 from statistics import mean
 from typing import Optional
 
@@ -749,6 +750,24 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ThemeMenuList(OptionList):
+    """OptionList that reports mouse hover for theme preview."""
+
+    class Preview(Message):
+        def __init__(self, option: Option) -> None:
+            super().__init__()
+            self.option = option
+
+    def watch__mouse_hovering_over(self, option_index: Optional[int]) -> None:
+        if option_index is None:
+            return
+        if not 0 <= option_index < self.option_count:
+            return
+        opt = self.get_option_at_index(option_index)
+        if not opt.disabled:
+            self.post_message(self.Preview(opt))
+
+
 class ThemeMenuModal(ModalScreen):
     """Hamburger menu: Options action plus theme preview/commit rows."""
 
@@ -768,19 +787,22 @@ class ThemeMenuModal(ModalScreen):
             yield Label("MENU", id="theme_menu_title")
             yield Label("Up/Down previews themes · Enter applies",
                         id="theme_menu_hint")
-            yield OptionList(id="theme_menu_list")
+            yield ThemeMenuList(id="theme_menu_list")
 
     def on_mount(self) -> None:
         ol = self.query_one("#theme_menu_list", OptionList)
-        ol.add_option(Option("⚙  Options / Settings", id="action::options"))
+        ol.add_option(Option("Keys", id="action::keys"))
+        ol.add_option(Option("Screenshot", id="action::screenshot"))
+        ol.add_option(Option("Quit", id="action::quit"))
+        ol.add_option(Option("Options / Settings", id="action::options"))
         ol.add_option(Option("─ themes ─", id="label::themes", disabled=True))
         for name in self._themes:
             mark = "[green]●[/]" if name == self._original else "[grey37]○[/]"
             ol.add_option(Option(f"{mark} {name}", id=f"theme::{name}"))
         try:
-            ol.highlighted = self._themes.index(self._original) + 2
+            ol.highlighted = self._themes.index(self._original) + 5
         except ValueError:
-            ol.highlighted = 2
+            ol.highlighted = 5
 
     def _theme_from_option(self, opt: Option) -> Optional[str]:
         oid = opt.id or ""
@@ -803,14 +825,19 @@ class ThemeMenuModal(ModalScreen):
             self._preview = self._original
             self.app.preview_theme(self._original)  # type: ignore[attr-defined]
 
+    def on_theme_menu_list_preview(self, event: ThemeMenuList.Preview) -> None:
+        name = self._theme_from_option(event.option)
+        if name:
+            self._preview = name
+            self.app.preview_theme(name)  # type: ignore[attr-defined]
+
     def on_option_list_option_selected(
         self, event: OptionList.OptionSelected
     ) -> None:
         oid = event.option.id or ""
-        if oid == "action::options":
+        if oid.startswith("action::"):
             self.app.preview_theme(self._original)  # type: ignore[attr-defined]
-            self.dismiss("options")
-            self.app.action_open_options()  # type: ignore[attr-defined]
+            self._run_action(oid)
             return
         name = self._theme_from_option(event.option)
         if name:
@@ -821,10 +848,10 @@ class ThemeMenuModal(ModalScreen):
         ol = self.query_one("#theme_menu_list", OptionList)
         if ol.highlighted is not None:
             opt = ol.get_option_at_index(ol.highlighted)
-            if (opt.id or "") == "action::options":
+            oid = opt.id or ""
+            if oid.startswith("action::"):
                 self.app.preview_theme(self._original)  # type: ignore[attr-defined]
-                self.dismiss("options")
-                self.app.action_open_options()  # type: ignore[attr-defined]
+                self._run_action(oid)
                 return
         name = self._highlighted_theme() or self._preview
         if name:
@@ -834,6 +861,18 @@ class ThemeMenuModal(ModalScreen):
     def action_cancel(self) -> None:
         self.app.preview_theme(self._original)  # type: ignore[attr-defined]
         self.dismiss(None)
+
+    def _run_action(self, oid: str) -> None:
+        action = oid.split("::", 1)[1]
+        self.dismiss(action)
+        if action == "keys":
+            asyncio.create_task(self.app.run_action("app.show_help_panel"))
+        elif action == "screenshot":
+            asyncio.create_task(self.app.run_action("app.screenshot"))
+        elif action == "quit":
+            asyncio.create_task(self.app.run_action("app.quit"))
+        elif action == "options":
+            self.app.action_open_options()  # type: ignore[attr-defined]
 
 
 class ThemePreviewOverlay(SelectOverlay):
@@ -853,6 +892,14 @@ class ThemePreviewOverlay(SelectOverlay):
     ) -> None:
         event.stop()
         self.post_message(self.Preview(self, event.option_index))
+
+    def watch__mouse_hovering_over(self, option_index: Optional[int]) -> None:
+        if option_index is None:
+            return
+        if 0 <= option_index < len(self.options):
+            option = self.options[option_index]
+            if not option.disabled:
+                self.post_message(self.Preview(self, option_index))
 
     def action_dismiss(self) -> None:
         self.post_message(self.Restore())

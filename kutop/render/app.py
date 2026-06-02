@@ -26,6 +26,7 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.reactive import Reactive
 from textual.widgets import (
     Checkbox,
     DataTable,
@@ -36,6 +37,8 @@ from textual.widgets import (
     RichLog,
     Select,
 )
+from textual.widget import Widget
+from textual.widgets._header import HeaderClock, HeaderClockSpace, HeaderTitle
 from textual.screen import ModalScreen
 
 from .. import model
@@ -64,6 +67,7 @@ from .widgets import (
 )
 
 _HISTORY = 120
+_HIDDEN_THEMES = {"ansi-dark", "ansi-light"}
 
 
 # ── render context for column accessors ───────────────────────────────────────
@@ -112,8 +116,46 @@ class RenderCtx:
         return Text(model.fmt_age(secs), style="")
 
 
+class ThemeHeaderIcon(Widget):
+    """Header icon that opens kutop's menu instead of Textual's palette."""
+
+    DEFAULT_CSS = """
+    ThemeHeaderIcon {
+        dock: left;
+        padding: 0 1;
+        width: 8;
+        content-align: left middle;
+    }
+
+    ThemeHeaderIcon:hover {
+        background: $foreground 10%;
+    }
+    """
+
+    icon = Reactive("☰")
+
+    def on_mount(self) -> None:
+        self.tooltip = "Open kutop menu"
+
+    async def on_click(self, event: events.Click) -> None:
+        event.stop()
+        self.app.action_open_theme_menu()  # type: ignore[attr-defined]
+
+    def render(self) -> str:
+        return str(self.icon)
+
+
 class ThemeHeader(Header):
     """Header whose hamburger icon opens kutop's theme menu."""
+
+    def compose(self) -> ComposeResult:
+        yield ThemeHeaderIcon().data_bind(Header.icon)
+        yield HeaderTitle()
+        yield (
+            HeaderClock().data_bind(Header.time_format)
+            if self._show_clock
+            else HeaderClockSpace()
+        )
 
     def _on_click(self) -> None:
         self.app.action_open_theme_menu()  # type: ignore[attr-defined]
@@ -876,9 +918,16 @@ class TopApp(App):
     def _coerce_theme(self, theme: str) -> str:
         """Return a valid Textual theme name, falling back to textual-dark."""
         name = str(theme or "textual-dark")
-        if name in self.available_themes:
+        if name in self.available_themes and name not in _HIDDEN_THEMES:
             return name
         return "textual-dark"
+
+    def _theme_options(self) -> list[str]:
+        """Return usable Textual themes for kutop's layout."""
+        return [
+            name for name in self.available_themes.keys()
+            if name not in _HIDDEN_THEMES
+        ]
 
     def _context_options(self) -> list[str]:
         """Return kubeconfig context names for the Options selector.
@@ -1683,7 +1732,7 @@ class TopApp(App):
             pass
 
     def action_open_theme_menu(self) -> None:
-        themes = list(self.available_themes.keys())
+        themes = self._theme_options()
         self.push_screen(ThemeMenuModal(themes, self.theme))
 
     def action_open_options(self) -> None:
@@ -1697,7 +1746,7 @@ class TopApp(App):
                 copy.deepcopy(self.cfg),
                 discovered_ns=list(self._discovered_ns),
                 context_names=self._context_options(),
-                themes=list(self.available_themes.keys()),
+                themes=self._theme_options(),
             )
         )
 

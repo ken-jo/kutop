@@ -191,6 +191,65 @@ def test_theme_menu_arrow_preview_and_escape_restore(monkeypatch) -> None:
     asyncio.run(drive())
 
 
+def test_header_hamburger_opens_kutop_menu() -> None:
+    from kutop.render.app import ThemeHeaderIcon, TopApp
+
+    from kutop.render.widgets import ThemeMenuModal
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.click(ThemeHeaderIcon)
+            await pilot.pause()
+
+            assert isinstance(app.screen, ThemeMenuModal)
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_theme_menu_has_options_action_and_hover_preview(monkeypatch) -> None:
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import ThemeMenuList
+
+    monkeypatch.setattr("kutop.render.app.save_config", lambda cfg: "/tmp/kutop-config.yaml")
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_theme_menu()
+            await pilot.pause()
+
+            menu = app.screen.query_one("#theme_menu_list", ThemeMenuList)
+            option_ids = [opt.id for opt in menu.options]
+            assert "action::keys" in option_ids
+            assert "action::screenshot" in option_ids
+            assert "action::quit" in option_ids
+            assert "action::options" in option_ids
+
+            menu._mouse_hovering_over = 6
+            await pilot.pause()
+            assert app.theme == "textual-light"
+            assert app.cfg.theme == "textual-dark"
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_options_modal_theme_preview_enter_persists(monkeypatch) -> None:
     from textual.widgets import Select
 
@@ -281,6 +340,63 @@ def test_options_modal_theme_escape_restores_without_persist(monkeypatch) -> Non
     asyncio.run(drive())
 
 
+def test_options_modal_theme_hover_previews(monkeypatch) -> None:
+    from textual.widgets import Select
+
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import ThemePreviewOverlay
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+            saved.clear()
+
+            select = app.screen.query_one("#opt_theme", Select)
+            select.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            overlay = select.query_one(ThemePreviewOverlay)
+            overlay._mouse_hovering_over = 2
+            await pilot.pause()
+
+            assert app.theme == "nord"
+            assert app.cfg.theme == "textual-dark"
+            assert saved == []
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_hidden_ansi_themes_are_not_offered() -> None:
+    from kutop.render.app import TopApp
+
+    app = TopApp(
+        ["default"],
+        config=Config(theme="textual-dark"),
+        discover_namespaces=False,
+        auto_refresh=False,
+    )
+
+    assert "ansi-dark" not in app._theme_options()
+    assert "ansi-light" not in app._theme_options()
+
+
 def test_options_modal_context_input_persists(monkeypatch) -> None:
     from textual.widgets import Select
 
@@ -367,6 +483,20 @@ def test_app_falls_back_from_unknown_theme() -> None:
     app = TopApp(
         ["default"],
         config=Config(theme="does-not-exist"),
+        discover_namespaces=False,
+        auto_refresh=False,
+    )
+
+    assert app.theme == "textual-dark"
+    assert app.cfg.theme == "textual-dark"
+
+
+def test_app_falls_back_from_hidden_ansi_theme() -> None:
+    from kutop.render.app import TopApp
+
+    app = TopApp(
+        ["default"],
+        config=Config(theme="ansi-dark"),
         discover_namespaces=False,
         auto_refresh=False,
     )

@@ -556,16 +556,16 @@ OptionsModal {
 /* ── hamburger theme menu ───────────────────────────────────────────────── */
 ThemeMenuModal {
     align: left top;
-    background: $background 45%;
+    background: $background 65%;
 }
 
 #theme_menu {
     offset: 1 1;
-    width: 46;
-    max-height: 24;
-    border: round $accent;
-    background: $surface;
-    padding: 1;
+    width: 52;
+    max-height: 28;
+    border: none;
+    background: $background;
+    padding: 1 2;
 }
 
 #theme_menu_title {
@@ -583,7 +583,7 @@ ThemeMenuModal {
 #theme_menu_list {
     height: 1fr;
     border: none;
-    background: $panel;
+    background: transparent;
 }
 
 /* ── dual-handle threshold sliders (Thresholds tab) ─────────────────────── */
