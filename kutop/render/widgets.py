@@ -750,6 +750,35 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class InfoModal(ModalScreen[None]):
+    """Small informational modal. Dismisses with Enter or Esc."""
+
+    BINDINGS = [
+        ("enter", "close", "Close"),
+        ("escape", "close", "Close"),
+    ]
+
+    def __init__(self, title: str, body: str, close_label: str = "Close") -> None:
+        super().__init__()
+        self._title = title
+        self._body = body
+        self._close_label = close_label
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="info_box"):
+            yield Label(self._title, id="info_title")
+            yield Label(self._body, id="info_body")
+            with Horizontal(id="info_btns"):
+                yield Button(self._close_label, variant="primary", id="info_close")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "info_close":
+            self.dismiss(None)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class ThemeMenuModal(ModalScreen):
     """Hamburger menu with native actions and Options entry."""
 

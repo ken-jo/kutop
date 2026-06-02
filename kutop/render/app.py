@@ -62,6 +62,7 @@ from .widgets import (
     SummaryBar,
     TrendGraph,
     ConfirmModal,
+    InfoModal,
     bar_gauge,
     level_color,
 )
@@ -774,7 +775,8 @@ class TopApp(App):
     TITLE = "kutop"
 
     BINDINGS = [
-        ("q", "quit", "Quit"),
+        ("q", "quit_hint", "Quit?"),
+        ("ctrl+q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
         ("o", "open_options", "Options"),
         ("slash", "search", "Search"),
@@ -1195,6 +1197,14 @@ class TopApp(App):
             self._fetching = False
 
     # ── shutdown ───────────────────────────────────────────────────────────────
+    def action_quit_hint(self) -> None:
+        self.push_screen(
+            InfoModal(
+                "Quit",
+                "Press Ctrl+Q to quit kutop.",
+            )
+        )
+
     def action_quit(self) -> None:
         """Quit promptly: kill any in-flight kubectl before exiting so the worker
         thread isn't left blocking asyncio/interpreter teardown."""
