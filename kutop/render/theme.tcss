@@ -89,6 +89,10 @@ Header {
     scrollbar-size-vertical: 1;
 }
 
+.kpanel-widget {
+    border-top: none;
+}
+
 /* ── panel fill source of truth ───────────────────────────────────────────
  * Base dashboard panel bodies are transparent: borders, titles, semantic bars,
  * cursor, and gauges still draw, but panel interiors do not get a separate fill.

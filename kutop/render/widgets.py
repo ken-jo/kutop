@@ -388,34 +388,34 @@ class Panel(VerticalScroll):
     """One reusable titled, bordered, scrollable side-panel.
 
     The one common spec every kutop side panel shares so they stop looking
-    "each different": a rounded border, a left-aligned accent ``border_title``,
+    "each different": a framed panel, a full-width internal accent title row,
     consistent padding, and a scrollable body. The body is a single
     :class:`Static`; :meth:`set_body` swaps its renderable and :meth:`set_title`
-    updates the border title. Because the panel is a ``VerticalScroll`` the body
-    scrolls vertically (mouse wheel + keyboard) whenever it overflows the panel's
-    fixed height — no truncation.
+    updates the internal title row. Because the panel is a ``VerticalScroll`` the
+    body scrolls vertically (mouse wheel + keyboard) whenever it overflows the
+    panel's fixed height — no truncation.
 
-    All panels carry the ``kpanel`` CSS class so ``theme.tcss`` applies identical
-    chrome (border-title alignment/color, scrollbar styling). Subclasses set their
-    own border *color* (a semantic accent) via an id rule, but the style/title/
-    padding stay uniform across every panel.
+    Panel widgets carry ``kpanel`` + ``kpanel-widget`` CSS classes so
+    ``theme.tcss`` can keep DataTable panels and plugin panels visually aligned
+    while letting plugin titles live inside the fillable body instead of
+    Textual's border-title row.
 
     Pure presentation: it holds no fetching logic and no workload knowledge.
     """
 
-    DEFAULT_CLASSES = "kpanel"
+    DEFAULT_CLASSES = "kpanel kpanel-widget"
 
     def __init__(self, title: str = "", **kwargs) -> None:
         super().__init__(**kwargs)
         self._title = title
-        self._title_label: "Optional[Label]" = None
+        self._title_label: "Optional[Static]" = None
         self._body: "Optional[Static]" = None
         #: last renderable handed to :meth:`set_body` (kept so callers/tests can
         #: introspect the rendered content without reaching into Static internals).
         self._last_renderable: RenderableType = ""
 
     def compose(self) -> ComposeResult:
-        self._title_label = Label(self._title, classes="kpanel-title")
+        self._title_label = Static(self._title, expand=True, classes="kpanel-title")
         yield self._title_label
         self._body = Static(id=None, classes="kpanel-body")
         yield self._body
@@ -426,7 +426,7 @@ class Panel(VerticalScroll):
     def set_title(self, title: str) -> None:
         self._title = title
         try:
-            label = self._title_label or self.query_one(".kpanel-title", Label)
+            label = self._title_label or self.query_one(".kpanel-title", Static)
             label.update(title)
         except Exception:
             pass
