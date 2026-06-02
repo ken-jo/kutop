@@ -278,7 +278,7 @@ def test_options_modal_theme_escape_restores_without_persist(monkeypatch) -> Non
 
 
 def test_options_modal_context_input_persists(monkeypatch) -> None:
-    from textual.widgets import Input
+    from textual.widgets import Select
 
     from kutop.render.app import TopApp
 
@@ -295,24 +295,66 @@ def test_options_modal_context_input_persists(monkeypatch) -> None:
             discover_namespaces=False,
             auto_refresh=False,
         )
+        app._discovered_contexts = ["old-ctx", "new-ctx"]
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             app.action_open_options()
             await pilot.pause()
             saved.clear()
 
-            context = app.screen.query_one("#opt_context", Input)
+            context = app.screen.query_one("#opt_context", Select)
             context.focus()
             context.value = "new-ctx"
             await pilot.pause()
 
             assert app.cfg.context == "new-ctx"
+            assert app.context == "new-ctx"
+            assert app.fetcher.context == "new-ctx"
 
             await pilot.exit(None)
 
     asyncio.run(drive())
 
     assert saved[-1]["cluster"]["context"] == "new-ctx"
+
+
+def test_options_modal_context_dropdown_discovers_kube_contexts(monkeypatch) -> None:
+    from textual.widgets import Select
+
+    from kutop.render.app import TopApp
+
+    class Completed:
+        returncode = 0
+        stdout = "dev\nprod\n"
+
+    monkeypatch.setattr(
+        "kutop.render.app.subprocess.run",
+        lambda *args, **kwargs: Completed(),
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(context="prod"),
+            discover_namespaces=True,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+
+            context = app.screen.query_one("#opt_context", Select)
+            values = [value for _, value in context._options]
+
+            assert "" in values
+            assert "dev" in values
+            assert "prod" in values
+            assert context.value == "prod"
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
 
 
 def test_app_falls_back_from_unknown_theme() -> None:

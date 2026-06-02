@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 from collections import deque
 from datetime import datetime, timezone
 from typing import Optional
@@ -830,6 +831,7 @@ class TopApp(App):
         self._search_term = ""
         # Namespaces discovered live on the cluster (for the Options multi-select).
         self._discovered_ns: list[str] = []
+        self._discovered_contexts: list[str] = []
         # guarded off for --self-test so the headless smoke test never shells out
         self._discover_namespaces = discover_namespaces
         self._auto_refresh = auto_refresh
@@ -877,6 +879,36 @@ class TopApp(App):
         if name in self.available_themes:
             return name
         return "textual-dark"
+
+    def _context_options(self) -> list[str]:
+        """Return kubeconfig context names for the Options selector.
+
+        Discovery is skipped when live discovery is disabled so self-test and
+        snapshot modes stay kubectl-free. The current config value is always
+        retained, even if the kubeconfig no longer lists it.
+        """
+        names = list(self._discovered_contexts)
+        if self._discover_namespaces and not names:
+            try:
+                proc = subprocess.run(
+                    ["kubectl", "config", "get-contexts", "-o", "name"],
+                    text=True,
+                    capture_output=True,
+                    timeout=2,
+                    check=False,
+                )
+                if proc.returncode == 0:
+                    names = [
+                        line.strip()
+                        for line in proc.stdout.splitlines()
+                        if line.strip()
+                    ]
+                    self._discovered_contexts = list(names)
+            except Exception:
+                names = []
+        if self.cfg.context and self.cfg.context not in names:
+            names.insert(0, self.cfg.context)
+        return names
 
     # ── compose ──────────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
@@ -1547,6 +1579,7 @@ class TopApp(App):
         """Adopt an edited Config: re-render everything live, optionally persist."""
         prev_interval = self.cfg.interval
         prev_ns = list(self.namespaces)
+        prev_context = self.context or ""
         prev_alertmgr = self.cfg.alertmanager_url
         prev_probes = list(self.cfg.health_probes)
 
@@ -1603,13 +1636,16 @@ class TopApp(App):
         if self._loaded:
             self._render()
 
-        # namespace change -> refetch + re-sync the sidebar checkboxes so the
+        context_changed = (cfg.context or "") != prev_context
+
+        # namespace/context change -> refetch + re-sync the sidebar checkboxes so the
         # sidebar (primary control) and the Options modal never contradict.
-        if list(cfg.namespaces) != prev_ns:
+        if list(cfg.namespaces) != prev_ns or context_changed:
             self.fetcher.namespaces = list(cfg.namespaces)
             self.fetcher.context = cfg.context or None
             self.context = cfg.context or None
-            self._sync_sidebar_ns()
+            if list(cfg.namespaces) != prev_ns:
+                self._sync_sidebar_ns()
             self.refresh_snapshot()
 
         if persist:
@@ -1660,6 +1696,7 @@ class TopApp(App):
             OptionsModal(
                 copy.deepcopy(self.cfg),
                 discovered_ns=list(self._discovered_ns),
+                context_names=self._context_options(),
                 themes=list(self.available_themes.keys()),
             )
         )

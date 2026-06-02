@@ -862,6 +862,7 @@ class OptionsModal(ModalScreen):
         self,
         cfg: Config,
         discovered_ns: "Optional[list[str]]" = None,
+        context_names: "Optional[list[str]]" = None,
         themes: "Optional[list[str]]" = None,
     ) -> None:
         super().__init__()
@@ -882,6 +883,10 @@ class OptionsModal(ModalScreen):
             if ns not in ns_all:
                 ns_all.append(ns)
         self._ns_all = ns_all
+        contexts = list(context_names or [])
+        if cfg.context and cfg.context not in contexts:
+            contexts.insert(0, cfg.context)
+        self._context_options = [("", "current context"), *[(ctx, ctx) for ctx in contexts]]
 
     # ── compose ──────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
@@ -1012,10 +1017,12 @@ class OptionsModal(ModalScreen):
                         yield OptionList(id="opt_namespaces")
                         with Vertical(classes="opt_field"):
                             yield Label("context", classes="opt_label")
-                            yield Input(value=c.context, id="opt_context",
-                                        classes="opt_input", placeholder="kube context",
-                                        compact=True)
-                            yield Label("kubeconfig context; blank = current",
+                            yield Select(
+                                [(label, value) for value, label in self._context_options],
+                                value=c.context, id="opt_context", allow_blank=False,
+                                compact=True,
+                            )
+                            yield Label("kubeconfig context; current = default",
                                         classes="opt_hint")
 
                 # Profile identity + cluster-linked probe config ─────────────
@@ -1233,6 +1240,8 @@ class OptionsModal(ModalScreen):
             self._preview_theme(str(event.value))
             event.stop()
             return
+        elif event.select.id == "opt_context":
+            self._cfg.context = str(event.value)
         elif event.select.id == "opt_summary_style":
             self._cfg.summary_style = str(event.value)
         self._apply()
@@ -1256,8 +1265,6 @@ class OptionsModal(ModalScreen):
                 self._cfg.interval = max(1.0, float(val or "3"))
             elif iid == "opt_name_filter":
                 self._cfg.name_filter = val.strip()
-            elif iid == "opt_context":
-                self._cfg.context = val.strip()
             elif iid == "opt_alertmanager_url":
                 self._cfg.alertmanager_url = val.strip()
             # thresholds are edited via DualThresholdSlider (Thresholds tab),
