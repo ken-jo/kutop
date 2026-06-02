@@ -89,10 +89,6 @@ Header {
     scrollbar-size-vertical: 1;
 }
 
-.kpanel-widget {
-    border-top: none;
-}
-
 /* ── panel fill source of truth ───────────────────────────────────────────
  * Base dashboard panel bodies are transparent: borders, titles, semantic bars,
  * cursor, and gauges still draw, but panel interiors do not get a separate fill.
@@ -112,7 +108,6 @@ DataTable:focus {
 
 Screen.-panel-backgrounds-on TrendGraph,
 Screen.-panel-backgrounds-on .kpanel,
-Screen.-panel-backgrounds-on .kpanel-title,
 Screen.-panel-backgrounds-on .kpanel-body,
 Screen.-panel-backgrounds-on DataTable {
     background: $surface;
@@ -161,14 +156,6 @@ DataTable:focus > .datatable--fixed-cursor {
 .kpanel-body {
     width: 100%;
     height: 1fr;
-    background: transparent;
-}
-
-.kpanel-title {
-    width: 100%;
-    height: 1;
-    color: $accent;
-    text-style: bold;
     background: transparent;
 }
 
@@ -231,6 +218,7 @@ TrendGraph {
 Screen.-panel-backgrounds-on #main_table,
 Screen.-panel-backgrounds-on #events_table,
 Screen.-panel-backgrounds-on #pvc_table,
+Screen.-panel-backgrounds-on .kpanel,
 Screen.-panel-backgrounds-on TrendGraph {
     border-title-background: $surface;
 }

@@ -387,49 +387,35 @@ class DualThresholdSlider(Static):
 class Panel(VerticalScroll):
     """One reusable titled, bordered, scrollable side-panel.
 
-    The one common spec every kutop side panel shares so they stop looking
-    "each different": a framed panel, a full-width internal accent title row,
-    consistent padding, and a scrollable body. The body is a single
-    :class:`Static`; :meth:`set_body` swaps its renderable and :meth:`set_title`
-    updates the internal title row. Because the panel is a ``VerticalScroll`` the
-    body scrolls vertically (mouse wheel + keyboard) whenever it overflows the
-    panel's fixed height — no truncation.
-
-    Panel widgets carry ``kpanel`` + ``kpanel-widget`` CSS classes so
-    ``theme.tcss`` can keep DataTable panels and plugin panels visually aligned
-    while letting plugin titles live inside the fillable body instead of
-    Textual's border-title row.
+    Plain text panels use the same Textual border-title chrome as the
+    table-backed panels. The background-fill option is scoped to panel bodies
+    and stable table/search chrome in CSS so titles stay aligned on the border
+    line instead of becoming content rows.
 
     Pure presentation: it holds no fetching logic and no workload knowledge.
     """
 
-    DEFAULT_CLASSES = "kpanel kpanel-widget"
+    DEFAULT_CLASSES = "kpanel"
 
     def __init__(self, title: str = "", **kwargs) -> None:
         super().__init__(**kwargs)
         self._title = title
-        self._title_label: "Optional[Static]" = None
         self._body: "Optional[Static]" = None
         #: last renderable handed to :meth:`set_body` (kept so callers/tests can
         #: introspect the rendered content without reaching into Static internals).
         self._last_renderable: RenderableType = ""
 
     def compose(self) -> ComposeResult:
-        self._title_label = Static(self._title, expand=True, classes="kpanel-title")
-        yield self._title_label
         self._body = Static(id=None, classes="kpanel-body")
         yield self._body
 
     def on_mount(self) -> None:
-        pass
+        if self._title:
+            self.border_title = self._title
 
     def set_title(self, title: str) -> None:
         self._title = title
-        try:
-            label = self._title_label or self.query_one(".kpanel-title", Static)
-            label.update(title)
-        except Exception:
-            pass
+        self.border_title = title
 
     def set_body(self, renderable: RenderableType) -> None:
         """Replace the scrollable body content (Rich Text/markup/etc.)."""

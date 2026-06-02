@@ -254,6 +254,33 @@ def test_panel_background_css_covers_datatable_layers() -> None:
     assert "Screen.-panel-backgrounds-on DataTable" in css
     assert "Screen.-panel-backgrounds-on DataTable > .datatable--even-row" in css
     assert "Screen.-panel-backgrounds-on DataTable > .datatable--fixed" in css
+    assert "Screen.-panel-backgrounds-on .kpanel,\nScreen.-panel-backgrounds-on TrendGraph {\n    border-title-background: $surface;" in css
+    assert ".kpanel-title" not in css
+    assert ".kpanel-widget" not in css
+
+
+def test_text_panel_uses_border_title_not_internal_title_row() -> None:
+    from textual.app import App, ComposeResult
+
+    from kutop.render.widgets import Panel
+
+    class Harness(App[None]):
+        def compose(self) -> ComposeResult:
+            yield Panel("CUSTOM HEALTH", id="health_panel")
+
+    async def drive() -> None:
+        app = Harness()
+        async with app.run_test(size=(60, 10)) as pilot:
+            await pilot.pause()
+
+            panel = app.query_one("#health_panel", Panel)
+            assert panel.border_title == "CUSTOM HEALTH"
+            assert not list(panel.query(".kpanel-title"))
+            assert panel.DEFAULT_CLASSES == "kpanel"
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
 
 
 def test_header_hamburger_opens_kutop_menu() -> None:
