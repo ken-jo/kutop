@@ -662,7 +662,17 @@ class TrendGraph(Vertical):
     _SCALE_MIN = 0
     _SCALE_MAX = 100
     _HEAT_ROWS = 3
-    _HEAT_CHARS = "⠂⠆⡆⣆⣧⣷⣿"
+    _HEAT_FILL = " ⣀⣤⣶⣿"  # 0..4 vertical braille fill levels (bottom-up)
+    # Color ramp anchors shared by the heat strip and the gauge bar. Each entry
+    # is (value, (r, g, b)); colors between anchors are linearly interpolated, so
+    # a column's value maps onto a continuous gradient — the btop "heatmap" feel.
+    # Both accents use the same value breakpoints (0/45/70/100); only hues differ.
+    _HEAT_RAMP = {
+        "cpu": [(0, (40, 200, 120)), (45, (150, 210, 60)),
+                (70, (240, 200, 50)), (100, (255, 60, 60))],
+        "mem": [(0, (48, 140, 255)), (45, (70, 200, 230)),
+                (70, (230, 200, 60)), (100, (255, 70, 70))],
+    }
 
     def __init__(self, title: str, accent: str, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -703,7 +713,7 @@ class TrendGraph(Vertical):
         right = detail[:detail_width]
         bar_width = max(min_bar_width, width - left_len - len(right) - 1)
         text.append("now ", style="dim")
-        text.append(value, style=self._style_for(cur))
+        text.append(value, style=f"bold {self._heat_color(cur)}")
         text.append(" ")
         text.append(self._inline_bar(cur, bar_width))
         if right:
@@ -715,27 +725,42 @@ class TrendGraph(Vertical):
         bar = Text()
         for idx in range(width):
             if idx < fill:
-                bar.append("━", style=self._style_for(cur))
+                # gradient runs along the bar length, like btop meters
+                pos = (idx + 0.5) / width * 100 if width else 0
+                bar.append("━", style=self._heat_color(int(pos)))
             else:
                 bar.append("─", style="grey23")
         return bar
 
+    def _heat_color(self, value: int) -> str:
+        """Map a 0..100 value onto the accent's continuous color ramp."""
+        anchors = self._HEAT_RAMP.get(self._accent, self._HEAT_RAMP["cpu"])
+        v = max(0, min(100, value))
+        for (lo, lo_rgb), (hi, hi_rgb) in zip(anchors, anchors[1:]):
+            if v <= hi:
+                t = (v - lo) / (hi - lo) if hi > lo else 0.0
+                r, g, b = (round(lo_rgb[i] + (hi_rgb[i] - lo_rgb[i]) * t) for i in range(3))
+                return f"#{r:02x}{g:02x}{b:02x}"
+        r, g, b = anchors[-1][1]
+        return f"#{r:02x}{g:02x}{b:02x}"
+
     def _heat_rows(self, values: list[Optional[int]]) -> tuple[Text, ...]:
         rows = tuple(Text() for _ in range(self._HEAT_ROWS))
+        levels = self._HEAT_ROWS * 4  # 4 vertical braille dots per cell
         for value in values:
             if value is None:
                 for row in rows:
                     row.append("·", style="grey23")
                 continue
-            idx = max(0, min(len(self._HEAT_CHARS) - 1, int(value * len(self._HEAT_CHARS) / 101)))
-            char = self._HEAT_CHARS[idx]
-            style = self._style_for(value)
-            active_rows = max(1, min(self._HEAT_ROWS, (value + 32) // 33))
-            for row_index, row in enumerate(rows):
-                if row_index >= self._HEAT_ROWS - active_rows:
-                    row.append(char, style=style)
+            filled = round(max(0, min(100, value)) / 100 * levels)
+            color = self._heat_color(value)
+            for row_index, row in enumerate(rows):  # 0 = top row, last = bottom
+                from_bottom = self._HEAT_ROWS - 1 - row_index
+                cell = max(0, min(4, filled - from_bottom * 4))
+                if cell > 0:
+                    row.append(self._HEAT_FILL[cell], style=color)
                 else:
-                    row.append("·", style="grey37")
+                    row.append(" ")  # empty above the curve
         return rows
 
     @staticmethod
@@ -747,13 +772,6 @@ class TrendGraph(Vertical):
         tail = history[-width:]
         pad_value = tail[0]
         return [pad_value] * (width - len(tail)) + tail
-
-    def _style_for(self, value: int) -> str:
-        if value >= 85:
-            return "bold red"
-        if value >= 70:
-            return "bold yellow"
-        return "bold cyan" if self._accent == "mem" else "bold green"
 
 
 # ── confirm modal for destructive actions ─────────────────────────────────────

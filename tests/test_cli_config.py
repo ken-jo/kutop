@@ -387,9 +387,11 @@ def test_trend_graph_renders_thin_meter_canvas() -> None:
     assert lines[2].startswith("     ")
     assert lines[3].startswith("     ")
     heat_cells = [line[5:] for line in lines[1:]]
-    assert all(cells.strip() for cells in heat_cells)
-    assert "·" in heat_cells[0]
-    assert "·" in heat_cells[1]
+    # bottom row is always filled; the curve rises toward the top on the peak
+    assert any(ch in heat_cells[-1] for ch in "⣀⣤⣶⣿")
+    assert any(ch in heat_cells[0] for ch in "⣀⣤⣶⣿")
+    # area above the curve is left blank (spaces), not dotted
+    assert " " in heat_cells[0]
 
 
 def test_initial_refresh_applies_core_snapshot_before_enrichment() -> None:
