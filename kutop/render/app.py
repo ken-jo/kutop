@@ -639,22 +639,22 @@ class SidebarPanel(Vertical):
             app.set_namespaces(self.ns_checkbox_state())  # type: ignore[attr-defined]
         elif cb.id == "chk_summary":
             app.cfg.show_summary = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility()  # type: ignore[attr-defined]
+            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
         elif cb.id == "chk_trends":
             app.cfg.show_trends = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility()  # type: ignore[attr-defined]
+            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
         elif cb.id == "chk_events":
             app.show_events = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility()  # type: ignore[attr-defined]
+            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
         elif cb.id == "chk_pvc":
             app.show_pvc = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility()  # type: ignore[attr-defined]
+            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
         elif cb.id == "chk_alerts":
             app.show_alerts = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility()  # type: ignore[attr-defined]
+            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
         elif cb.id == "chk_health":
             app.show_health = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility()  # type: ignore[attr-defined]
+            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
         elif cb.id == "chk_sort_desc":
             app.cfg.sort_desc = event.value  # type: ignore[attr-defined]
             app._persist_state()  # type: ignore[attr-defined]
@@ -1736,7 +1736,7 @@ class TopApp(App):
             self._refresh_timer = self.set_interval(self.interval, self.refresh_snapshot)
             self._update_interval_indicator()
 
-        self.apply_panel_visibility()
+        self.apply_panel_visibility(persist=persist)
         self._sync_sidebar_state()
         if self._loaded:
             self._render()
@@ -1816,7 +1816,11 @@ class TopApp(App):
             except Exception:
                 continue
 
-    def apply_panel_visibility(self) -> None:
+    def apply_panel_visibility(self, *, persist: bool = False) -> None:
+        # NOTE: persist defaults to False so render-time callers (on_mount,
+        # live re-renders) never rewrite the user's config. Only genuine user
+        # actions (panel toggles, Options apply) pass persist=True. Persisting
+        # on startup once corrupted configs by overwriting the loaded cfg.
         self.cfg.show_events = self.show_events
         self.cfg.show_pvc = self.show_pvc
         self.cfg.show_alerts = self.show_alerts
@@ -1840,7 +1844,8 @@ class TopApp(App):
         self.query_one("#top_panels").set_class(
             not (alerts_on or any_plugin_on), "-hidden"
         )
-        self._persist_state()
+        if persist:
+            self._persist_state()
         self._sync_sidebar_state()
 
     def _sync_sidebar_state(self) -> None:
@@ -1893,7 +1898,7 @@ class TopApp(App):
             self.query_one("#chk_events", Checkbox).value = self.show_events
         except Exception:
             pass
-        self.apply_panel_visibility()
+        self.apply_panel_visibility(persist=True)
 
     def action_toggle_pvc(self) -> None:
         self.show_pvc = not self.show_pvc
@@ -1901,21 +1906,21 @@ class TopApp(App):
             self.query_one("#chk_pvc", Checkbox).value = self.show_pvc
         except Exception:
             pass
-        self.apply_panel_visibility()
+        self.apply_panel_visibility(persist=True)
 
     def action_toggle_alerts(self) -> None:
         self.show_alerts = not self.show_alerts
         if self.show_alerts and not self.cfg.alertmanager_url:
             self.notify("alerts: set probes.alertmanager_url to enable",
                         severity="warning")
-        self.apply_panel_visibility()
+        self.apply_panel_visibility(persist=True)
 
     def action_toggle_health(self) -> None:
         self.show_health = not self.show_health
         if self.show_health and not self.cfg.health_probes:
             self.notify("health: add probes.health_probes to enable",
                         severity="warning")
-        self.apply_panel_visibility()
+        self.apply_panel_visibility(persist=True)
 
     def action_reload_config(self) -> None:
         """Re-read the user config file and apply it live (M5 hot-reload).

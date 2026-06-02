@@ -487,6 +487,41 @@ def test_options_interval_is_stepper_and_syncs_app_and_header() -> None:
     asyncio.run(drive())
 
 
+def test_startup_does_not_persist_config(monkeypatch) -> None:
+    """Launching must never rewrite the user config (data-loss regression).
+
+    A startup autosave used to overwrite the loaded cfg back to disk, so any
+    launch where load silently fell back to defaults (e.g. PyYAML missing) wiped
+    the user's real settings. on_mount must not save; only user actions do.
+    """
+    from kutop.render.app import TopApp
+
+    saves: list = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg: saves.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            # startup (on_mount -> apply_panel_visibility) must NOT persist
+            assert saves == []
+            # a genuine user action (panel toggle) SHOULD persist
+            app.action_toggle_events()
+            await pilot.pause()
+            assert len(saves) >= 1
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_initial_refresh_applies_core_snapshot_before_enrichment() -> None:
     from kutop.model import Node, Pod, Snapshot
     from kutop.render.app import TopApp
