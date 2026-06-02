@@ -243,6 +243,15 @@ def test_options_modal_toggles_panel_backgrounds(monkeypatch) -> None:
     assert saved[-1]["view"]["panel_backgrounds"] is False
 
 
+def test_panel_background_css_covers_datatable_layers() -> None:
+    css = Path("kutop/render/theme.tcss").read_text(encoding="utf-8")
+
+    assert "Screen.-panel-backgrounds-off DataTable" in css
+    assert "Screen.-panel-backgrounds-off DataTable > .datatable--header" in css
+    assert "Screen.-panel-backgrounds-off DataTable > .datatable--even-row" in css
+    assert "Screen.-panel-backgrounds-off DataTable > .datatable--fixed" in css
+
+
 def test_header_hamburger_opens_kutop_menu() -> None:
     from kutop.render.app import ThemeHeaderIcon, TopApp
 
@@ -326,14 +335,20 @@ def test_theme_menu_dismisses_on_outside_click() -> None:
     asyncio.run(drive())
 
 
-def test_q_opens_quit_hint_and_ctrl_q_keeps_real_quit_binding() -> None:
+def test_q_shows_quit_hint_toast_and_ctrl_q_keeps_real_quit_binding(monkeypatch) -> None:
     from kutop.render.app import TopApp
-    from kutop.render.widgets import InfoModal
 
     bindings = {(key, action) for key, action, *_ in TopApp.BINDINGS}
     assert ("q", "quit_hint") in bindings
     assert ("q", "quit") not in bindings
     assert ("ctrl+q", "quit") in bindings
+
+    notices: list[tuple[str, dict]] = []
+
+    def fake_notify(self, message: str, **kwargs) -> None:
+        notices.append((message, kwargs))
+
+    monkeypatch.setattr(TopApp, "notify", fake_notify)
 
     async def drive() -> None:
         app = TopApp(
@@ -347,12 +362,16 @@ def test_q_opens_quit_hint_and_ctrl_q_keeps_real_quit_binding() -> None:
             await pilot.press("q")
             await pilot.pause()
 
-            assert isinstance(app.screen, InfoModal)
-
-            await pilot.press("escape")
             await pilot.exit(None)
 
     asyncio.run(drive())
+
+    assert notices == [
+        (
+            "Press Ctrl+Q to quit the app",
+            {"title": "Quit", "timeout": 4},
+        )
+    ]
 
 
 def test_options_modal_theme_preview_enter_persists(monkeypatch) -> None:

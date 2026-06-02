@@ -93,8 +93,19 @@ Screen.-panel-backgrounds-off #search_bar,
 Screen.-panel-backgrounds-off #search_input,
 Screen.-panel-backgrounds-off TrendGraph,
 Screen.-panel-backgrounds-off .kpanel,
-Screen.-panel-backgrounds-off .kpanel-body {
+Screen.-panel-backgrounds-off .kpanel-body,
+Screen.-panel-backgrounds-off DataTable,
+Screen.-panel-backgrounds-off DataTable > .datatable--header,
+Screen.-panel-backgrounds-off DataTable > .datatable--odd-row,
+Screen.-panel-backgrounds-off DataTable > .datatable--even-row,
+Screen.-panel-backgrounds-off DataTable > .datatable--fixed,
+Screen.-panel-backgrounds-off DataTable > .datatable--fixed-cursor {
     background: transparent;
+}
+
+Screen.-panel-backgrounds-off DataTable:focus,
+Screen.-panel-backgrounds-off DataTable:focus > .datatable--header {
+    background-tint: transparent;
 }
 
 #main_table, #events_table, #pvc_table, .kpanel {
@@ -371,11 +382,6 @@ ConfirmModal {
     background: $background 80%;
 }
 
-InfoModal {
-    align: center middle;
-    background: $background 80%;
-}
-
 #confirm_box {
     width: 60;
     height: 13;
@@ -407,39 +413,6 @@ InfoModal {
 
 #confirm_btns Button {
     margin: 0 2;
-    width: 16;
-}
-
-#info_box {
-    width: 54;
-    height: 11;
-    border: round $accent;
-    background: $surface;
-    padding: 1;
-    align: center middle;
-    content-align: center middle;
-}
-
-#info_title {
-    text-style: bold;
-    color: $accent;
-    height: 2;
-    content-align: center middle;
-}
-
-#info_body {
-    height: 1fr;
-    content-align: center middle;
-    text-align: center;
-}
-
-#info_btns {
-    layout: horizontal;
-    align: center middle;
-    height: 3;
-}
-
-#info_btns Button {
     width: 16;
 }
 

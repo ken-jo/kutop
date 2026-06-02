@@ -62,7 +62,6 @@ from .widgets import (
     SummaryBar,
     TrendGraph,
     ConfirmModal,
-    InfoModal,
     bar_gauge,
     level_color,
 )
@@ -1199,12 +1198,7 @@ class TopApp(App):
 
     # ── shutdown ───────────────────────────────────────────────────────────────
     def action_quit_hint(self) -> None:
-        self.push_screen(
-            InfoModal(
-                "Quit",
-                "Press Ctrl+Q to quit kutop.",
-            )
-        )
+        self.notify("Press Ctrl+Q to quit the app", title="Quit", timeout=4)
 
     def action_quit(self) -> None:
         """Quit promptly: kill any in-flight kubectl before exiting so the worker
