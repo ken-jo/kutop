@@ -214,6 +214,34 @@ def test_theme_menu_has_native_actions_and_no_theme_rows(monkeypatch) -> None:
     asyncio.run(drive())
 
 
+def test_theme_menu_dismisses_on_outside_click() -> None:
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import ThemeMenuModal
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_theme_menu()
+            await pilot.pause()
+
+            assert isinstance(app.screen, ThemeMenuModal)
+
+            await pilot.click(offset=(70, 20))
+            await pilot.pause()
+
+            assert not isinstance(app.screen, ThemeMenuModal)
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_q_opens_quit_hint_and_ctrl_q_keeps_real_quit_binding() -> None:
     from kutop.render.app import TopApp
     from kutop.render.widgets import InfoModal

@@ -808,6 +808,14 @@ class ThemeMenuModal(ModalScreen):
         if oid.startswith("action::"):
             self._run_action(oid)
 
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        menu = self.query_one("#theme_menu")
+        if menu.region.contains_point((event.screen_x, event.screen_y)):
+            return
+        event.stop()
+        event.prevent_default()
+        self.dismiss(None)
+
     def action_commit(self) -> None:
         ol = self.query_one("#theme_menu_list", OptionList)
         if ol.highlighted is not None:
