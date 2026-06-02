@@ -137,14 +137,6 @@ Screen.-panel-backgrounds-on DataTable > .datatable--fixed {
     background: $secondary-muted;
 }
 
-Screen.-panel-backgrounds-on #main_table,
-Screen.-panel-backgrounds-on #events_table,
-Screen.-panel-backgrounds-on #pvc_table,
-Screen.-panel-backgrounds-on .kpanel,
-Screen.-panel-backgrounds-on TrendGraph {
-    border-title-background: $surface;
-}
-
 DataTable > .datatable--cursor,
 DataTable > .datatable--fixed-cursor {
     background: $block-cursor-blurred-background;
@@ -221,6 +213,14 @@ TrendGraph {
     border-title-color: $accent;
     border-title-background: transparent;
     padding: 0 1;
+}
+
+Screen.-panel-backgrounds-on #main_table,
+Screen.-panel-backgrounds-on #events_table,
+Screen.-panel-backgrounds-on #pvc_table,
+Screen.-panel-backgrounds-on .kpanel,
+Screen.-panel-backgrounds-on TrendGraph {
+    border-title-background: $surface;
 }
 
 .trend-spark {
