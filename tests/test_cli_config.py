@@ -487,6 +487,35 @@ def test_options_interval_is_stepper_and_syncs_app_and_header() -> None:
     asyncio.run(drive())
 
 
+def test_panels_show_setup_hint_when_unconfigured() -> None:
+    from textual.widgets import DataTable
+
+    from kutop.render.app import TopApp
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(
+                show_alerts=True, show_health=True,
+                alertmanager_url="", health_probes=[],
+            ),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            # the health panel mounts even without probes, so it can show a hint
+            assert list(app.query("#health_panel"))
+            # the alerts panel shows a setup hint row when no alertmanager_url
+            app._render_alerts()
+            await pilot.pause()
+            at = app.query_one("#alerts_panel", DataTable)
+            assert "alertmanager_url" in str(at.get_row_at(0)[0])
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_sidebar_shows_resolved_kube_context_name() -> None:
     from textual.widgets import Static
 

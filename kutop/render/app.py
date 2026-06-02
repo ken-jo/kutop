@@ -930,20 +930,19 @@ class TopApp(App):
         self._refresh_timer = None
         self._loaded = False
 
-    def _enabled_plugins(self) -> list:
-        """Optional plugins enabled for the current config (generic seam).
+    def _all_plugins(self) -> list:
+        """Every registered plugin (for mounting/visibility/render).
 
-        Robust: if the plugins package is missing/broken the core keeps running
-        with no plugins. The list is recomputed each call so a live config change
-        (e.g. health_probes added in the Options modal) re-gates plugins without a
-        relaunch.
+        Panels are mounted for all plugins so a toggled-on-but-unconfigured one
+        (e.g. health with no probes) can show a setup hint instead of vanishing;
+        data fetching still runs only for enabled plugins.
         """
         try:
-            from ..plugins import iter_enabled
+            from ..plugins import iter_plugins
         except Exception:
-            return []  # no plugins package -> core runs without any plugin
+            return []
         try:
-            return list(iter_enabled(self.cfg))
+            return list(iter_plugins())
         except Exception:
             return []
 
@@ -1042,7 +1041,7 @@ class TopApp(App):
                 # whatever panels they supply without importing them by name.
                 with Horizontal(id="top_panels"):
                     yield DataTable(id="alerts_panel", classes="kpanel -hidden")
-                    for plugin in self._enabled_plugins():
+                    for plugin in self._all_plugins():
                         try:
                             yield plugin.make_panel()
                         except Exception:
@@ -1340,6 +1339,15 @@ class TopApp(App):
             at = self.query_one("#alerts_panel", DataTable)
         except Exception:
             return
+        # toggled on but unconfigured: show why it's empty instead of nothing
+        if not self.cfg.alertmanager_url:
+            at.border_title = "ALERTS"
+            at.clear()
+            at.add_row(
+                Text("set probes.alertmanager_url to enable", style="yellow"),
+                "", "", "", key="hint",
+            )
+            return
         alerts = list(self.snapshot.alerts)
         at.border_title = f"ALERTS · {len(alerts)} firing" if alerts else "ALERTS"
         saved = self._saved_row_key(at)
@@ -1368,7 +1376,7 @@ class TopApp(App):
 
     def _render_plugin_panels(self) -> None:
         """Let enabled plugins update their mounted custom panels."""
-        for plugin in self._enabled_plugins():
+        for plugin in self._all_plugins():
             panel_id = getattr(plugin, "panel_id", "")
             if not panel_id:
                 continue
@@ -1847,9 +1855,10 @@ class TopApp(App):
         self.query_one("#bottom_box").set_class(
             not (self.show_events or self.show_pvc), "-hidden"
         )
-        # The alerts panel (generic monitoring, core) is doubly-gated: toggled on
-        # AND an alertmanager_url is set.
-        alerts_on = self.show_alerts and bool(self.cfg.alertmanager_url)
+        # Show the alerts panel whenever it is toggled on; when no
+        # alertmanager_url is configured it renders a setup hint (see
+        # _render_alerts) instead of being silently hidden.
+        alerts_on = self.show_alerts
         self.query_one("#alerts_panel").set_class(not alerts_on, "-hidden")
         # Plugin panels are best-effort: absent plugins mount no panel, enabled
         # plugins are toggled through their declared panel id.
@@ -1897,7 +1906,7 @@ class TopApp(App):
         ``show_health`` toggle; other plugins default to shown when enabled.
         """
         any_on = False
-        for plugin in self._enabled_plugins():
+        for plugin in self._all_plugins():
             panel_id = getattr(plugin, "panel_id", "")
             if not panel_id:
                 continue
