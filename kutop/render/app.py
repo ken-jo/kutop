@@ -36,6 +36,7 @@ from textual.widgets import (
     Label,
     RichLog,
     Select,
+    Static,
 )
 from textual.widget import Widget
 from textual.widgets._header import HeaderClock, HeaderClockSpace, HeaderTitle
@@ -438,8 +439,7 @@ class SidebarPanel(Vertical):
         self._ready_for_input = False
 
     def compose(self) -> ComposeResult:
-        yield Label("", id="side_watch", classes="side_stat")
-        yield Label("", id="side_filter", classes="side_muted")
+        yield Static("", id="side_status")
         with VerticalScroll(id="side_scroll"):
             yield Label("NAMESPACES", classes="side_section")
             with VerticalScroll(id="side_ns_box"):
@@ -470,7 +470,7 @@ class SidebarPanel(Vertical):
                            compact=True)
 
     def on_mount(self) -> None:
-        self.border_title = "KUTOP"
+        self.border_title = "SIDEBAR"
         self.update_state(
             selected=list(self._selected),
             show_events=self._show_events,
@@ -562,11 +562,22 @@ class SidebarPanel(Vertical):
         try:
             ns_count = len([n for n in selected if n])
             ctx = self._context_name or "current"
-            self.query_one("#side_watch", Label).update(
-                f"{ns_count} ns · {self._interval:g}s · {ctx}"
-            )
             filt = self._name_filter or "no filter"
-            self.query_one("#side_filter", Label).update(f"sort {self._sort_key} · {filt}")
+            direction = "desc" if self._sort_desc else "asc"
+            status = Text()
+            status.append("ns=", style="dim")
+            status.append(str(ns_count), style="bold green")
+            status.append(" | refresh=", style="dim")
+            status.append(f"{self._interval:g}s", style="bold cyan")
+            status.append("\nctx=", style="dim")
+            status.append(ctx[:24], style="bold")
+            status.append("\nsort=", style="dim")
+            status.append(self._sort_key, style="bold magenta")
+            status.append(" | dir=", style="dim")
+            status.append(direction, style="bold yellow")
+            status.append("\nfilter=", style="dim")
+            status.append(filt[:22], style=("bold" if self._name_filter else "dim"))
+            self.query_one("#side_status", Static).update(status)
         except Exception:
             pass
         self._syncing = True

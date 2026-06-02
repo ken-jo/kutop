@@ -256,7 +256,7 @@ Screen.-panel-backgrounds-on TrendGraph {
     width: 32;
     background: $surface;
     border: round $accent;
-    border-title-align: center;
+    border-title-align: left;
     border-title-color: $accent;
     border-title-background: $surface;
     padding: 0 1 1 1;
@@ -269,23 +269,21 @@ Screen.-panel-backgrounds-on TrendGraph {
     display: none;
 }
 
+#side_status {
+    height: 6;
+    width: 100%;
+    border: solid $primary-darken-2;
+    background: $background;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
 /* BUG FIX #3: scroll the sidebar body so SORT BY / PANELS stay reachable on
  * short terminals instead of being clipped off the bottom. */
 #side_scroll {
     height: 1fr;
     width: 100%;
     scrollbar-size-vertical: 1;
-}
-
-.side_stat {
-    height: 1;
-    color: $text;
-    text-style: bold;
-}
-
-.side_muted {
-    height: 1;
-    color: $text-muted;
 }
 
 .side_section {

@@ -180,7 +180,8 @@ def test_main_snapshot_keeps_sidebar_checkbox_labels_visible(tmp_path: Path) -> 
 
     assert render_snapshot(str(out), size=(120, 40), namespaces=["default"]) == 0
     svg = out.read_text(encoding="utf-8")
-    assert "KUTOP" in svg
+    assert "SIDEBAR" in svg
+    assert "refresh" in svg
 
     for label in (
         "Descending",
