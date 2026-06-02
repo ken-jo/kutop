@@ -813,7 +813,10 @@ class OptionsModal(ModalScreen):
                             [(a, a) for a in _VALID_ACCENTS],
                             value=c.theme_accent, id="opt_accent", allow_blank=False,
                         )
-                        yield Label("  theme_accent", classes="opt_hint")
+                        yield Label(
+                            "  theme_accent (borders, section titles, focus)",
+                            classes="opt_hint",
+                        )
                         yield Select(
                             [(s, s) for s in _VALID_SUMMARY_STYLES],
                             value=c.summary_style, id="opt_summary_style",
