@@ -67,6 +67,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="show only problem pods (non-Running / restarts>0 / oom)")
     ap.add_argument("--allow-destructive", action="store_true",
                     help="enable pod deletion (still gated by a confirm modal)")
+    ap.add_argument("--no-metrics-bootstrap", action="store_true",
+                    help="skip the interactive Metrics Server preflight/install prompt")
     ap.add_argument("--log-tail", type=int, default=150,
                     help="lines of history for the live log viewer (default: 150)")
     ap.add_argument("--self-test", action="store_true",
@@ -285,6 +287,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         if code == 0:
             print(f"wrote snapshot SVG -> {args.snapshot}")
         return code
+
+    if not args.no_metrics_bootstrap:
+        from .metrics import maybe_bootstrap_metrics_server
+
+        maybe_bootstrap_metrics_server(context=cfg.context or None)
 
     app.run()
     return 0

@@ -65,6 +65,20 @@ CPU and memory values use `kubectl top nodes` and
 show pod-level usage. If container-level `top` is unavailable, `kutop` falls
 back to pod-level `kubectl top pods`.
 
+On live startup, `kutop` checks `kubectl top nodes` plus the
+`metrics.k8s.io` discovery endpoint. If Metrics Server appears absent and the
+terminal is interactive, `kutop` asks before changing the cluster. Pressing `y`
+runs the official components manifest:
+
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+Pressing `N` leaves the cluster unchanged and prints both the components
+manifest path and the official Helm route for review. Use
+`--no-metrics-bootstrap` or `KUTOP_NO_METRICS_BOOTSTRAP=1` to skip this startup
+prompt in scripted runs.
+
 PVC storage usage is fetched through the Kubernetes API-server proxy with
 `kubectl get --raw /api/v1/nodes/<node>/proxy/stats/summary`; this reuses the
 same kubeconfig auth and does not need a localhost port-forward.
@@ -139,6 +153,7 @@ python -m kutop demo-ns 3           # module form
 python -m kubetop demo-ns 3         # legacy module alias
 kutop --context demo-context demo-ns  # pick a kubeconfig context
 kutop --allow-destructive           # enable pod delete (still confirm-gated)
+kutop --no-metrics-bootstrap        # skip startup Metrics Server prompt
 kutop --dump-config                 # print the full annotated config skeleton
 kutop --self-test                   # headless smoke test (no cluster), exits 0
 kutop --snapshot out.svg            # render one frame to SVG and exit

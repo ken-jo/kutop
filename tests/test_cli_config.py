@@ -42,6 +42,12 @@ def test_cli_accepts_theme_override() -> None:
     assert args.theme == "nord"
 
 
+def test_cli_accepts_metrics_bootstrap_opt_out() -> None:
+    args = _build_parser().parse_args(["--no-metrics-bootstrap"])
+
+    assert args.no_metrics_bootstrap is True
+
+
 def test_detail_presets_adjust_columns_and_panels() -> None:
     wide = apply_detail_preset(Config(), "wide")
     assert wide.summary_style == "compact"
@@ -394,6 +400,45 @@ def test_trend_graph_renders_thin_meter_canvas() -> None:
     assert any(ch in heat_cells[0] for ch in "⣀⣤⣶⣿")
     # area above the curve is left blank (spaces), not dotted
     assert " " in heat_cells[0]
+
+
+def test_trend_history_accepts_real_zero_samples() -> None:
+    from collections import deque
+
+    from kutop.render.app import TopApp
+
+    hist = deque([40, 100], maxlen=120)
+
+    TopApp._append_trend(hist, used=0, cap=6000)
+
+    assert hist[-1] == 0
+
+
+def test_namespace_change_resets_trend_history(monkeypatch) -> None:
+    from kutop.render.app import TopApp
+
+    monkeypatch.setattr("kutop.render.app.save_config", lambda cfg: "/tmp/kutop-config.yaml")
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(namespaces=["default"]),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.cpu_hist.extend([40, 41])
+            app.mem_hist.extend([99, 100])
+            app.refresh_snapshot = lambda: None  # type: ignore[method-assign]
+
+            app.set_namespaces(["kube-system"])
+
+            assert list(app.cpu_hist) == []
+            assert list(app.mem_hist) == []
+            await pilot.exit(None)
+
+    asyncio.run(drive())
 
 
 def test_interval_indicator_sits_left_of_clock_and_tracks_value() -> None:

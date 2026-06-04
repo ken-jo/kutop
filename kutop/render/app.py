@@ -1285,14 +1285,9 @@ class TopApp(App):
             return
         self.snapshot = snap
         self._loaded = True
-        # Feed rolling history every refresh for the trend meters.
-        #
-        # BUG FIX #2: never append a spurious 0/None. A partial refresh can
-        # produce cap==0 (node fetch failed) or used==0 (metrics-server lag),
-        # which would otherwise inject a 0 into an otherwise flat ~55% series
-        # and render as isolated fat blocks with big gaps.
-        # When a sample is not trustworthy we repeat the prior value (so the
-        # line stays smooth) and only seed an initial value when we have none.
+        # Feed rolling history every refresh for the trend meters. A zero used
+        # value with a real capacity is a real 0% sample; only missing capacity
+        # is treated as an untrustworthy dropout.
         s = snap.summary
         self._append_trend(self.cpu_hist, s.cpu_used_mcpu, s.cpu_cap_mcpu)
         self._append_trend(self.mem_hist, s.mem_used_mi, s.mem_cap_mi)
@@ -1300,18 +1295,22 @@ class TopApp(App):
 
     @staticmethod
     def _append_trend(hist: deque[int], used: int, cap: int) -> None:
-        """Append a clamped used/cap percent, never letting a dropout 0 in.
+        """Append a clamped used/cap percent, carrying only missing-cap dropouts.
 
-        A trustworthy sample requires cap>0 and used>0. Otherwise we carry the
-        previous value forward (keeping the trend smooth); if there is no prior
-        value we skip seeding a 0 entirely so the series only ever contains
-        real, non-zero percentages.
+        When cap is known, ``used == 0`` is a real 0% sample and must update the
+        top "now" readout. Carry-forward is only for cap dropouts, where the
+        current percentage cannot be computed.
         """
-        if cap > 0 and used > 0:
+        if cap > 0:
             hist.append(max(0, min(100, model.pct(used, cap))))
         elif hist:
-            hist.append(hist[-1])  # carry forward; never inject a 0 dropout
-        # else: no prior value and no trustworthy sample -> append nothing
+            hist.append(hist[-1])
+        # else: no prior value and no trustworthy cap -> append nothing
+
+    def _reset_trend_history(self) -> None:
+        """Drop CPU/MEM history when the watched cluster scope changes."""
+        self.cpu_hist.clear()
+        self.mem_hist.clear()
 
     # ── rendering ──────────────────────────────────────────────────────────────
     def _render(self) -> None:
@@ -1768,6 +1767,7 @@ class TopApp(App):
         # namespace/context change -> refetch + re-sync the sidebar checkboxes so the
         # sidebar (primary control) and the Options modal never contradict.
         if list(cfg.namespaces) != prev_ns or context_changed:
+            self._reset_trend_history()
             self.fetcher.namespaces = list(cfg.namespaces)
             self.fetcher.context = cfg.context or None
             self.context = cfg.context or None
@@ -2152,6 +2152,7 @@ class TopApp(App):
         self.namespaces = ns_list
         self.cfg.namespaces = ns_list
         self.fetcher.namespaces = ns_list
+        self._reset_trend_history()
         self.notify(f"namespaces: {', '.join(ns_list)}")
         self._persist_state()
         self._sync_sidebar_state()
