@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.2 - 2026-06-04
+
+### Added
+
+- Live startup now checks `kubectl top nodes` and the `metrics.k8s.io`
+  discovery endpoint before entering the TUI. If Metrics Server appears absent,
+  interactive terminals ask `[y/n]`; `y`, `Y`, `yes`, `YES`, and other
+  `y`-prefixed answers apply the official Metrics Server components manifest,
+  while `n`/empty/other answers leave the cluster unchanged and print the
+  components and Helm install options for review.
+- Added `--no-metrics-bootstrap` and `KUTOP_NO_METRICS_BOOTSTRAP=1` to skip the
+  startup Metrics Server prompt in scripted runs.
+
+### Fixed
+
+- CPU/MEM trend history now accepts a real 0% sample when capacity is known,
+  instead of carrying a stale previous value forever. Namespace/context changes
+  also reset trend history so old cluster scope data does not bleed into the new
+  view.
+
 ## 0.3.1 - 2026-06-03
 
 ### Fixed
