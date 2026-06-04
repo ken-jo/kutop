@@ -587,6 +587,7 @@ class Config:
     show_pvc: bool = False
     show_alerts: bool = True            # M2: AlertManager alerts panel
     show_health: bool = True            # M3: workload health row
+    show_keys: bool = True              # context-sensitive sidebar key hints
 
     # Cluster-linked HTTP probes (M2/M3). Sourced from the profile by default,
     # overridable in the user config. Empty -> the corresponding panel hides.
@@ -656,6 +657,7 @@ class Config:
                 "pvc": self.show_pvc,
                 "alerts": self.show_alerts,
                 "health": self.show_health,
+                "keys": self.show_keys,
             },
             "probes": {
                 "alertmanager_url": self.alertmanager_url,
@@ -780,6 +782,7 @@ def _config_from_dict(d: dict) -> Config:
         show_pvc=_coerce_bool(panels.get("pvc"), False),
         show_alerts=_coerce_bool(panels.get("alerts"), True),
         show_health=_coerce_bool(panels.get("health"), True),
+        show_keys=_coerce_bool(panels.get("keys"), True),
         alertmanager_url=str(probes.get("alertmanager_url", "") or ""),
         health_probes=health_probes,
         columns=columns,
@@ -1069,6 +1072,7 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append(f"  pvc: {b(cfg.show_pvc)}             # cluster-wide PVC list panel (off by default; storage is per-pod)")
     lines.append(f"  alerts: {b(cfg.show_alerts)}          # AlertManager alerts panel (needs probes.alertmanager_url)")
     lines.append(f"  health: {b(cfg.show_health)}          # workload health row (needs probes.health_probes)")
+    lines.append(f"  keys: {b(cfg.show_keys)}            # context-sensitive key hints in the sidebar")
     lines.append("")
     lines.append("probes:                   # cluster-linked HTTP probes (opt-in; stdlib urllib)")
     am = cfg.alertmanager_url or '""'

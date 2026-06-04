@@ -277,12 +277,16 @@ Screen.-panel-backgrounds-on TrendGraph {
     color: $accent;
 }
 
+.side_section_spaced {
+    margin-top: 1;
+}
+
 /* NAMESPACE checkbox list can hold the full cluster discovery — give it room
  * but cap the height and let this inner VerticalScroll scroll so many
  * namespaces never push the lower controls (SORT BY / PANELS) off-screen. */
 #side_ns_box {
     height: auto;
-    max-height: 7;
+    max-height: 5;
     width: 100%;
     border: solid $primary-darken-2;
     scrollbar-size-vertical: 1;
@@ -308,6 +312,26 @@ Screen.-panel-backgrounds-on TrendGraph {
     width: 100%;
     margin: 0;
     padding: 0;
+}
+
+#side_keys_box {
+    height: 6;
+    width: 100%;
+    margin-top: 1;
+}
+
+#side_keys_box.-hidden,
+#side_keys_title.-hidden,
+#side_keys_body.-hidden {
+    display: none;
+}
+
+#side_keys_body {
+    width: 100%;
+    height: 5;
+    padding: 0 1;
+    margin: 0;
+    border-left: solid $primary-darken-2;
 }
 
 /* ── content view ───────────────────────────────────────────────────────── */

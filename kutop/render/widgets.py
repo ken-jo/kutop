@@ -1072,6 +1072,9 @@ class OptionsModal(ModalScreen):
                         yield Checkbox("Health row (workload probes)",
                                        value=c.show_health, id="opt_p_health",
                                        classes="opt_check", compact=True)
+                        yield Checkbox("Keys sidebar panel", value=c.show_keys,
+                                       id="opt_p_keys", classes="opt_check",
+                                       compact=True)
 
                 # Thresholds ─────────────────────────────────────────────────
                 with TabPane("Thresholds", id="opt_tab_thresholds"):
@@ -1308,6 +1311,7 @@ class OptionsModal(ModalScreen):
             "opt_p_podtable": "show_podtable", "opt_p_events": "show_events",
             "opt_p_pvc": "show_pvc",
             "opt_p_alerts": "show_alerts", "opt_p_health": "show_health",
+            "opt_p_keys": "show_keys",
             "opt_sort_desc": "sort_desc",
             "opt_panel_backgrounds": "panel_backgrounds",
             "opt_group_by_node": "group_by_node",

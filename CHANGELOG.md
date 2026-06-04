@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.3 - 2026-06-04
+
+### Added
+
+- Added a context-sensitive Keys sidebar panel that stays fixed at the bottom
+  of the sidebar and shows the active interaction context, such as pod row
+  actions (`Logs`, `Describe`, `Delete`) or search-mode actions.
+- The header now shows the running version next to the app title
+  (`kutop v0.3.3`).
+
+### Changed
+
+- The sidebar uses clearer section spacing while keeping its controls in a
+  scrollable region above the fixed Keys panel.
+- The refresh cadence readout now keeps the smaller refresh glyph directly next
+  to the interval value (`- ↻ 2.6s +`) instead of floating it separately.
+- Pressing `q` now follows a two-step TUI quit flow: the first press shows a
+  confirmation toast and the second press within the toast window exits.
+
 ## 0.3.2 - 2026-06-04
 
 ### Added

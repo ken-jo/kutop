@@ -240,7 +240,7 @@ def test_synthetic_snapshot_covers_all_documented_panels() -> None:
     assert "options-profile" in SNAPSHOT_VIEWS
 
 
-def test_main_snapshot_keeps_sidebar_checkbox_labels_visible(tmp_path: Path) -> None:
+def test_main_snapshot_keeps_sidebar_sections_and_keys_visible(tmp_path: Path) -> None:
     out = tmp_path / "kutop.svg"
 
     assert render_snapshot(str(out), size=(120, 40), namespaces=["default"]) == 0
@@ -248,14 +248,17 @@ def test_main_snapshot_keeps_sidebar_checkbox_labels_visible(tmp_path: Path) -> 
     assert "SIDEBAR" in svg
     assert "refresh" in svg
 
+    # Keys is intentionally fixed at the bottom; the controls above it are the
+    # scrollable region. The first controls and section headers should remain
+    # visible in the default viewport, while lower panel toggles remain reachable
+    # by scrolling instead of being forced to fit simultaneously.
     for label in (
+        "NAMESPACES",
+        "SORT",
         "Descending",
         "Group",
+        "PANELS",
         "Summary",
-        "Trends",
-        "Warning",
-        "PVC",
-        "Alerts",
-        "Health",
+        "KEYS",
     ):
         assert label in svg

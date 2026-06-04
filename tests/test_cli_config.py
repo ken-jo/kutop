@@ -87,6 +87,16 @@ def test_load_config_reads_saved_theme(tmp_path: Path) -> None:
     assert cfg.to_dict()["view"]["panel_backgrounds"] is False
 
 
+def test_load_config_reads_saved_keys_panel(tmp_path: Path) -> None:
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("panels:\n  keys: false\n", encoding="utf-8")
+
+    cfg = load_config(user_path=str(user_config))
+
+    assert cfg.show_keys is False
+    assert cfg.to_dict()["panels"]["keys"] is False
+
+
 def test_load_config_ignores_saved_name_filter_but_keeps_cli_filter(tmp_path: Path) -> None:
     user_config = tmp_path / "config.yaml"
     user_config.write_text(
@@ -113,6 +123,14 @@ def test_dump_config_includes_panel_backgrounds() -> None:
     text = dump_config_yaml(Config(panel_backgrounds=False))
 
     assert "panel_backgrounds: false" in text
+
+
+def test_dump_config_includes_keys_panel() -> None:
+    from kutop.config import dump_config_yaml
+
+    text = dump_config_yaml(Config(show_keys=False))
+
+    assert "keys: false" in text
 
 
 def test_dump_config_does_not_persist_name_filter() -> None:
@@ -444,7 +462,10 @@ def test_namespace_change_resets_trend_history(monkeypatch) -> None:
 def test_interval_indicator_sits_left_of_clock_and_tracks_value() -> None:
     from textual.widgets._header import HeaderClock
 
+    from kutop import __version__
     from kutop.render.app import IntervalIndicator, TopApp
+
+    assert TopApp.TITLE == f"kutop v{__version__}"
 
     async def drive() -> None:
         app = TopApp(
@@ -459,10 +480,12 @@ def test_interval_indicator_sits_left_of_clock_and_tracks_value() -> None:
             clock = app.query_one(HeaderClock)
             # btop placement: docked to the LEFT of the header clock
             assert ind.region.x < clock.region.x
-            # '-' and '+' flank the value (btop-style), spinner kept
+            # '-' and '+' flank the value; the small refresh glyph sits next
+            # to the cadence instead of floating at the far left.
             plain = ind.render().plain
-            assert "⟳" in plain
-            assert plain.index("-") < plain.index("2s") < plain.index("+")
+            assert "↻" in plain
+            assert "⟳" not in plain
+            assert plain.index("-") < plain.index("↻") < plain.index("2s") < plain.index("+")
             await pilot.exit(None)
 
     asyncio.run(drive())
@@ -556,6 +579,160 @@ def test_panels_show_setup_hint_when_unconfigured() -> None:
             await pilot.pause()
             at = app.query_one("#alerts_panel", DataTable)
             assert "alertmanager_url" in str(at.get_row_at(0)[0])
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_sidebar_keys_panel_shows_contextual_hints() -> None:
+    from textual.widgets import Static
+
+    from kutop.model import Pod, Snapshot
+    from kutop.render.app import TopApp
+
+    def plain(static: Static) -> str:
+        rendered = static.render()
+        return rendered.plain if hasattr(rendered, "plain") else str(rendered)
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(show_keys=True),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            title = app.query_one("#side_keys_title", Static)
+            body = app.query_one("#side_keys_body", Static)
+            assert "KEYS · DASHBOARD" in plain(title)
+            assert "focus pod for keys" in plain(body)
+
+            snap = Snapshot()
+            snap.pods = [
+                Pod(
+                    name="api-0",
+                    namespace="default",
+                    node="node-a",
+                    phase="Running",
+                    ready="1/1",
+                )
+            ]
+            app._apply_snapshot(snap)
+            await pilot.pause()
+
+            assert "KEYS · POD ROW" in plain(title)
+            pod_keys = plain(body)
+            assert "l" in pod_keys and "Logs" in pod_keys
+            assert "d" in pod_keys and "Describe" in pod_keys
+            assert "x" in pod_keys and "Delete disabled" in pod_keys
+
+            app.action_search()
+            await pilot.pause()
+            assert "KEYS · SEARCH" in plain(title)
+            search_keys = plain(body)
+            assert "/" in search_keys and "Edit search" in search_keys
+            assert "enter" in search_keys and "Keep filter" in search_keys
+            assert "esc" in search_keys and "Clear" in search_keys
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_sidebar_keys_pod_row_hints_are_not_clipped_in_snapshot(tmp_path: Path) -> None:
+    from kutop.model import Pod, Snapshot
+    from kutop.render.app import TopApp
+
+    out = tmp_path / "pod-row-keys.svg"
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(show_keys=True),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 40)) as pilot:
+            await pilot.pause()
+            snap = Snapshot()
+            snap.pods = [
+                Pod(
+                    name="api-0",
+                    namespace="default",
+                    node="node-a",
+                    phase="Running",
+                    ready="1/1",
+                )
+            ]
+            app._apply_snapshot(snap)
+            await pilot.pause()
+            app.save_screenshot(str(out))
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    svg = out.read_text(encoding="utf-8")
+    assert "KEYS" in svg
+    assert "POD" in svg
+    assert "Logs" in svg
+    assert "Describe" in svg
+    assert "Delete" in svg
+
+
+def test_sidebar_keys_panel_can_be_hidden() -> None:
+    from textual.widgets import Static
+
+    from kutop.render.app import TopApp
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(show_keys=False),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            assert app.query_one("#side_keys_title", Static).has_class("-hidden")
+            assert app.query_one("#side_keys_body", Static).has_class("-hidden")
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_options_panels_tab_controls_keys_panel() -> None:
+    from textual.widgets import Checkbox
+
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import OptionsModal
+
+    saved: list[dict] = []
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(show_keys=True),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+            assert isinstance(app.screen, OptionsModal)
+            modal = app.screen
+            cb = modal.query_one("#opt_p_keys", Checkbox)
+            assert cb.value is True
+
+            app.apply_config = lambda cfg: saved.append(cfg.to_dict())  # type: ignore[method-assign]
+            cb.value = False
+            await pilot.pause()
+
+            assert saved[-1]["panels"]["keys"] is False
             await pilot.exit(None)
 
     asyncio.run(drive())
@@ -764,7 +941,7 @@ def test_theme_menu_dismisses_on_outside_click() -> None:
     asyncio.run(drive())
 
 
-def test_q_shows_quit_hint_toast_and_ctrl_q_keeps_real_quit_binding(monkeypatch) -> None:
+def test_q_quits_only_after_second_press(monkeypatch) -> None:
     from kutop.render.app import TopApp
 
     bindings = {
@@ -773,37 +950,38 @@ def test_q_shows_quit_hint_toast_and_ctrl_q_keeps_real_quit_binding(monkeypatch)
     }
     assert ("q", "quit_hint") in bindings
     assert ("q", "quit") not in bindings
-    assert ("ctrl+q", "quit") in bindings
+    assert ("ctrl+q", "quit") not in bindings
 
     notices: list[tuple[str, dict]] = []
+    exits: list[bool] = []
 
     def fake_notify(self, message: str, **kwargs) -> None:
         notices.append((message, kwargs))
 
+    def fake_exit(self) -> None:
+        exits.append(True)
+
     monkeypatch.setattr(TopApp, "notify", fake_notify)
+    monkeypatch.setattr(TopApp, "exit", fake_exit)
 
-    async def drive() -> None:
-        app = TopApp(
-            ["default"],
-            config=Config(theme="textual-dark"),
-            discover_namespaces=False,
-            auto_refresh=False,
-        )
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.pause()
-            await pilot.press("q")
-            await pilot.pause()
+    app = TopApp(
+        ["default"],
+        config=Config(theme="textual-dark"),
+        discover_namespaces=False,
+        auto_refresh=False,
+    )
 
-            await pilot.exit(None)
-
-    asyncio.run(drive())
-
+    app.action_quit_hint()
     assert notices == [
         (
-            "Press Ctrl+Q to quit the app",
-            {"title": "Quit", "timeout": 4},
+            "Press q again to quit",
+            {"title": "Quit?", "timeout": 4},
         )
     ]
+    assert exits == []
+
+    app.action_quit_hint()
+    assert exits == [True]
 
 
 def test_options_modal_theme_preview_enter_persists(monkeypatch) -> None:

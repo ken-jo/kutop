@@ -20,6 +20,7 @@ import os
 import subprocess
 from collections import deque
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Optional
 
 from rich.text import Text
@@ -43,7 +44,7 @@ from textual.widget import Widget
 from textual.widgets._header import HeaderClock, HeaderClockSpace, HeaderTitle
 from textual.screen import ModalScreen
 
-from .. import model
+from .. import __version__, model
 from ..config import (
     Config,
     INTERVAL_STEP,
@@ -72,6 +73,40 @@ from .widgets import (
 
 _HISTORY = 120
 _HIDDEN_THEMES = {"ansi-dark", "ansi-light"}
+
+
+_BINDING_SPECS = [
+    ("q", "quit_hint", "Quit?"),
+    ("r", "refresh", "Refresh"),
+    ("o", "open_options", "Options"),
+    ("slash", "search", "Search"),
+    ("escape", "clear_search", "Clear"),
+    ("tab", "toggle_sidebar", "Sidebar"),
+    ("b", "toggle_sidebar", "Sidebar"),
+    ("s", "cycle_sort", "Sort"),
+    ("S", "toggle_sort_dir", "SortDir"),
+    ("g", "toggle_group", "Group"),
+    ("l", "show_logs", "Logs"),
+    ("d", "describe_pod", "Describe"),
+    ("x", "delete_pod", "Delete"),
+    ("e", "toggle_events", "Events"),
+    ("v", "toggle_pvc", "PVC"),
+    ("a", "toggle_alerts", "Alerts"),
+    ("h", "toggle_health", "Health"),
+    ("R", "reload_config", "Reload"),
+]
+
+
+def _binding_key(action: str) -> str:
+    """Return the displayed key for an app action from the binding SOT."""
+    for key, bound_action, _desc in _BINDING_SPECS:
+        if bound_action == action:
+            return _key_label(key)
+    return ""
+
+
+def _key_label(key: str) -> str:
+    return {"slash": "/", "escape": "esc"}.get(key, key)
 
 
 # ── render context for column accessors ───────────────────────────────────────
@@ -436,12 +471,15 @@ class SidebarPanel(Vertical):
         show_trends: bool = True,
         show_alerts: bool = True,
         show_health: bool = True,
+        show_keys: bool = True,
         sort_key: str = "priority",
         sort_desc: bool = False,
         group_by_node: bool = False,
         interval: float = 3.0,
         context: Optional[str] = None,
         name_filter: str = "",
+        key_context: str = "DASHBOARD",
+        key_rows: "Optional[list[tuple[str, str]]]" = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -453,12 +491,15 @@ class SidebarPanel(Vertical):
         self._show_trends = show_trends
         self._show_alerts = show_alerts
         self._show_health = show_health
+        self._show_keys = show_keys
         self._sort_key = sort_key if sort_key in SORTABLE_KEYS else "priority"
         self._sort_desc = sort_desc
         self._group_by_node = group_by_node
         self._interval = interval
         self._context_name = context or ""
         self._name_filter = name_filter
+        self._key_context = key_context
+        self._key_rows = list(key_rows or [])
         self._syncing = False
         self._ready_for_input = False
 
@@ -468,7 +509,7 @@ class SidebarPanel(Vertical):
             yield Label("NAMESPACES", classes="side_section")
             with VerticalScroll(id="side_ns_box"):
                 yield from self._ns_checkboxes()
-            yield Label("SORT", classes="side_section")
+            yield Label("SORT", classes="side_section side_section_spaced")
             yield Select(
                 [(k, k) for k in SORTABLE_KEYS],
                 value=self._sort_key,
@@ -479,7 +520,7 @@ class SidebarPanel(Vertical):
                            compact=True)
             yield Checkbox("Group by node", value=self._group_by_node, id="chk_group",
                            compact=True)
-            yield Label("PANELS", classes="side_section")
+            yield Label("PANELS", classes="side_section side_section_spaced")
             yield Checkbox("Summary", value=self._show_summary, id="chk_summary",
                            compact=True)
             yield Checkbox("Trends", value=self._show_trends, id="chk_trends",
@@ -492,6 +533,15 @@ class SidebarPanel(Vertical):
                            compact=True)
             yield Checkbox("Health", value=self._show_health, id="chk_health",
                            compact=True)
+            yield Checkbox("Keys", value=self._show_keys, id="chk_keys",
+                           compact=True)
+        with Vertical(id="side_keys_box"):
+            yield Label(
+                "KEYS",
+                classes="side_section",
+                id="side_keys_title",
+            )
+            yield Static("", id="side_keys_body")
 
     def on_mount(self) -> None:
         self.border_title = "SIDEBAR"
@@ -503,12 +553,15 @@ class SidebarPanel(Vertical):
             show_trends=self._show_trends,
             show_alerts=self._show_alerts,
             show_health=self._show_health,
+            show_keys=self._show_keys,
             sort_key=self._sort_key,
             sort_desc=self._sort_desc,
             group_by_node=self._group_by_node,
             interval=self._interval,
             context=self._context_name,
             name_filter=self._name_filter,
+            key_context=self._key_context,
+            key_rows=self._key_rows,
         )
         try:
             self.call_after_refresh(self._enable_input_events)
@@ -562,12 +615,15 @@ class SidebarPanel(Vertical):
         show_trends: bool,
         show_alerts: bool,
         show_health: bool,
+        show_keys: bool,
         sort_key: str,
         sort_desc: bool,
         group_by_node: bool,
         interval: float,
         context: str,
         name_filter: str,
+        key_context: str,
+        key_rows: list[tuple[str, str]],
     ) -> None:
         """Refresh compact status text and control values from the app state."""
         self._selected = set(selected)
@@ -577,12 +633,15 @@ class SidebarPanel(Vertical):
         self._show_trends = show_trends
         self._show_alerts = show_alerts
         self._show_health = show_health
+        self._show_keys = show_keys
         self._sort_key = sort_key if sort_key in SORTABLE_KEYS else "priority"
         self._sort_desc = sort_desc
         self._group_by_node = group_by_node
         self._interval = interval
         self._context_name = context or ""
         self._name_filter = name_filter
+        self._key_context = key_context or "DASHBOARD"
+        self._key_rows = list(key_rows or [])
         try:
             ns_count = len([n for n in selected if n])
             ctx = self._context_name or "current"
@@ -620,14 +679,37 @@ class SidebarPanel(Vertical):
             self._set_checkbox("chk_pvc", show_pvc)
             self._set_checkbox("chk_alerts", show_alerts)
             self._set_checkbox("chk_health", show_health)
+            self._set_checkbox("chk_keys", show_keys)
             self._set_checkbox("chk_sort_desc", sort_desc)
             self._set_checkbox("chk_group", group_by_node)
             try:
                 self.query_one("#side_sort", Select).value = self._sort_key
             except Exception:
                 pass
+            self._render_keys_panel()
         finally:
             self._syncing = False
+
+    def _render_keys_panel(self) -> None:
+        box = self.query_one("#side_keys_box", Vertical)
+        title = self.query_one("#side_keys_title", Label)
+        body = self.query_one("#side_keys_body", Static)
+        box.set_class(not self._show_keys, "-hidden")
+        title.set_class(not self._show_keys, "-hidden")
+        body.set_class(not self._show_keys, "-hidden")
+        if not self._show_keys:
+            return
+        title.update(f"KEYS · {self._key_context}")
+        if not self._key_rows:
+            body.update("focus pod for keys")
+            return
+        text = Text()
+        for index, (key, label) in enumerate(self._key_rows):
+            if index:
+                text.append("\n")
+            text.append(f"{key:<5}", style="bold cyan")
+            text.append(label)
+        body.update(text)
 
     def _set_checkbox(self, widget_id: str, value: bool) -> None:
         try:
@@ -662,6 +744,9 @@ class SidebarPanel(Vertical):
             app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
         elif cb.id == "chk_health":
             app.show_health = event.value  # type: ignore[attr-defined]
+            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
+        elif cb.id == "chk_keys":
+            app.cfg.show_keys = event.value  # type: ignore[attr-defined]
             app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
         elif cb.id == "chk_sort_desc":
             app.cfg.sort_desc = event.value  # type: ignore[attr-defined]
@@ -814,28 +899,10 @@ class ResizableDataTable(DataTable):
 
 class TopApp(App):
     CSS_PATH = os.path.join(os.path.dirname(__file__), "theme.tcss")
-    TITLE = "kutop"
+    TITLE = f"kutop v{__version__}"
 
     BINDINGS = [
-        ("q", "quit_hint", "Quit?"),
-        ("ctrl+q", "quit", "Quit"),
-        ("r", "refresh", "Refresh"),
-        ("o", "open_options", "Options"),
-        ("slash", "search", "Search"),
-        ("escape", "clear_search", "Clear"),
-        ("tab", "toggle_sidebar", "Sidebar"),
-        ("b", "toggle_sidebar", "Sidebar"),
-        ("s", "cycle_sort", "Sort"),
-        ("S", "toggle_sort_dir", "SortDir"),
-        ("g", "toggle_group", "Group"),
-        ("l", "show_logs", "Logs"),
-        ("d", "describe_pod", "Describe"),
-        ("x", "delete_pod", "Delete"),
-        ("e", "toggle_events", "Events"),
-        ("v", "toggle_pvc", "PVC"),
-        ("a", "toggle_alerts", "Alerts"),
-        ("h", "toggle_health", "Health"),
-        ("R", "reload_config", "Reload"),
+        *_BINDING_SPECS,
         Binding("plus", "interval_up", "Slower", show=True),
         Binding("equals_sign", "interval_up", "Slower", show=False),
         Binding("minus", "interval_down", "Faster", show=True),
@@ -929,6 +996,7 @@ class TopApp(App):
         self._auto_refresh = auto_refresh
         self._refresh_timer = None
         self._loaded = False
+        self._quit_hint_deadline = 0.0
 
     def _all_plugins(self) -> list:
         """Every registered plugin (for mounting/visibility/render).
@@ -1025,12 +1093,15 @@ class TopApp(App):
                 show_trends=self.cfg.show_trends,
                 show_alerts=self.show_alerts,
                 show_health=self.show_health,
+                show_keys=self.cfg.show_keys,
                 sort_key=self.cfg.sort_key,
                 sort_desc=self.cfg.sort_desc,
                 group_by_node=self.cfg.group_by_node,
                 interval=self.interval,
                 context=self._display_context(),
                 name_filter=self._effective_filter(),
+                key_context="DASHBOARD",
+                key_rows=[],
                 id="sidebar",
             )
             with Vertical(id="main_view"):
@@ -1259,7 +1330,20 @@ class TopApp(App):
 
     # ── shutdown ───────────────────────────────────────────────────────────────
     def action_quit_hint(self) -> None:
-        self.notify("Press Ctrl+Q to quit the app", title="Quit", timeout=4)
+        """Require two consecutive q presses before quitting.
+
+        A bare q is the normal TUI close key, but accidental exits are costly
+        during cluster triage. The first q shows a short toast; another q while
+        that toast window is active takes the real quit path.
+        """
+        now = monotonic()
+        if now <= self._quit_hint_deadline:
+            self._quit_hint_deadline = 0.0
+            self.action_quit()
+            return
+        timeout = 4
+        self._quit_hint_deadline = now + timeout
+        self.notify("Press q again to quit", title="Quit?", timeout=timeout)
 
     def action_quit(self) -> None:
         """Quit promptly: kill any in-flight kubectl before exiting so the worker
@@ -1484,6 +1568,7 @@ class TopApp(App):
             mt.add_row(*sep_row(msg))
 
         self._restore_row(mt, saved_key, sx, sy)
+        self._sync_sidebar_state()
 
     def _indent_pod_cells(self, pod: Pod, cols, ctx) -> list:
         """Pod cells for the grouped view, with the name cell indented under node."""
@@ -1847,6 +1932,7 @@ class TopApp(App):
         self.cfg.show_pvc = self.show_pvc
         self.cfg.show_alerts = self.show_alerts
         self.cfg.show_health = self.show_health
+        self.cfg.show_keys = bool(self.cfg.show_keys)
         self.query_one("#summary_bar").set_class(not self.cfg.show_summary, "-hidden")
         self.query_one("#trends").set_class(not self.cfg.show_trends, "-hidden")
         self.query_one("#main_table").set_class(not self.cfg.show_podtable, "-hidden")
@@ -1876,12 +1962,46 @@ class TopApp(App):
         current-context, else '' (the sidebar then falls back to 'current')."""
         return self.context or self._resolved_context or ""
 
+    def _sidebar_key_context(self) -> tuple[str, list[tuple[str, str]]]:
+        """Return the contextual key hints for the sidebar Keys panel.
+
+        The footer remains the global shortcut summary. This panel intentionally
+        shows only the active work context so it does not become a duplicated
+        help dump.
+        """
+        try:
+            search_visible = not self.query_one("#search_bar", SearchBar).has_class("-hidden")
+        except Exception:
+            search_visible = False
+        if search_visible:
+            return (
+                "SEARCH",
+                [
+                    (_binding_key("search"), "Edit search"),
+                    ("enter", "Keep filter"),
+                    (_binding_key("clear_search"), "Clear"),
+                ],
+            )
+
+        pod = self._focused_pod()
+        if pod:
+            rows = [
+                (_binding_key("show_logs"), "Logs"),
+                (_binding_key("describe_pod"), "Describe"),
+            ]
+            delete_label = "Delete" if self.allow_destructive else "Delete disabled"
+            rows.append((_binding_key("delete_pod"), delete_label))
+            return ("POD ROW", rows)
+
+        return ("DASHBOARD", [])
+
     def _sync_sidebar_state(self) -> None:
         """Mirror app state into the sidebar controls without rebuilding rows."""
         try:
             sidebar = self.query_one("#sidebar", SidebarPanel)
         except Exception:
             return
+        key_context, key_rows = self._sidebar_key_context()
         sidebar.update_state(
             selected=list(self.namespaces),
             show_events=self.show_events,
@@ -1890,12 +2010,15 @@ class TopApp(App):
             show_trends=self.cfg.show_trends,
             show_alerts=self.show_alerts,
             show_health=self.show_health,
+            show_keys=self.cfg.show_keys,
             sort_key=self.cfg.sort_key,
             sort_desc=self.cfg.sort_desc,
             group_by_node=self.cfg.group_by_node,
             interval=self.interval,
             context=self._display_context(),
             name_filter=self._effective_filter(),
+            key_context=key_context,
+            key_rows=key_rows,
         )
 
     def _apply_plugin_panel_visibility(self) -> bool:
@@ -2006,8 +2129,9 @@ class TopApp(App):
     def _update_interval_indicator(self) -> None:
         """Keep the top-right header readout in sync with ``self.interval``.
 
-        Renders ``⟳ - <value> +`` with clickable ``-``/``+`` flanking the value
-        (btop-style); the spinner glyph stays put.
+        Renders ``- ↻ <value> +`` with clickable ``-``/``+`` flanking the value.
+        The small refresh glyph stays next to the cadence instead of floating
+        alone at the far left of the readout.
         """
         try:
             indicator = self.query_one("#interval_indicator", Static)
@@ -2015,8 +2139,8 @@ class TopApp(App):
             return
         value = f"{self.interval:g}s"
         indicator.update(
-            "⟳ "
             "[@click=app.interval_down][b]-[/b][/] "
+            "[dim]↻[/] "
             f"[b cyan]{value}[/] "
             "[@click=app.interval_up][b]+[/b][/]"
         )
@@ -2100,6 +2224,7 @@ class TopApp(App):
         bar.set_class(False, "-hidden")
         bar.set_value(self._search_term)
         bar.focus_input()
+        self._sync_sidebar_state()
 
     def action_clear_search(self) -> None:
         """Clear the live search term and hide the bar."""
@@ -2115,6 +2240,7 @@ class TopApp(App):
             pass
         if self._loaded:
             self._render_main_table()
+        self._sync_sidebar_state()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Live-filter the pod table as the user types in the search bar."""
@@ -2131,6 +2257,11 @@ class TopApp(App):
                 self.query_one("#main_table", DataTable).focus()
             except Exception:
                 pass
+            self._sync_sidebar_state()
+
+    def on_data_table_row_highlighted(self, event) -> None:
+        if getattr(event.data_table, "id", "") == "main_table":
+            self._sync_sidebar_state()
 
     def set_namespaces(self, ns_list: list[str]) -> None:
         """Adopt the ticked namespace set from the sidebar checkboxes.

@@ -29,7 +29,8 @@ dashboard, pod monitor, node resource view, k8s observability console, or a
 * Live CPU and memory trend sparklines plus per-pod usage-vs-limit gauges.
 * Problem-first signals for Pending, Failed, OOMKilled, CrashLoopBackOff, and
   restarting workloads.
-* Optional Events, PVC storage, Alertmanager, and health-check panels.
+* Optional Events, PVC storage, Alertmanager, health-check, and contextual Keys
+  sidebar panels.
 * Multi-namespace views, sorting, filtering, grouping, and a configurable
   sidebar for fast cluster triage.
 * Profile-driven thresholds, pod ordering, timezone, alert sources, and health
@@ -169,7 +170,7 @@ load; named profiles are also resolved from those legacy profile directories.
 
 | Key | Action |
 |-----|--------|
-| `q` | quit |
+| `q` `q` | quit (first press shows a confirmation toast) |
 | `r` | refresh now |
 | `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster, Profile) |
 | `Tab` / `b` | toggle the control sidebar |
@@ -185,6 +186,11 @@ load; named profiles are also resolved from those legacy profile directories.
 
 The **NODE/POD column is resizable**: drag the `│` handle on its header to widen
 or narrow it (the width persists). Click any column header to sort by it.
+
+The sidebar Keys panel intentionally shows only the current work context. For
+example, a focused pod row surfaces `l` logs, `d` describe, and `x` delete, while
+the search bar surfaces `/`, `Enter`, and `Esc`; global shortcut summaries stay
+in the footer and native help.
 
 ## Screenshots
 
@@ -265,6 +271,7 @@ To update the custom panel without changing code, edit a profile or
 
 ```yaml
 panels:
+  keys: true
   health: true
 probes:
   health_probes:
