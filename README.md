@@ -147,11 +147,11 @@ Release setup for PyPI, Homebrew, and apt is documented in
 
 ```bash
 kutop                               # generic view, namespace 'default'
-kutop demo-ns 3                     # namespace demo-ns, 3s refresh
+kutop demo-ns                       # namespace demo-ns
 kutop ns-a,ns-b                     # multiple namespaces (comma list)
 kutop --profile example             # load a profile (ordering / tz / thresholds)
-python -m kutop demo-ns 3           # module form
-python -m kubetop demo-ns 3         # legacy module alias
+python -m kutop demo-ns             # module form
+python -m kubetop demo-ns           # legacy module alias
 kutop --context demo-context demo-ns  # pick a kubeconfig context
 kutop --allow-destructive           # enable pod delete (still confirm-gated)
 kutop --no-metrics-bootstrap        # skip startup Metrics Server prompt
@@ -161,8 +161,13 @@ kutop --snapshot out.svg            # render one frame to SVG and exit
 kutop --snapshot out.svg --detail full  # wider diagnostic capture
 ```
 
-Positional `namespaces`/`interval` only seed the first run; your in-app choices
-are saved to `~/.config/kutop/config.yaml` and win on the next launch. Existing
+The positional `namespaces` only seeds the first run; your in-app choices are
+saved to `~/.config/kutop/config.yaml` and win on the next launch. The refresh
+cadence is fixed at 5s and is no longer configurable — a legacy second
+positional (`kutop demo-ns 3`) is still accepted but ignored, with a one-line
+notice. CPU/MEM metrics come from metrics-server, whose default scrape
+resolution is 15s, so the header shows a fixed `metrics 15s` freshness readout
+(polling faster than that would just re-show identical values). Existing
 `~/.config/kubetop` and legacy `~/.config/ktop` configs are migrated on first
 load; named profiles are also resolved from those legacy profile directories.
 

@@ -8,7 +8,14 @@ from textual.binding import Binding
 
 import kutop
 from kutop.cli import _build_parser, _parse_size
-from kutop.config import Config, Profile, apply_detail_preset, load_config
+from kutop.config import (
+    Config,
+    METRICS_RESOLUTION_SECS,
+    Profile,
+    REFRESH_INTERVAL_SECS,
+    apply_detail_preset,
+    load_config,
+)
 
 
 def test_version_metadata_matches_package() -> None:
@@ -178,7 +185,9 @@ probes:
         },
     )
 
-    assert cfg.interval == 2
+    # the refresh cadence is fixed: a file (interval: 9) or CLI (interval: 2)
+    # value is intentionally ignored.
+    assert cfg.interval == REFRESH_INTERVAL_SECS
     assert cfg.namespaces == ["cli-ns"]
     assert cfg.timezone == "UTC"
     assert cfg.sort_key == "cpu"
@@ -459,74 +468,71 @@ def test_namespace_change_resets_trend_history(monkeypatch) -> None:
     asyncio.run(drive())
 
 
-def test_interval_indicator_sits_left_of_clock_and_tracks_value() -> None:
+def test_metrics_indicator_is_fixed_and_left_of_clock() -> None:
     from textual.widgets._header import HeaderClock
 
     from kutop import __version__
-    from kutop.render.app import IntervalIndicator, TopApp
+    from kutop.render.app import MetricsIndicator, TopApp
 
     assert TopApp.TITLE == f"kutop v{__version__}"
 
     async def drive() -> None:
         app = TopApp(
             ["default"],
-            config=Config(interval=2.0),
+            config=Config(),
             discover_namespaces=False,
             auto_refresh=False,
         )
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
-            ind = app.query_one("#interval_indicator", IntervalIndicator)
+            ind = app.query_one("#metrics_indicator", MetricsIndicator)
             clock = app.query_one(HeaderClock)
-            # btop placement: docked to the LEFT of the header clock
+            # same btop placement the old adjuster used: left of the header clock
             assert ind.region.x < clock.region.x
-            # '-' and '+' flank the value; the small refresh glyph sits next
-            # to the cadence instead of floating at the far left.
+            # a read-only metrics-freshness readout: shows the metrics-server
+            # scrape resolution, no clickable +/- adjuster.
             plain = ind.render().plain
-            assert "↻" in plain
-            assert "⟳" not in plain
-            assert plain.index("-") < plain.index("↻") < plain.index("2s") < plain.index("+")
+            assert f"{METRICS_RESOLUTION_SECS:g}s" in plain
+            assert "metrics" in plain
+            assert "+" not in plain and "-" not in plain
             await pilot.exit(None)
 
     asyncio.run(drive())
 
 
-def test_interval_nudge_keys_clamp_and_update() -> None:
-    from kutop.render.app import IntervalIndicator, TopApp
+def test_refresh_interval_is_fixed_and_not_adjustable() -> None:
+    from kutop.render.app import REFRESH_INTERVAL_SECS as APP_REFRESH, TopApp
 
-    async def drive() -> None:
-        app = TopApp(
-            ["default"],
-            config=Config(interval=1.0),
-            discover_namespaces=False,
-            auto_refresh=False,
-        )
-        async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.pause()
-            # '-' at the 1.0s floor is a no-op
-            app.action_interval_down()
-            assert app.interval == 1.0
-            # '+' adds 100 ms and the indicator + config follow
-            app.action_interval_up()
-            assert abs(app.interval - 1.1) < 1e-9
-            assert abs(app.cfg.interval - 1.1) < 1e-9
-            ind = app.query_one("#interval_indicator", IntervalIndicator)
-            assert "1.1s" in ind.render().plain
-            await pilot.exit(None)
+    # the cadence constant is the single source of truth, re-exported via app
+    assert APP_REFRESH == REFRESH_INTERVAL_SECS
 
-    asyncio.run(drive())
+    # a legacy Config(interval=...) / interval kwarg can no longer move the cadence
+    app = TopApp(
+        ["default"],
+        interval=2.0,
+        config=Config(interval=2.0),
+        discover_namespaces=False,
+        auto_refresh=False,
+    )
+    assert app.interval == REFRESH_INTERVAL_SECS
+    assert app.cfg.interval == REFRESH_INTERVAL_SECS
+
+    # the +/- adjuster machinery is gone: no key bindings, no actions
+    actions = {b.action for b in TopApp.BINDINGS if isinstance(b, Binding)}
+    assert "interval_up" not in actions
+    assert "interval_down" not in actions
+    assert not hasattr(app, "action_interval_up")
+    assert not hasattr(app, "action_interval_down")
 
 
-def test_options_interval_is_stepper_and_syncs_app_and_header() -> None:
-    from textual.widgets import Button, Static
-
-    from kutop.render.app import IntervalIndicator, TopApp
+def test_options_view_has_no_interval_stepper() -> None:
+    from kutop.render.app import TopApp
     from kutop.render.widgets import OptionsModal
 
     async def drive() -> None:
         app = TopApp(
             ["default"],
-            config=Config(interval=2.0),
+            config=Config(),
             discover_namespaces=False,
             auto_refresh=False,
         )
@@ -536,20 +542,10 @@ def test_options_interval_is_stepper_and_syncs_app_and_header() -> None:
             await pilot.pause()
             modal = app.screen
             assert isinstance(modal, OptionsModal)
-            # interval is now a +/- stepper, not a free text Input
-            assert list(modal.query("#opt_interval_value"))
-            assert not list(modal.query("#opt_interval"))
-            assert list(modal.query("#opt_interval_up"))
-            assert list(modal.query("#opt_interval_down"))
-
-            # press '+' once: 2.0 -> 2.1, and the change reaches the app + header
-            modal.query_one("#opt_interval_up", Button).press()
-            await pilot.pause()
-            assert abs(app.cfg.interval - 2.1) < 1e-9
-            assert abs(app.interval - 2.1) < 1e-9
-            assert "2.1s" in modal.query_one("#opt_interval_value", Static).render().plain
-            ind = app.query_one("#interval_indicator", IntervalIndicator)
-            assert "2.1s" in ind.render().plain
+            # the interval stepper has been removed from the View tab entirely
+            assert not list(modal.query("#opt_interval_value"))
+            assert not list(modal.query("#opt_interval_up"))
+            assert not list(modal.query("#opt_interval_down"))
             await pilot.exit(None)
 
     asyncio.run(drive())

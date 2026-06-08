@@ -475,21 +475,16 @@ def clamp_name_width(v) -> int:
     return max(NAME_WIDTH_MIN, min(NAME_WIDTH_MAX, n))
 
 
-# Refresh-interval bounds, shared by the header +/- control and the Options
-# stepper so both adjust the cadence with identical semantics.
-INTERVAL_MIN = 1.0      # seconds; floor avoids hammering the kube API
-INTERVAL_MAX = 60.0
-INTERVAL_STEP = 0.1     # 100 ms per +/- step (btop-style)
-INTERVAL_DEFAULT = 3.0
-
-
-def clamp_interval(v) -> float:
-    """Coerce ``v`` to a float, clamp into the INTERVAL bounds, round to 100 ms."""
-    try:
-        f = float(v)
-    except (TypeError, ValueError):
-        f = INTERVAL_DEFAULT
-    return round(max(INTERVAL_MIN, min(INTERVAL_MAX, f)), 1)
+# Refresh cadence is FIXED and no longer user-tunable. The dashboard re-polls
+# kubectl every REFRESH_INTERVAL_SECS for problem-first signals (pod phase,
+# restarts, OOM, warning events, alerts). CPU/MEM metrics come from `kubectl top`
+# -> metrics-server, which only refreshes as fast as it scrapes — its
+# `--metric-resolution` default is METRICS_RESOLUTION_SECS — so polling faster
+# than that would just re-show identical metric values. These two constants are
+# the single source of truth for both numbers (the app timer, the header
+# metrics-freshness readout, and the snapshot harness).
+REFRESH_INTERVAL_SECS = 5.0
+METRICS_RESOLUTION_SECS = 15
 
 
 def default_visible_columns() -> list:
@@ -538,7 +533,7 @@ class Config:
     """Full user-customisable runtime config (the visible 'skeleton')."""
 
     # View
-    interval: float = 3.0
+    interval: float = REFRESH_INTERVAL_SECS  # fixed cadence; not user-tunable
     timezone: str = ""                  # "" -> host local
     sort_mode: str = "priority"         # legacy: priority|cpu|mem|name (mirrors sort_key)
     theme: str = "textual-dark"          # Textual app theme name
@@ -625,7 +620,6 @@ class Config:
     def to_dict(self) -> dict:
         return {
             "view": {
-                "interval": self.interval,
                 "timezone": self.timezone,
                 "sort_key": self.sort_key,
                 "sort_desc": self.sort_desc,
@@ -726,11 +720,8 @@ def _config_from_dict(d: dict) -> Config:
     group_by_node = _coerce_bool(view.get("group_by_node"), False)
     name_width = clamp_name_width(view.get("name_width", NAME_WIDTH_DEFAULT))
 
-    try:
-        interval = max(1.0, float(view.get("interval", 3.0)))
-    except (TypeError, ValueError):
-        interval = 3.0
-
+    # Refresh interval is fixed (REFRESH_INTERVAL_SECS); any legacy view.interval
+    # in an old config file or CLI layer is intentionally ignored.
     cols_in = d.get("columns", []) or []
     columns = [c for c in cols_in if c in reg]
     if not columns:
@@ -757,7 +748,6 @@ def _config_from_dict(d: dict) -> Config:
             return default
 
     return Config(
-        interval=interval,
         timezone=str(view.get("timezone", "")),
         sort_mode=sort_mode,
         sort_key=sort_key,
@@ -1034,7 +1024,10 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append(f"profile: {cfg.profile_name}        # active profile name (read-only)")
     lines.append("")
     lines.append("view:")
-    lines.append(f"  interval: {cfg.interval}            # refresh seconds (min 1.0)")
+    lines.append(
+        f"  # refresh interval is fixed at {cfg.interval:g}s and metrics-server "
+        f"freshness at {METRICS_RESOLUTION_SECS}s (not configurable)"
+    )
     tz = cfg.timezone or '""'
     lines.append(f"  timezone: {tz}          # IANA tz for timestamps; \"\" = host local")
     lines.append(f"  sort_key: {cfg.sort_key}      # sort column: {' | '.join(SORTABLE_KEYS)}")

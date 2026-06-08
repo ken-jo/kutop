@@ -26,7 +26,6 @@ from typing import Optional
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import Reactive
 from textual.widgets import (
@@ -47,13 +46,13 @@ from textual.screen import ModalScreen
 from .. import __version__, model
 from ..config import (
     Config,
-    INTERVAL_STEP,
+    METRICS_RESOLUTION_SECS,
     Profile,
+    REFRESH_INTERVAL_SECS,
     SORTABLE_KEYS,
     SORT_KEY_TO_COLUMN,
     COLUMN_TO_SORT_KEY,
     build_column_registry,
-    clamp_interval,
     load_config,
     save_config,
 )
@@ -184,15 +183,19 @@ class ThemeHeaderIcon(Widget):
         return str(self.icon)
 
 
-class IntervalIndicator(Static):
-    """Top-right refresh-cadence readout, adjustable with +/- (btop-style).
+class MetricsIndicator(Static):
+    """Top-right metrics-freshness readout (read-only).
 
-    Docked to the right of the header clock; the app keeps its text in sync via
-    :meth:`TopApp._update_interval_indicator`.
+    The refresh cadence is fixed, so this slot no longer hosts a +/- control.
+    Instead it exposes how fresh the CPU/MEM numbers are: `kubectl top` reads
+    metrics-server, whose scrape resolution is METRICS_RESOLUTION_SECS, so the
+    metric values only move that often regardless of the poll cadence. Docked to
+    the right of the header clock; the app sets its text via
+    :meth:`TopApp._update_metrics_indicator`.
     """
 
     DEFAULT_CSS = """
-    IntervalIndicator {
+    MetricsIndicator {
         dock: right;
         width: auto;
         padding: 0 1;
@@ -210,7 +213,7 @@ class ThemeHeader(Header):
         yield HeaderTitle()
         # Yielded before the clock: among right-docked widgets the earlier one
         # sits further left, so this lands to the clock's left, like btop.
-        yield IntervalIndicator(id="interval_indicator")
+        yield MetricsIndicator(id="metrics_indicator")
         yield (
             HeaderClock().data_bind(Header.time_format)
             if self._show_clock
@@ -903,15 +906,12 @@ class TopApp(App):
 
     BINDINGS = [
         *_BINDING_SPECS,
-        Binding("plus", "interval_up", "Slower", show=True),
-        Binding("equals_sign", "interval_up", "Slower", show=False),
-        Binding("minus", "interval_down", "Faster", show=True),
     ]
 
     def __init__(
         self,
         namespaces: list[str],
-        interval: float = 3.0,
+        interval: float = REFRESH_INTERVAL_SECS,  # deprecated: cadence is fixed
         profile: Optional[Profile] = None,
         config: Optional[Config] = None,
         context: Optional[str] = None,
@@ -935,7 +935,6 @@ class TopApp(App):
         # given namespaces/interval/profile so behaviour is unchanged.
         if config is None:
             config = Config(
-                interval=max(1.0, float(interval)),
                 timezone=self.profile.timezone,
                 namespaces=list(namespaces) or list(self.profile.namespaces) or ["default"],
                 context=context or "",
@@ -955,7 +954,9 @@ class TopApp(App):
         self.cfg.theme = self.theme
 
         self.namespaces = list(self.cfg.namespaces)
-        self.interval = self.cfg.interval
+        # Cadence is fixed; ignore any legacy interval from config/CLI callers.
+        self.interval = REFRESH_INTERVAL_SECS
+        self.cfg.interval = REFRESH_INTERVAL_SECS
         self.context = self.cfg.context or None
         # actual kube context name for display, resolved from kubectl on mount
         self._resolved_context = ""
@@ -1183,7 +1184,7 @@ class TopApp(App):
                    *(["-"] * (ncols - 1)), key="loading")
 
         self.apply_panel_visibility()
-        self._update_interval_indicator()
+        self._update_metrics_indicator()
         if self._auto_refresh:
             self.refresh_snapshot()
             self._refresh_timer = self.set_interval(self.interval, self.refresh_snapshot)
@@ -1749,7 +1750,6 @@ class TopApp(App):
         self.cfg.show_health = self.show_health
         self.cfg.namespaces = list(self.namespaces)
         self.cfg.name_filter = ""
-        self.cfg.interval = self.interval
 
     def _persist_state(self) -> None:
         """Persist current config to ~/.config/kutop/config.yaml. Best effort."""
@@ -1783,7 +1783,6 @@ class TopApp(App):
     # ── live config application (from the Options modal) ─────────────────────────
     def _adopt_config(self, cfg: Config, *, persist: bool) -> None:
         """Adopt an edited Config: re-render everything live, optionally persist."""
-        prev_interval = self.cfg.interval
         prev_ns = list(self.namespaces)
         prev_context = self.context or ""
         prev_alertmgr = self.cfg.alertmanager_url
@@ -1832,15 +1831,10 @@ class TopApp(App):
             if idx is not None:
                 self._apply_name_width(mt, idx)
 
-        # interval change -> reset the timer and re-sync the header readout
-        if abs(cfg.interval - prev_interval) > 1e-9:
-            self.interval = cfg.interval
-            try:
-                self._refresh_timer.stop()
-            except Exception:
-                pass
-            self._refresh_timer = self.set_interval(self.interval, self.refresh_snapshot)
-            self._update_interval_indicator()
+        # Refresh cadence is fixed; pin it so an adopted/legacy config can never
+        # change the timer or desync the live value.
+        cfg.interval = REFRESH_INTERVAL_SECS
+        self.interval = REFRESH_INTERVAL_SECS
 
         self.apply_panel_visibility(persist=persist)
         self._sync_sidebar_state()
@@ -2099,51 +2093,21 @@ class TopApp(App):
         self.refresh_snapshot()
         self.notify("refreshing...")
 
-    # ── refresh-cadence control (btop-style +/- in 100 ms steps) ──────────────
-    def action_interval_up(self) -> None:
-        """Slower refresh (+100 ms)."""
-        self._nudge_interval(INTERVAL_STEP)
+    # ── metrics-freshness readout (fixed; cadence is no longer adjustable) ────
+    def _update_metrics_indicator(self) -> None:
+        """Render the fixed top-right metrics-freshness readout.
 
-    def action_interval_down(self) -> None:
-        """Faster refresh (-100 ms)."""
-        self._nudge_interval(-INTERVAL_STEP)
-
-    def _nudge_interval(self, delta: float) -> None:
-        new = clamp_interval(self.interval + delta)
-        if abs(new - self.interval) < 1e-9:
-            return  # already at the clamp edge
-        self.interval = new
-        self.cfg.interval = new
-        # restart the auto-refresh timer so the new cadence takes effect live
-        if self._refresh_timer is not None:
-            try:
-                self._refresh_timer.stop()
-            except Exception:
-                pass
-            self._refresh_timer = self.set_interval(self.interval, self.refresh_snapshot)
-        self._update_interval_indicator()
-        self._sync_sidebar_state()
-        self.notify(f"refresh: {self.interval:g}s")
-        self._persist_state()
-
-    def _update_interval_indicator(self) -> None:
-        """Keep the top-right header readout in sync with ``self.interval``.
-
-        Renders ``- ↻ <value> +`` with clickable ``-``/``+`` flanking the value.
-        The small refresh glyph stays next to the cadence instead of floating
-        alone at the far left of the readout.
+        The refresh cadence is no longer user-adjustable, so this slot is a
+        static, non-clickable label showing how often metrics-server refreshes
+        the CPU/MEM numbers (its default ``--metric-resolution``). The dashboard
+        re-polls every ``REFRESH_INTERVAL_SECS`` for problem signals; the metric
+        values themselves only move this fast.
         """
         try:
-            indicator = self.query_one("#interval_indicator", Static)
+            indicator = self.query_one("#metrics_indicator", Static)
         except Exception:
             return
-        value = f"{self.interval:g}s"
-        indicator.update(
-            "[@click=app.interval_down][b]-[/b][/] "
-            "[dim]↻[/] "
-            f"[b cyan]{value}[/] "
-            "[@click=app.interval_up][b]+[/b][/]"
-        )
+        indicator.update(f"[dim]◷ metrics[/] [b cyan]{METRICS_RESOLUTION_SECS:g}s[/]")
 
     def action_cycle_sort(self) -> None:
         """Cycle the active sort_key through every sortable column."""

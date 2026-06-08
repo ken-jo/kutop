@@ -39,7 +39,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument(
         "interval", nargs="?", type=float, default=None,
-        help="refresh interval in seconds (overrides config; default 3.0)",
+        help="DEPRECATED and ignored: the refresh cadence is fixed at 5s "
+             "(accepted only so older 'kutop <ns> <interval>' calls still run)",
     )
     ap.add_argument("--profile", default=None,
                     help="profile name (profiles/<name>.yaml) or explicit path")
@@ -121,21 +122,17 @@ def _snapshot_size(args) -> "tuple[int, int]":
 
 
 def _base_overrides(args) -> dict:
-    """Seed defaults from POSITIONAL args (namespaces / interval).
+    """Seed defaults from the POSITIONAL ``namespaces`` arg.
 
     Applied BELOW the saved user file so e.g. ``make top``'s ``TOP_NS`` seeds the
-    first run, but the user's in-app namespace/interval choices persist across
-    relaunches instead of being clobbered every time.
+    first run, but the user's in-app namespace choices persist across relaunches
+    instead of being clobbered every time. The legacy positional ``interval`` is
+    intentionally NOT folded in — the refresh cadence is now fixed.
     """
-    view: dict = {}
     cluster: dict = {}
-    if args.interval is not None:
-        view["interval"] = args.interval
     if args.namespaces:
         cluster["namespaces"] = [n.strip() for n in args.namespaces.split(",") if n.strip()]
     base: dict = {}
-    if view:
-        base["view"] = view
     if cluster:
         base["cluster"] = cluster
     return base
@@ -233,6 +230,12 @@ def _self_test(app) -> int:
 def main(argv: Optional[list[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
 
+    if args.interval is not None:
+        sys.stderr.write(
+            "note: the refresh interval is now fixed at 5s; the positional "
+            "interval argument is ignored.\n"
+        )
+
     profile = load_profile(args.profile) if args.profile else Profile()
 
     # Layer the unified config: defaults -> profile -> user file -> CLI flags.
@@ -254,7 +257,6 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     app = TopApp(
         namespaces=list(cfg.namespaces),
-        interval=cfg.interval,
         profile=profile,
         config=cfg,
         context=cfg.context or None,

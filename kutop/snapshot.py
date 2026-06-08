@@ -149,7 +149,7 @@ async def _render(out: str, size, namespaces, context, profile, app=None,
         from .render.app import TopApp
         from .config import Profile
         app = TopApp(
-            namespaces=namespaces, interval=3.0,
+            namespaces=namespaces,
             profile=profile or Profile(), context=context,
             config=config,
             discover_namespaces=False,
