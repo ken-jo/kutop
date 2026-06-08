@@ -150,6 +150,35 @@ def load_profile(name_or_path: Optional[str]) -> Profile:
     )
 
 
+def list_profiles() -> "list[str]":
+    """Discover selectable profile names from the user, legacy, and built-in dirs.
+
+    Returns de-duplicated profile stems (a user/legacy profile shadows a built-in
+    of the same name). Import-light (``os.listdir`` only) so it is cheap enough to
+    call for the sidebar dropdown. Profiles given by an explicit ``--profile
+    <path>`` are not enumerable and so are not listed. The generic (no-profile)
+    default is NOT included here — callers prepend it.
+    """
+    seen: set = set()
+    names: list = []
+    for d in (
+        _USER_PROFILE_DIR,
+        _LEGACY_KUBETOP_PROFILE_DIR,
+        _LEGACY_KTOP_PROFILE_DIR,
+        _BUILTIN_PROFILE_DIR,
+    ):
+        try:
+            entries = sorted(os.listdir(d))
+        except OSError:
+            continue  # dir missing/unreadable -> skip
+        for fn in entries:
+            stem, ext = os.path.splitext(fn)
+            if ext in (".yaml", ".yml") and stem and stem not in seen:
+                seen.add(stem)
+                names.append(stem)
+    return names
+
+
 # ─────────────────────────── column registry ────────────────────────────────
 #
 # Each column knows how to render a single cell for a Pod (and, where it makes

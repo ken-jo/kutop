@@ -265,6 +265,13 @@ Profiles resolve by name from `~/.config/kutop/profiles/<name>.yaml` and the
 packaged `kutop/profiles/` directory, or by explicit path. Without a profile
 the core runs fully (alphabetical ordering, local timezone, generic thresholds).
 
+The active profile can also be **switched live** from the **PROFILE** dropdown
+at the top of the sidebar (`Tab`/`b`). The list is discovered from your profile
+directories (plus `generic` for the no-profile default); selecting one re-applies
+that profile's ordering, namespaces, timezone, thresholds, alert source, and
+health probes immediately. The live switch is session-only — it is not persisted
+and does not override a `--profile` you launch with next time.
+
 ## Alerts & custom panels (no port-forward)
 
 The Alerts and custom Health panels are opt-in and profile-driven. A

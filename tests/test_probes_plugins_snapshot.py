@@ -250,15 +250,15 @@ def test_main_snapshot_keeps_sidebar_sections_and_keys_visible(tmp_path: Path) -
 
     # Keys is intentionally fixed at the bottom; the controls above it are the
     # scrollable region. The first controls and section headers should remain
-    # visible in the default viewport, while lower panel toggles remain reachable
-    # by scrolling instead of being forced to fit simultaneously.
+    # visible in the default viewport, while lower toggles (PANELS, ACTIONS)
+    # remain reachable by scrolling instead of being forced to fit at once. The
+    # PROFILE selector leads the controls as the top-level "which workload" pick.
     for label in (
+        "PROFILE",
         "NAMESPACES",
         "SORT",
         "Descending",
         "Group",
-        "PANELS",
-        "Summary",
         "KEYS",
     ):
         assert label in svg

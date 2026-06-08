@@ -738,6 +738,71 @@ def test_allow_destructive_flag_seeds_toggle_on() -> None:
     asyncio.run(drive())
 
 
+def test_list_profiles_includes_builtin_example() -> None:
+    from kutop.config import list_profiles
+
+    assert "example" in list_profiles()
+
+
+def test_set_profile_switches_authoritatively(tmp_path: Path, monkeypatch) -> None:
+    import kutop.config as kconfig
+    from textual.widgets import Select
+
+    from kutop.render.app import TopApp
+
+    monkeypatch.setattr(kconfig, "_USER_PROFILE_DIR", str(tmp_path))
+    (tmp_path / "teststack.yaml").write_text(
+        """
+name: teststack
+namespaces: [team-x, team-y]
+timezone: UTC
+ordering:
+  - { prefix: edge-, weight: 5 }
+thresholds:
+  cpu_warn: 11
+  cpu_crit: 22
+alertmanager_url: /api/alerts
+health_probes:
+  - name: svc
+    url: /api/health
+    fields: { ready: "ready=(\\\\w+)" }
+""".strip(),
+        encoding="utf-8",
+    )
+
+    async def drive() -> None:
+        app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            # the dropdown discovered the new profile at construction time
+            assert "teststack" in app._profile_opts
+            # don't shell out to kubectl when the switch changes namespaces
+            app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+
+            app.set_profile("teststack")
+            await pilot.pause()
+
+            # profile-authoritative: ordering, thresholds, tz, ns, probes applied
+            assert app.profile.name == "teststack"
+            assert app.profile.weight_for("edge-1") == 5
+            assert app.cfg.profile_name == "teststack"
+            assert (app.cfg.cpu_warn, app.cfg.cpu_crit) == (11, 22)
+            assert app.cfg.timezone == "UTC"
+            assert app.cfg.namespaces == ["team-x", "team-y"]
+            assert app.cfg.alertmanager_url == "/api/alerts"
+            assert app.cfg.health_probes == [
+                {"name": "svc", "url": "/api/health",
+                 "fields": {"ready": "ready=(\\w+)"}}
+            ]
+            # the fetcher was rewired and the dropdown reflects the live profile
+            assert app.fetcher.namespaces == ["team-x", "team-y"]
+            assert app.fetcher.alertmanager_url == "/api/alerts"
+            assert app.query_one("#side_profile", Select).value == "teststack"
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_sidebar_keys_panel_can_be_hidden() -> None:
     from textual.widgets import Static
 

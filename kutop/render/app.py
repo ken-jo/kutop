@@ -53,7 +53,9 @@ from ..config import (
     SORT_KEY_TO_COLUMN,
     COLUMN_TO_SORT_KEY,
     build_column_registry,
+    list_profiles,
     load_config,
+    load_profile,
     save_config,
 )
 from ..fetch import Fetcher
@@ -479,6 +481,8 @@ class SidebarPanel(Vertical):
         sort_desc: bool = False,
         group_by_node: bool = False,
         allow_delete: bool = False,
+        profile_name: str = "generic",
+        profile_options: "Optional[list[str]]" = None,
         interval: float = REFRESH_INTERVAL_SECS,
         context: Optional[str] = None,
         name_filter: str = "",
@@ -500,6 +504,8 @@ class SidebarPanel(Vertical):
         self._sort_desc = sort_desc
         self._group_by_node = group_by_node
         self._allow_delete = allow_delete
+        self._profile_name = profile_name or "generic"
+        self._profile_options = list(profile_options or [])
         self._interval = interval
         self._context_name = context or ""
         self._name_filter = name_filter
@@ -511,7 +517,14 @@ class SidebarPanel(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("", id="side_status")
         with VerticalScroll(id="side_scroll"):
-            yield Label("NAMESPACES", classes="side_section")
+            yield Label("PROFILE", classes="side_section")
+            yield Select(
+                [(p, p) for p in self._profile_options] or [("generic", "generic")],
+                value=self._profile_name,
+                id="side_profile",
+                allow_blank=False,
+            )
+            yield Label("NAMESPACES", classes="side_section side_section_spaced")
             with VerticalScroll(id="side_ns_box"):
                 yield from self._ns_checkboxes()
             yield Label("SORT", classes="side_section side_section_spaced")
@@ -566,6 +579,7 @@ class SidebarPanel(Vertical):
             sort_desc=self._sort_desc,
             group_by_node=self._group_by_node,
             allow_delete=self._allow_delete,
+            profile_name=self._profile_name,
             interval=self._interval,
             context=self._context_name,
             name_filter=self._name_filter,
@@ -629,6 +643,7 @@ class SidebarPanel(Vertical):
         sort_desc: bool,
         group_by_node: bool,
         allow_delete: bool,
+        profile_name: str,
         interval: float,
         context: str,
         name_filter: str,
@@ -648,6 +663,7 @@ class SidebarPanel(Vertical):
         self._sort_desc = sort_desc
         self._group_by_node = group_by_node
         self._allow_delete = allow_delete
+        self._profile_name = profile_name or "generic"
         self._interval = interval
         self._context_name = context or ""
         self._name_filter = name_filter
@@ -696,6 +712,10 @@ class SidebarPanel(Vertical):
             self._set_checkbox("chk_allow_delete", allow_delete)
             try:
                 self.query_one("#side_sort", Select).value = self._sort_key
+            except Exception:
+                pass
+            try:
+                self.query_one("#side_profile", Select).value = self._profile_name
             except Exception:
                 pass
             self._render_keys_panel()
@@ -779,6 +799,8 @@ class SidebarPanel(Vertical):
             return
         if event.select.id == "side_sort" and event.value is not Select.BLANK:
             self.app.set_sort_key(str(event.value))  # type: ignore[attr-defined]
+        elif event.select.id == "side_profile" and event.value is not Select.BLANK:
+            self.app.set_profile(str(event.value))  # type: ignore[attr-defined]
 
 
 # ── resizable main table ───────────────────────────────────────────────────────
@@ -1003,6 +1025,9 @@ class TopApp(App):
         # Namespaces discovered live on the cluster (for the Options multi-select).
         self._discovered_ns: list[str] = []
         self._discovered_contexts: list[str] = []
+        # Selectable profile names for the sidebar dropdown (discovered once;
+        # profiles don't change on disk mid-session).
+        self._profile_opts = self._profile_options_list()
         # guarded off for --self-test so the headless smoke test never shells out
         self._discover_namespaces = discover_namespaces
         self._auto_refresh = auto_refresh
@@ -1110,6 +1135,8 @@ class TopApp(App):
                 sort_desc=self.cfg.sort_desc,
                 group_by_node=self.cfg.group_by_node,
                 allow_delete=self.allow_destructive,
+                profile_name=self.cfg.profile_name,
+                profile_options=self._profile_opts,
                 interval=self.interval,
                 context=self._display_context(),
                 name_filter=self._effective_filter(),
@@ -2021,6 +2048,7 @@ class TopApp(App):
             sort_desc=self.cfg.sort_desc,
             group_by_node=self.cfg.group_by_node,
             allow_delete=self.allow_destructive,
+            profile_name=self.cfg.profile_name,
             interval=self.interval,
             context=self._display_context(),
             name_filter=self._effective_filter(),
@@ -2321,6 +2349,60 @@ class TopApp(App):
             )
         else:
             self.notify("focus a pod row first", severity="warning")
+
+    def _profile_options_list(self) -> "list[str]":
+        """Profile names for the sidebar dropdown: 'generic' first, then the
+        discovered profiles, always including the currently active one."""
+        try:
+            names = list_profiles()
+        except Exception:
+            names = []
+        opts = ["generic"] + [n for n in names if n != "generic"]
+        cur = (self.cfg.profile_name or "generic")
+        if cur not in opts:
+            opts.append(cur)
+        return opts
+
+    def set_profile(self, name: str) -> None:
+        """Switch the active workload profile live from the sidebar dropdown.
+
+        Profile-authoritative: the chosen profile's ordering, namespaces,
+        timezone, thresholds, alertmanager URL, and health probes replace the
+        current ones, while the user's session UI prefs (theme, columns, sort,
+        panels, name width) are preserved. Session-only — intentionally NOT
+        persisted, so it never quietly fights a future ``--profile`` launch.
+        """
+        name = (name or "generic").strip()
+        if name == (self.cfg.profile_name or "generic"):
+            return
+        try:
+            new_profile = load_profile(None if name == "generic" else name)
+        except Exception as exc:  # unresolved/broken profile -> keep current
+            self.notify(f"profile load failed: {exc}", severity="error", timeout=5)
+            self._sync_sidebar_state()  # revert the dropdown to the live profile
+            return
+
+        import copy
+
+        # Reassign BEFORE adopting so the 'priority' sort uses the new weights on
+        # the very first re-render.
+        self.profile = new_profile
+        cfg = copy.deepcopy(self.cfg)
+        cfg.profile_name = new_profile.name
+        cfg.timezone = new_profile.timezone
+        cfg.cpu_warn, cfg.cpu_crit = new_profile.cpu_warn, new_profile.cpu_crit
+        cfg.mem_warn, cfg.mem_crit = new_profile.mem_warn, new_profile.mem_crit
+        cfg.pvc_warn, cfg.pvc_crit = new_profile.pvc_warn, new_profile.pvc_crit
+        cfg.alertmanager_url = new_profile.alertmanager_url
+        cfg.health_probes = [
+            {"name": hp.name, "url": hp.url, "fields": dict(hp.fields)}
+            for hp in new_profile.health_probes
+        ]
+        # A profile with no namespaces (e.g. generic) keeps the current view.
+        if new_profile.namespaces:
+            cfg.namespaces = list(new_profile.namespaces)
+        self._adopt_config(cfg, persist=False)
+        self.notify(f"profile: {new_profile.name}")
 
     def set_allow_destructive(self, value: bool) -> None:
         """Toggle the live destructive-delete gate (sidebar 'Allow delete').
