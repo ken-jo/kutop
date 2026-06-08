@@ -677,6 +677,67 @@ def test_sidebar_keys_pod_row_hints_are_not_clipped_in_snapshot(tmp_path: Path) 
     assert "Delete" in svg
 
 
+def test_delete_is_gated_by_live_allow_delete_toggle() -> None:
+    from textual.widgets import Checkbox
+
+    from kutop.model import Pod, Snapshot
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import ConfirmModal
+
+    async def drive() -> None:
+        # default launch: destructive off (no --allow-destructive)
+        app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert app.allow_destructive is False
+            snap = Snapshot()
+            snap.pods = [Pod(name="api-0", namespace="default", node="node-a",
+                             phase="Running", ready="1/1")]
+            app._apply_snapshot(snap)
+            await pilot.pause()
+
+            # the sidebar exposes the soft toggle, off by default
+            chk = app.query_one("#chk_allow_delete", Checkbox)
+            assert chk.value is False
+
+            # toggle off -> 'x' is a no-op warning, no confirm popup
+            app.action_delete_pod()
+            await pilot.pause()
+            assert not isinstance(app.screen, ConfirmModal)
+
+            # enabling the live toggle flips the gate AND syncs the checkbox
+            app.set_allow_destructive(True)
+            await pilot.pause()
+            assert app.allow_destructive is True
+            assert app.query_one("#chk_allow_delete", Checkbox).value is True
+
+            # now 'x' on the focused pod pops the delete-confirm modal
+            app.action_delete_pod()
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmModal)
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_allow_destructive_flag_seeds_toggle_on() -> None:
+    from textual.widgets import Checkbox
+
+    from kutop.render.app import TopApp
+
+    async def drive() -> None:
+        app = TopApp(["default"], allow_destructive=True,
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            # the CLI flag only seeds the initial toggle state
+            assert app.allow_destructive is True
+            assert app.query_one("#chk_allow_delete", Checkbox).value is True
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_sidebar_keys_panel_can_be_hidden() -> None:
     from textual.widgets import Static
 

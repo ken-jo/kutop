@@ -478,7 +478,8 @@ class SidebarPanel(Vertical):
         sort_key: str = "priority",
         sort_desc: bool = False,
         group_by_node: bool = False,
-        interval: float = 3.0,
+        allow_delete: bool = False,
+        interval: float = REFRESH_INTERVAL_SECS,
         context: Optional[str] = None,
         name_filter: str = "",
         key_context: str = "DASHBOARD",
@@ -498,6 +499,7 @@ class SidebarPanel(Vertical):
         self._sort_key = sort_key if sort_key in SORTABLE_KEYS else "priority"
         self._sort_desc = sort_desc
         self._group_by_node = group_by_node
+        self._allow_delete = allow_delete
         self._interval = interval
         self._context_name = context or ""
         self._name_filter = name_filter
@@ -538,6 +540,9 @@ class SidebarPanel(Vertical):
                            compact=True)
             yield Checkbox("Keys", value=self._show_keys, id="chk_keys",
                            compact=True)
+            yield Label("ACTIONS", classes="side_section side_section_spaced")
+            yield Checkbox("Allow delete (x)", value=self._allow_delete,
+                           id="chk_allow_delete", compact=True)
         with Vertical(id="side_keys_box"):
             yield Label(
                 "KEYS",
@@ -560,6 +565,7 @@ class SidebarPanel(Vertical):
             sort_key=self._sort_key,
             sort_desc=self._sort_desc,
             group_by_node=self._group_by_node,
+            allow_delete=self._allow_delete,
             interval=self._interval,
             context=self._context_name,
             name_filter=self._name_filter,
@@ -622,6 +628,7 @@ class SidebarPanel(Vertical):
         sort_key: str,
         sort_desc: bool,
         group_by_node: bool,
+        allow_delete: bool,
         interval: float,
         context: str,
         name_filter: str,
@@ -640,6 +647,7 @@ class SidebarPanel(Vertical):
         self._sort_key = sort_key if sort_key in SORTABLE_KEYS else "priority"
         self._sort_desc = sort_desc
         self._group_by_node = group_by_node
+        self._allow_delete = allow_delete
         self._interval = interval
         self._context_name = context or ""
         self._name_filter = name_filter
@@ -685,6 +693,7 @@ class SidebarPanel(Vertical):
             self._set_checkbox("chk_keys", show_keys)
             self._set_checkbox("chk_sort_desc", sort_desc)
             self._set_checkbox("chk_group", group_by_node)
+            self._set_checkbox("chk_allow_delete", allow_delete)
             try:
                 self.query_one("#side_sort", Select).value = self._sort_key
             except Exception:
@@ -762,6 +771,8 @@ class SidebarPanel(Vertical):
             app._persist_state()  # type: ignore[attr-defined]
             if app._loaded:  # type: ignore[attr-defined]
                 app._render_main_table()  # type: ignore[attr-defined]
+        elif cb.id == "chk_allow_delete":
+            app.set_allow_destructive(event.value)  # type: ignore[attr-defined]
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if self._syncing or not self._ready_for_input:
@@ -1098,6 +1109,7 @@ class TopApp(App):
                 sort_key=self.cfg.sort_key,
                 sort_desc=self.cfg.sort_desc,
                 group_by_node=self.cfg.group_by_node,
+                allow_delete=self.allow_destructive,
                 interval=self.interval,
                 context=self._display_context(),
                 name_filter=self._effective_filter(),
@@ -2008,6 +2020,7 @@ class TopApp(App):
             sort_key=self.cfg.sort_key,
             sort_desc=self.cfg.sort_desc,
             group_by_node=self.cfg.group_by_node,
+            allow_delete=self.allow_destructive,
             interval=self.interval,
             context=self._display_context(),
             name_filter=self._effective_filter(),
@@ -2309,11 +2322,33 @@ class TopApp(App):
         else:
             self.notify("focus a pod row first", severity="warning")
 
+    def set_allow_destructive(self, value: bool) -> None:
+        """Toggle the live destructive-delete gate (sidebar 'Allow delete').
+
+        This is the soft, in-app equivalent of the ``--allow-destructive`` flag
+        (which now only seeds the initial state): flipping it on lets the 'x'
+        shortcut pop the delete-confirm modal; off makes 'x' a no-op warning.
+        Intentionally NOT persisted — it resets each launch so a destructive
+        capability is never silently left enabled across sessions.
+        """
+        value = bool(value)
+        if value == self.allow_destructive:
+            return
+        self.allow_destructive = value
+        self._sync_sidebar_state()
+        self.notify(
+            "delete enabled — focus a pod and press 'x'" if value
+            else "delete disabled",
+            timeout=3,
+        )
+
     def action_delete_pod(self) -> None:
-        # Destructive action safety: gated by --allow-destructive + confirm modal.
+        # Destructive action safety: gated by the live 'Allow delete' toggle
+        # (seeded by --allow-destructive) AND the confirm modal below.
         if not self.allow_destructive:
             self.notify(
-                "destructive actions disabled (run with --allow-destructive)",
+                "delete disabled — enable 'Allow delete' in the sidebar "
+                "(or launch with --allow-destructive)",
                 severity="warning", timeout=4,
             )
             return

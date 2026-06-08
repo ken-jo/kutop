@@ -67,7 +67,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--only-problems", action="store_true",
                     help="show only problem pods (non-Running / restarts>0 / oom)")
     ap.add_argument("--allow-destructive", action="store_true",
-                    help="enable pod deletion (still gated by a confirm modal)")
+                    help="start with pod deletion enabled (seeds the in-app "
+                         "'Allow delete' sidebar toggle; still confirm-gated)")
     ap.add_argument("--no-metrics-bootstrap", action="store_true",
                     help="skip the interactive Metrics Server preflight/install prompt")
     ap.add_argument("--log-tail", type=int, default=150,

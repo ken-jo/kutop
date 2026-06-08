@@ -92,8 +92,10 @@ RBAC needs depend on which panels/actions you use:
 * PVC usage and profile proxy URLs: permission for `get --raw` API-server proxy
   paths.
 * Logs/describe/delete: the corresponding pod `logs`, `get`, or `delete`
-  permissions. Delete remains disabled unless `--allow-destructive` is set and
-  the confirmation prompt is accepted.
+  permissions. Delete stays disabled until you turn on the **Allow delete**
+  toggle in the sidebar (or launch with `--allow-destructive`, which just seeds
+  that toggle on) AND accept the confirmation popup. The toggle is not persisted
+  — it resets to off on each launch.
 
 ## Install
 
@@ -153,7 +155,7 @@ kutop --profile example             # load a profile (ordering / tz / thresholds
 python -m kutop demo-ns             # module form
 python -m kubetop demo-ns           # legacy module alias
 kutop --context demo-context demo-ns  # pick a kubeconfig context
-kutop --allow-destructive           # enable pod delete (still confirm-gated)
+kutop --allow-destructive           # start with the 'Allow delete' toggle on (still confirm-gated)
 kutop --no-metrics-bootstrap        # skip startup Metrics Server prompt
 kutop --dump-config                 # print the full annotated config skeleton
 kutop --self-test                   # headless smoke test (no cluster), exits 0
@@ -184,7 +186,7 @@ load; named profiles are also resolved from those legacy profile directories.
 | `g` | group pods under their node |
 | `l` | live logs for the focused pod (`kubectl logs -f`) |
 | `d` | describe the focused pod |
-| `x` | delete the focused pod (only with `--allow-destructive`, then confirm) |
+| `x` | delete the focused pod (needs the sidebar **Allow delete** toggle on, then confirm) |
 | `e` / `v` | toggle the Events / PVC panels |
 | `a` / `h` | toggle the Alerts / Health panels (profile-driven) |
 | `R` | reload `~/.config/kutop/config.yaml` live |
