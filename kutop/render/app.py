@@ -1800,12 +1800,15 @@ class TopApp(App):
         self.cfg.name_filter = ""
 
     def _persist_state(self) -> None:
-        """Persist current config to ~/.config/kutop/config.yaml. Best effort."""
+        """Persist current config to the active config file (--config or default).
+
+        Best effort — failure must never disturb the UI.
+        """
         self._sync_cfg_from_app()
         try:
-            save_config(self.cfg)
+            save_config(self.cfg, self._config_path)
         except Exception:
-            pass  # PyYAML missing or unwritable path — don't disturb the UI
+            pass  # unwritable path or other I/O error — don't disturb the UI
 
     def commit_name_width(self, width: int) -> None:
         """Adopt a drag-resized NODE/POD column width and persist it.
@@ -1904,7 +1907,7 @@ class TopApp(App):
 
         if persist:
             try:
-                save_config(self.cfg)
+                save_config(self.cfg, self._config_path)
             except Exception:
                 pass
 
@@ -1916,7 +1919,7 @@ class TopApp(App):
         """Write the full config skeleton to the user file; return its path."""
         target = cfg or self.cfg
         try:
-            path = save_config(target)
+            path = save_config(target, self._config_path)
             self.notify(f"config exported -> {path}")
             return path
         except Exception as exc:
@@ -1932,7 +1935,7 @@ class TopApp(App):
         self.cfg.theme = self._coerce_theme(theme)
         self.theme = self.cfg.theme
         try:
-            save_config(self.cfg)
+            save_config(self.cfg, self._config_path)
         except Exception:
             pass
 
@@ -2410,9 +2413,11 @@ class TopApp(App):
             {"name": hp.name, "url": hp.url, "fields": dict(hp.fields)}
             for hp in new_profile.health_probes
         ]
-        # A profile with no namespaces (e.g. generic) keeps the current view.
-        if new_profile.namespaces:
-            cfg.namespaces = list(new_profile.namespaces)
+        # The profile's namespaces win. A no-namespace profile (e.g. generic)
+        # resets to the default scope rather than lingering on — and persisting —
+        # the previous profile's namespaces.
+        cfg.namespaces = (list(new_profile.namespaces) if new_profile.namespaces
+                          else list(Config().namespaces))
         self._adopt_config(cfg, persist=False)
         self._remember_current_profile()
         self.notify(f"profile: {new_profile.name}")
@@ -2424,7 +2429,9 @@ class TopApp(App):
         sidebar display. Empty when no context is resolved yet (e.g. headless
         tests / kubectl unavailable) — callers skip persistence on an empty key.
         """
-        return (self.context or self._resolved_context or "").strip()
+        # strip each candidate before the `or` so a blank/whitespace --context
+        # falls through to the resolved current-context instead of collapsing to "".
+        return (self.context or "").strip() or (self._resolved_context or "").strip()
 
     def _remember_current_profile(self) -> None:
         """Persist the current context -> profile mapping when remembering is on.

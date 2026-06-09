@@ -247,6 +247,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         user_path=args.config,
         base_overrides=base_over,
         cli_overrides=cli_over,
+        profile_authoritative=bool(args.profile),
     )
 
     # Context-keyed profile recall (opt-in via the sidebar "Remember for this
@@ -258,7 +259,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             and not (args.self_test or args.snapshot)):
         from .fetch import current_context_name
 
-        ctx_key = (args.context or current_context_name() or "").strip()
+        # strip each candidate before the `or` so a blank --context falls
+        # through to the resolved kube current-context.
+        ctx_key = (args.context or "").strip() or (current_context_name() or "").strip()
         remembered = cfg.profiles_by_context.get(ctx_key, "") if ctx_key else ""
         if remembered and remembered != "generic":
             try:
@@ -268,6 +271,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     user_path=args.config,
                     base_overrides=base_over,
                     cli_overrides=cli_over,
+                    profile_authoritative=True,
                 )
             except Exception:
                 pass  # remembered profile gone/broken -> keep the generic load

@@ -31,6 +31,7 @@ NO module here imports textual — keep it light so the CLI ``--dump-config`` an
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -902,11 +903,36 @@ def _drop_transient_filter_state(layer: dict) -> dict:
     return out
 
 
+def _strip_profile_owned(layer: dict) -> dict:
+    """Drop profile-contributed keys from a user-file layer.
+
+    When a profile is active (``--profile`` or per-context recall) it is
+    authoritative: its namespaces / thresholds / timezone / probes must NOT be
+    shadowed by the persisted user file. The genuine per-machine UI prefs (theme,
+    sort, columns, panel visibility, name_width, the recall map/flag, …) are kept.
+    Mirrors the key set that :func:`_profile_layer` emits.
+    """
+    if not isinstance(layer, dict):
+        return {}
+    out = {k: v for k, v in layer.items()
+           if k not in ("profile", "thresholds", "probes")}
+    for section, owned_key in (("view", "timezone"), ("cluster", "namespaces")):
+        sub = out.get(section)
+        if isinstance(sub, dict) and owned_key in sub:
+            kept = {k: v for k, v in sub.items() if k != owned_key}
+            if kept:
+                out[section] = kept
+            else:
+                out.pop(section, None)
+    return out
+
+
 def load_config(
     profile: Optional[Profile] = None,
     user_path: Optional[str] = None,
     cli_overrides: Optional[dict] = None,
     base_overrides: Optional[dict] = None,
+    profile_authoritative: bool = False,
 ) -> Config:
     """Layer defaults -> profile -> base -> user file -> CLI flag overrides.
 
@@ -915,27 +941,64 @@ def load_config(
     ``TOP_NS`` seeds the first run but the user's saved choices win afterwards.
     ``cli_overrides`` are explicit flags applied ABOVE the user file (a flag the
     user typed should win). Both are nested config dicts shaped like the file.
+
+    ``profile_authoritative`` (set when a profile is loaded via ``--profile`` or
+    per-context recall) strips the profile-owned keys from the user-file layer so
+    the profile's namespaces/thresholds/timezone/probes win over the persisted
+    config — without it the saved file would shadow the very profile just loaded.
+    Explicit CLI flags / positional args still win (they layer last).
     """
     merged = _default_config_dict()
     merged = _deep_merge(merged, _profile_layer(profile))
     if base_overrides:
         merged = _deep_merge(merged, base_overrides)
     path = user_path or CONFIG_PATH
-    merged = _deep_merge(merged, _drop_transient_filter_state(_read_user_file(path)))
+    user_layer = _drop_transient_filter_state(_read_user_file(path))
+    if profile_authoritative:
+        user_layer = _strip_profile_owned(user_layer)
+    merged = _deep_merge(merged, user_layer)
     if cli_overrides:
         merged = _deep_merge(merged, cli_overrides)
     return _config_from_dict(merged)
 
 
+def _config_for_persist(cfg: Config) -> Config:
+    """The view of ``cfg`` that should be written to disk.
+
+    When a profile is active, the profile-owned fields (namespaces, thresholds,
+    timezone, alert/health probes, profile name) come from the profile layer on
+    the next load — persisting them would shadow the profile and leak one
+    context's profile into others. Reset those to the generic baseline so only
+    genuine per-machine UI prefs + the recall map/flag carry real values. A
+    generic (no-profile) session persists everything as the user's own prefs.
+    """
+    if (cfg.profile_name or "generic") == "generic":
+        return cfg
+    import copy
+
+    base = Config()
+    out = copy.deepcopy(cfg)
+    out.profile_name = "generic"
+    out.namespaces = list(base.namespaces)
+    out.timezone = base.timezone
+    out.cpu_warn, out.cpu_crit = base.cpu_warn, base.cpu_crit
+    out.mem_warn, out.mem_crit = base.mem_warn, base.mem_crit
+    out.pvc_warn, out.pvc_crit = base.pvc_warn, base.pvc_crit
+    out.alertmanager_url = ""
+    out.health_probes = []
+    return out
+
+
 def save_config(cfg: Config, path: Optional[str] = None) -> str:
     """Persist a Config to ``~/.config/kutop/config.yaml`` (or ``path``).
 
-    Returns the path written. Creates the directory tree as needed.
+    Returns the path written. Creates the directory tree as needed. Profile-owned
+    fields are not persisted while a profile is active (see _config_for_persist).
     """
     target = path or CONFIG_PATH
     os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, "w", encoding="utf-8") as fh:
-        fh.write(dump_config_yaml(cfg))
+        fh.write(dump_config_yaml(_config_for_persist(cfg)))
     return target
 
 
@@ -946,8 +1009,11 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     """Render the COMPLETE config skeleton as annotated YAML.
 
     Every option appears with its current (or default) value and a short inline
-    comment. Hand-editable; also exactly what ``kutop --dump-config`` prints and
-    what :func:`save_config` writes. Does NOT require PyYAML (we emit text).
+    comment. Hand-editable; this is what ``kutop --dump-config`` prints. Emits
+    plain text (no PyYAML serialization), though the module requires PyYAML to
+    import. :func:`save_config` writes this for a generic session; while a
+    profile is active it persists a profile-owned-reset view (the profile layer
+    re-supplies those fields on load).
     """
     if cfg is None:
         cfg = _config_from_dict(_default_config_dict())
@@ -969,7 +1035,9 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     if cfg.profiles_by_context:
         lines.append("profiles_by_context:")
         for ctx_name, prof in cfg.profiles_by_context.items():
-            lines.append(f'  "{ctx_name}": "{prof}"')
+            # JSON string literals are valid YAML and escape ':' '/' '"' '\\' so
+            # EKS-ARN-style context names can never break the whole-file parse.
+            lines.append(f"  {json.dumps(str(ctx_name))}: {json.dumps(str(prof))}")
     else:
         lines.append("profiles_by_context: {}")
     lines.append("")

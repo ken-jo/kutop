@@ -204,7 +204,7 @@ def test_app_applies_previews_and_persists_real_theme(monkeypatch) -> None:
     saved: list[dict] = []
     monkeypatch.setattr(
         "kutop.render.app.save_config",
-        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+        lambda cfg, path=None: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
     )
 
     async def drive() -> None:
@@ -242,7 +242,7 @@ def test_app_applies_panel_background_theme_chrome(monkeypatch) -> None:
     saved: list[dict] = []
     monkeypatch.setattr(
         "kutop.render.app.save_config",
-        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+        lambda cfg, path=None: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
     )
 
     async def drive() -> None:
@@ -277,7 +277,7 @@ def test_live_search_term_is_not_persisted(monkeypatch) -> None:
     saved: list[dict] = []
     monkeypatch.setattr(
         "kutop.render.app.save_config",
-        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+        lambda cfg, path=None: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
     )
 
     async def drive() -> None:
@@ -309,7 +309,7 @@ def test_options_modal_toggles_panel_backgrounds(monkeypatch) -> None:
     saved: list[dict] = []
     monkeypatch.setattr(
         "kutop.render.app.save_config",
-        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+        lambda cfg, path=None: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
     )
 
     async def drive() -> None:
@@ -444,7 +444,7 @@ def test_trend_history_accepts_real_zero_samples() -> None:
 def test_namespace_change_resets_trend_history(monkeypatch) -> None:
     from kutop.render.app import TopApp
 
-    monkeypatch.setattr("kutop.render.app.save_config", lambda cfg: "/tmp/kutop-config.yaml")
+    monkeypatch.setattr("kutop.render.app.save_config", lambda cfg, path=None: "/tmp/kutop-config.yaml")
 
     async def drive() -> None:
         app = TopApp(
@@ -858,6 +858,54 @@ def test_remember_profile_persists_context_map(tmp_path: Path, monkeypatch) -> N
     asyncio.run(drive())
 
 
+def test_profile_owned_fields_not_persisted_and_profile_authoritative(
+        tmp_path: Path) -> None:
+    from kutop.config import dump_config_yaml, load_config, save_config
+
+    cfgfile = tmp_path / "config.yaml"
+
+    # A session on context A using profile "db": cfg carries db's materialized
+    # namespaces/thresholds + the recall map + a UI pref (theme).
+    db_session = Config(
+        profile_name="db",
+        namespaces=["database", "postgres"],
+        cpu_warn=50, cpu_crit=70,
+        theme="nord",
+        remember_profile_per_context=True,
+        profiles_by_context={"ctxA": "db"},
+    )
+    save_config(db_session, str(cfgfile))
+    saved = cfgfile.read_text(encoding="utf-8")
+    # profile-owned fields must NOT leak into the shared file...
+    assert "database" not in saved and "postgres" not in saved
+    assert "cpu_warn: 50" not in saved
+    # ...but UI prefs and the recall metadata DO persist
+    assert "nord" in saved
+    assert "ctxA" in saved and "db" in saved
+
+    # context B (no remembered entry) launches generic: must NOT inherit db's
+    # namespaces/thresholds via the shared file
+    generic = load_config(user_path=str(cfgfile))
+    assert generic.namespaces == ["default"]
+    assert (generic.cpu_warn, generic.cpu_crit) == (75, 90)
+    assert generic.profile_name == "generic"
+    assert generic.remember_profile_per_context is True
+    assert generic.profiles_by_context == {"ctxA": "db"}
+
+    # an authoritative profile (e.g. --profile web, or recall) wins over the file
+    # for profile-owned fields, while UI prefs from the file still apply
+    web = Profile(name="web", namespaces=["web", "frontend"],
+                  cpu_warn=33, cpu_crit=44)
+    loaded = load_config(profile=web, user_path=str(cfgfile),
+                         profile_authoritative=True)
+    assert loaded.namespaces == ["web", "frontend"]
+    assert (loaded.cpu_warn, loaded.cpu_crit) == (33, 44)
+    assert loaded.profile_name == "web"
+    assert loaded.theme == "nord"
+    # and a quoted/escaped context key round-trips intact
+    assert "profiles_by_context" in dump_config_yaml(db_session)
+
+
 def test_sidebar_keys_panel_can_be_hidden() -> None:
     from textual.widgets import Static
 
@@ -960,7 +1008,7 @@ def test_startup_does_not_persist_config(monkeypatch) -> None:
     saves: list = []
     monkeypatch.setattr(
         "kutop.render.app.save_config",
-        lambda cfg: saves.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+        lambda cfg, path=None: saves.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
     )
 
     async def drive() -> None:
@@ -1062,7 +1110,7 @@ def test_header_hamburger_opens_kutop_menu() -> None:
 def test_theme_menu_has_native_actions_and_no_theme_rows(monkeypatch) -> None:
     from kutop.render.app import TopApp
 
-    monkeypatch.setattr("kutop.render.app.save_config", lambda cfg: "/tmp/kutop-config.yaml")
+    monkeypatch.setattr("kutop.render.app.save_config", lambda cfg, path=None: "/tmp/kutop-config.yaml")
 
     async def drive() -> None:
         app = TopApp(
@@ -1169,7 +1217,7 @@ def test_options_modal_theme_preview_enter_persists(monkeypatch) -> None:
     saved: list[dict] = []
     monkeypatch.setattr(
         "kutop.render.app.save_config",
-        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+        lambda cfg, path=None: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
     )
 
     async def drive() -> None:
@@ -1216,7 +1264,7 @@ def test_options_modal_theme_escape_restores_without_persist(monkeypatch) -> Non
     saved: list[dict] = []
     monkeypatch.setattr(
         "kutop.render.app.save_config",
-        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+        lambda cfg, path=None: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
     )
 
     async def drive() -> None:
@@ -1260,7 +1308,7 @@ def test_options_modal_theme_hover_previews(monkeypatch) -> None:
     saved: list[dict] = []
     monkeypatch.setattr(
         "kutop.render.app.save_config",
-        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+        lambda cfg, path=None: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
     )
 
     async def drive() -> None:
@@ -1316,7 +1364,7 @@ def test_options_modal_context_input_persists(monkeypatch) -> None:
     saved: list[dict] = []
     monkeypatch.setattr(
         "kutop.render.app.save_config",
-        lambda cfg: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+        lambda cfg, path=None: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
     )
 
     async def drive() -> None:
