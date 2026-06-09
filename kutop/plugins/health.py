@@ -24,49 +24,17 @@ profile YAML.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
 
 from ..render.widgets import Panel
 
+if TYPE_CHECKING:
+    from ..model import HealthResult
+
 #: widget id the health panel mounts under (the app shows/hides it generically).
 PANEL_ID = "health_panel"
-
-
-def _probe_attr(p: Any, key: str, default: Any) -> Any:
-    """Read ``key`` from a probe that may be a dict OR an attribute object.
-
-    The unified Config carries health probes as plain ``{name,url,fields}`` dicts,
-    but the core Fetcher mirrors them as :class:`~kutop.config.HealthProbe`
-    instances (attribute access). Support both shapes transparently.
-    """
-    if isinstance(p, dict):
-        return p.get(key, default)
-    return getattr(p, key, default)
-
-
-def _to_health_probes(config: Any) -> list:
-    """Translate the config's ``health_probes`` into probe objects.
-
-    The scrape helpers only need ``.name/.url/.fields``; reuse the
-    :class:`~kutop.config.HealthProbe` dataclass for that attribute access.
-    Each source probe may be a dict or an attribute object (see :func:`_probe_attr`).
-    Empty / malformed -> [] (no scraping at all, so no network is touched).
-    """
-    from ..config import HealthProbe
-
-    out: list = []
-    for p in getattr(config, "health_probes", None) or []:
-        try:
-            out.append(HealthProbe(
-                name=str(_probe_attr(p, "name", "")),
-                url=str(_probe_attr(p, "url", "")),
-                fields=dict(_probe_attr(p, "fields", {}) or {}),
-            ))
-        except Exception:
-            continue
-    return out
 
 
 class HealthPanel(Panel):
@@ -135,7 +103,12 @@ class HealthPlugin:
         fetcher's ``_probe_body`` getter so ``/``-prefixed probe URLs route
         through the Kubernetes API-server proxy (kubeconfig auth, no port-forward).
         """
-        probes = _to_health_probes(self._config_of(fetcher))
+        from ..config import HealthProbe
+
+        # The fetcher exposes the live probes (set by the app from the unified
+        # Config); normalise each via the single shared coercion helper.
+        probes = [HealthProbe.from_any(p)
+                  for p in getattr(fetcher, "health_probes", None) or []]
         if not probes:
             return
         try:
@@ -144,19 +117,6 @@ class HealthPlugin:
             snapshot.health = scrape_probes(probes, getter=getter)
         except Exception:
             snapshot.health = []
-
-    @staticmethod
-    def _config_of(fetcher: Any):
-        """The config-like view carrying this plugin's probes for the translator.
-
-        The core fetcher exposes the live ``health_probes`` list directly (set by
-        the app from the unified Config), so we wrap it in a tiny shim with the
-        attribute the translator reads.
-        """
-        class _Shim:
-            health_probes = list(getattr(fetcher, "health_probes", []) or [])
-
-        return _Shim()
 
     def make_panel(self) -> Any:
         """Construct the health panel widget the app mounts."""

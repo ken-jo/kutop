@@ -36,7 +36,8 @@ def _http_get(url: str, timeout: float) -> Optional[str]:
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            if getattr(resp, "status", 200) and resp.status >= 400:
+            status = getattr(resp, "status", 200) or 200  # unknown -> treat as OK
+            if status >= 400:
                 return None
             raw = resp.read()
         return raw.decode("utf-8", errors="ignore")

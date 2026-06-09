@@ -73,6 +73,24 @@ class HealthProbe:
     # regex -> label; each capturing group 1 becomes the displayed value
     fields: dict = field(default_factory=dict)
 
+    @classmethod
+    def from_any(cls, p: Any) -> "HealthProbe":
+        """Coerce a probe spec into a HealthProbe.
+
+        Accepts a plain ``{name, url, fields}`` dict (how the unified Config
+        carries probes), an existing HealthProbe, or any object exposing those
+        attributes. The single normaliser reused by the app and the health
+        plugin so the dict->dataclass translation lives in exactly one place.
+        """
+        if isinstance(p, cls):
+            return p
+        get = (p.get if isinstance(p, dict) else lambda k, d=None: getattr(p, k, d))
+        return cls(
+            name=str(get("name", "") or ""),
+            url=str(get("url", "") or ""),
+            fields=dict(get("fields", {}) or {}),
+        )
+
 
 @dataclass
 class Profile:

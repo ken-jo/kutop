@@ -110,8 +110,6 @@ class DualThresholdSlider(Static):
 
     can_focus = True
 
-    # Fine eighth-block fill so the colored zones land at sub-cell resolution.
-    _EIGHTHS = " ▏▎▍▌▋▊▉█"
     _MIN_GAP = 1
 
     class ThresholdChanged(Message):
@@ -459,11 +457,17 @@ class SummaryBar(Static):
         self.style_mode = mode if mode in ("tiles", "compact") else "tiles"
         self.set_class(self.style_mode == "tiles", "-tiles")
 
-    def update_summary(self, s: Summary, show_alerts: bool) -> None:
+    def update_summary(
+        self,
+        s: Summary,
+        show_alerts: bool,
+        cpu_thresh: "tuple[int, int]" = (75, 90),
+        mem_thresh: "tuple[int, int]" = (80, 92),
+    ) -> None:
         if self.style_mode == "compact":
             self.update(self._compact(s, show_alerts))
         else:
-            self.update(self._tiles(s, show_alerts))
+            self.update(self._tiles(s, show_alerts, cpu_thresh, mem_thresh))
 
     # ── tile layout ───────────────────────────────────────────────────────
     @staticmethod
@@ -475,7 +479,13 @@ class SummaryBar(Static):
         box.append(value)
         return box
 
-    def _tiles(self, s: Summary, show_alerts: bool) -> Text:
+    def _tiles(
+        self,
+        s: Summary,
+        show_alerts: bool,
+        cpu_thresh: "tuple[int, int]" = (75, 90),
+        mem_thresh: "tuple[int, int]" = (80, 92),
+    ) -> Text:
         nodes_ok = s.nodes_ready == s.nodes_total
         nodes_accent = "green" if nodes_ok else "yellow"
         nodes_val = Text(f"{s.nodes_ready}/{s.nodes_total}",
@@ -496,8 +506,13 @@ class SummaryBar(Static):
 
         cpu_pct = (s.cpu_used_mcpu * 100 // s.cpu_cap_mcpu) if s.cpu_cap_mcpu else 0
         mem_pct = (s.mem_used_mi * 100 // s.mem_cap_mi) if s.mem_cap_mi else 0
-        cpu_accent = "red" if cpu_pct >= 90 else "yellow" if cpu_pct >= 75 else "green"
-        mem_accent = "red" if mem_pct >= 92 else "yellow" if mem_pct >= 80 else "green"
+
+        def _accent(pct_: int, warn_crit: "tuple[int, int]") -> str:
+            warn, crit = warn_crit
+            return "red" if pct_ >= crit else "yellow" if pct_ >= warn else "green"
+
+        cpu_accent = _accent(cpu_pct, cpu_thresh)
+        mem_accent = _accent(mem_pct, mem_thresh)
 
         tiles = [
             self._tile("NODES", nodes_val, nodes_accent),
@@ -1339,14 +1354,14 @@ class OptionsModal(ModalScreen):
     def on_dual_threshold_slider_threshold_changed(
         self, event: "DualThresholdSlider.ThresholdChanged"
     ) -> None:
-        if not self._ready_for_input:
-            return
         """Live-apply a dragged threshold slider into the working config.
 
         Maps the slider's metric -> the matching ``<metric>_warn/_crit`` config
         fields, then calls ``apply_config`` so the table gauges re-color
         immediately and the change persists to the user config file.
         """
+        if not self._ready_for_input:
+            return
         m = event.metric
         if m in ("cpu", "mem", "pvc"):
             setattr(self._cfg, f"{m}_warn", int(event.warn))

@@ -1060,14 +1060,7 @@ class TopApp(App):
         attribute access it expects. Empty -> [] (no scraping at all).
         """
         from ..config import HealthProbe
-        out = []
-        for p in cfg.health_probes or []:
-            out.append(HealthProbe(
-                name=str(p.get("name", "")),
-                url=str(p.get("url", "")),
-                fields=dict(p.get("fields", {}) or {}),
-            ))
-        return out
+        return [HealthProbe.from_any(p) for p in cfg.health_probes or []]
 
     def _coerce_theme(self, theme: str) -> str:
         """Return a valid Textual theme name, falling back to textual-dark."""
@@ -1444,7 +1437,12 @@ class TopApp(App):
         sb = self.query_one("#summary_bar", SummaryBar)
         if sb.style_mode != self.cfg.summary_style:
             sb.set_style_mode(self.cfg.summary_style)
-        sb.update_summary(s, show_alerts=bool(self.cfg.alertmanager_url))
+        sb.update_summary(
+            s,
+            show_alerts=bool(self.cfg.alertmanager_url),
+            cpu_thresh=self.cfg.threshold("cpu"),
+            mem_thresh=self.cfg.threshold("mem"),
+        )
 
         cpu_detail = f"{model.fmt_cpu(s.cpu_used_mcpu)}/{model.fmt_cpu(s.cpu_cap_mcpu)}"
         mem_detail = f"{model.fmt_mem(s.mem_used_mi)}/{model.fmt_mem(s.mem_cap_mi)}"

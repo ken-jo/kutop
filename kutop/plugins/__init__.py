@@ -28,7 +28,10 @@ name for its logic — it only iterates :func:`iter_plugins` / :func:`iter_enabl
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 @runtime_checkable
