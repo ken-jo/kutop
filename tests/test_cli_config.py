@@ -839,6 +839,54 @@ def test_set_profile_refreshes_even_without_namespace_change(
     asyncio.run(drive())
 
 
+def test_profile_context_is_authoritative(tmp_path: Path) -> None:
+    from kutop.config import load_config, save_config
+
+    cfgfile = tmp_path / "config.yaml"
+    # a persisted (generic) file that pins the context to cluster-a
+    save_config(Config(context="cluster-a"), str(cfgfile))
+
+    # a profile that targets cluster-b, loaded authoritatively, wins over the file
+    p = Profile(name="bundle", context="cluster-b", namespaces=["ns-b"])
+    loaded = load_config(profile=p, user_path=str(cfgfile),
+                         profile_authoritative=True)
+    assert loaded.context == "cluster-b"
+    assert loaded.namespaces == ["ns-b"]
+
+
+def test_profile_switches_kube_context_on_select(tmp_path: Path, monkeypatch) -> None:
+    import kutop.config as kconfig
+
+    from kutop.render.app import TopApp
+
+    monkeypatch.setattr(kconfig, "_USER_PROFILE_DIR", str(tmp_path))
+    (tmp_path / "onctx.yaml").write_text(
+        "name: onctx\ncontext: cluster-b\nnamespaces: [appns]\n", encoding="utf-8")
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="cluster-a",
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+            assert app.context == "cluster-a"
+
+            # selecting a profile that pins a context switches the cluster
+            app.set_profile("onctx")
+            await pilot.pause()
+            assert app.cfg.context == "cluster-b"
+            assert app.context == "cluster-b"
+            assert app.fetcher.context == "cluster-b"
+
+            # a profile WITHOUT a context keeps the current cluster
+            app.set_profile("generic")
+            await pilot.pause()
+            assert app.cfg.context == "cluster-b"
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_profiles_by_context_yaml_roundtrip(tmp_path: Path) -> None:
     from kutop.config import dump_config_yaml, load_config
 

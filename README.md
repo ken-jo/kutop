@@ -246,6 +246,7 @@ commented template:
 
 ```yaml
 name: my-stack
+context: ""                   # optional kube context to switch to; "" -> keep current
 namespaces: [team-a, team-b]
 timezone: ""                  # "" -> host local tz; or an IANA name
 ordering:
@@ -267,7 +268,10 @@ The active profile can also be **switched live** from the **PROFILE** dropdown
 at the top of the sidebar (`Tab`/`b`). The list is discovered from your profile
 directories (plus `generic` for the no-profile default); selecting one re-applies
 that profile's ordering, namespaces, timezone, thresholds, alert source, and
-health probes immediately.
+health probes immediately, and refetches at once. If the profile sets a
+`context:`, selecting it also switches to that kube context (cluster) — so a
+profile can bundle "which cluster + how to view it"; leave it empty to keep the
+current context.
 
 By default a live switch is session-only. Tick **Remember for this context**
 (below the dropdown) to persist the choice **keyed by your current kube context**:

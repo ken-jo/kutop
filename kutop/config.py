@@ -82,6 +82,7 @@ class Profile:
     # ordered (prefix, weight); lowest weight sorts first. Empty -> name sort.
     ordering: list = field(default_factory=list)
     namespaces: list = field(default_factory=list)        # default ns when CLI omits
+    context: str = ""                                      # kube context to switch to ("" = keep current)
     timezone: str = ""                                     # "" -> local tz
     # threshold percentages for OK/Warn/Crit coloring
     cpu_warn: int = 75
@@ -133,6 +134,7 @@ def load_profile(name_or_path: Optional[str]) -> Profile:
         name=raw.get("name", os.path.splitext(os.path.basename(path))[0]),
         ordering=ordering,
         namespaces=raw.get("namespaces", []),
+        context=str(raw.get("context", "") or ""),
         timezone=raw.get("timezone", ""),
         cpu_warn=th.get("cpu_warn", 75), cpu_crit=th.get("cpu_crit", 90),
         mem_warn=th.get("mem_warn", 80), mem_crit=th.get("mem_crit", 92),
@@ -823,9 +825,14 @@ def _profile_layer(profile: Optional[Profile]) -> dict:
     """Express a Profile as a config-dict layer (layer 2)."""
     if profile is None:
         return {}
+    cluster: dict = {}
+    if profile.namespaces:
+        cluster["namespaces"] = list(profile.namespaces)
+    if profile.context:
+        cluster["context"] = profile.context
     layer: dict = {
         "view": {"timezone": profile.timezone},
-        "cluster": {"namespaces": list(profile.namespaces)} if profile.namespaces else {},
+        "cluster": cluster,
         "thresholds": {
             "cpu_warn": profile.cpu_warn, "cpu_crit": profile.cpu_crit,
             "mem_warn": profile.mem_warn, "mem_crit": profile.mem_crit,
@@ -916,14 +923,15 @@ def _strip_profile_owned(layer: dict) -> dict:
         return {}
     out = {k: v for k, v in layer.items()
            if k not in ("profile", "thresholds", "probes")}
-    for section, owned_key in (("view", "timezone"), ("cluster", "namespaces")):
+    for section, owned_keys in (("view", ("timezone",)),
+                                ("cluster", ("namespaces", "context"))):
         sub = out.get(section)
-        if isinstance(sub, dict) and owned_key in sub:
-            kept = {k: v for k, v in sub.items() if k != owned_key}
-            if kept:
-                out[section] = kept
-            else:
-                out.pop(section, None)
+        if isinstance(sub, dict):
+            kept = {k: v for k, v in sub.items() if k not in owned_keys}
+            if kept != sub:
+                out[section] = kept if kept else None
+                if out[section] is None:
+                    out.pop(section, None)
     return out
 
 
@@ -980,6 +988,7 @@ def _config_for_persist(cfg: Config) -> Config:
     out = copy.deepcopy(cfg)
     out.profile_name = "generic"
     out.namespaces = list(base.namespaces)
+    out.context = base.context
     out.timezone = base.timezone
     out.cpu_warn, out.cpu_crit = base.cpu_warn, base.cpu_crit
     out.mem_warn, out.mem_crit = base.mem_warn, base.mem_crit

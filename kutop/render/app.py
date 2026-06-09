@@ -2379,9 +2379,9 @@ class TopApp(App):
     def set_profile(self, name: str) -> None:
         """Switch the active workload profile live from the sidebar dropdown.
 
-        Profile-authoritative: the chosen profile's ordering, namespaces,
-        timezone, thresholds, alertmanager URL, and health probes replace the
-        current ones, while the user's session UI prefs (theme, columns, sort,
+        Profile-authoritative: the chosen profile's ordering, namespaces, optional
+        kube context, timezone, thresholds, alertmanager URL, and health probes
+        replace the current ones, while the user's session UI prefs (theme, columns, sort,
         panels, name width) are preserved. The switch itself is session-only
         (``persist=False``), so it never silently rewrites the saved config — but
         if "Remember for this context" is enabled, the ``context -> profile`` map
@@ -2418,6 +2418,11 @@ class TopApp(App):
         # the previous profile's namespaces.
         cfg.namespaces = (list(new_profile.namespaces) if new_profile.namespaces
                           else list(Config().namespaces))
+        # A profile may also pin the kube context (cluster). When set, switch to
+        # it — _adopt_config rewires the fetcher and refetches. Empty keeps the
+        # current context.
+        if new_profile.context:
+            cfg.context = new_profile.context
         self._adopt_config(cfg, persist=False)
         self._remember_current_profile()
         # A profile switch can change alert/health probes and thresholds even when

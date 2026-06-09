@@ -10,6 +10,12 @@ name: example
 namespaces:
   - default
 
+# Optional kube context (cluster) this profile targets. When set, selecting this
+# profile in the sidebar (or `--profile <name>`) ALSO switches to this context —
+# so a profile can bundle "which cluster + how to view it". "" / unset = keep the
+# current context. An explicit `--context` on the CLI still wins.
+# context: ""
+
 # Display timezone for timestamps (IANA name). "" = the host's local timezone.
 timezone: ""
 
