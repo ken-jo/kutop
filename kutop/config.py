@@ -973,11 +973,13 @@ def load_config(
 def _config_for_persist(cfg: Config) -> Config:
     """The view of ``cfg`` that should be written to disk.
 
-    When a profile is active, the profile-owned fields (namespaces, thresholds,
-    timezone, alert/health probes, profile name) come from the profile layer on
-    the next load — persisting them would shadow the profile and leak one
-    context's profile into others. Reset those to the generic baseline so only
-    genuine per-machine UI prefs + the recall map/flag carry real values. A
+    When a profile is active, the profile-owned VALUES (namespaces, thresholds,
+    timezone, alert/health probes) come from the profile layer on the next load —
+    persisting them would shadow the profile and leak one context's profile into
+    others, so they are reset to the generic baseline. The ``profile_name`` itself
+    IS retained, so a relaunch without ``--profile`` can reload the last active
+    profile (which re-supplies those VALUES via the profile layer). Only genuine
+    per-machine UI prefs + the recall map/flag carry their own real values. A
     generic (no-profile) session persists everything as the user's own prefs.
     """
     if (cfg.profile_name or "generic") == "generic":
@@ -986,7 +988,6 @@ def _config_for_persist(cfg: Config) -> Config:
 
     base = Config()
     out = copy.deepcopy(cfg)
-    out.profile_name = "generic"
     out.namespaces = list(base.namespaces)
     out.context = base.context
     out.timezone = base.timezone

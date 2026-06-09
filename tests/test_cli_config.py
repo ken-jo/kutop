@@ -1124,19 +1124,24 @@ def test_profile_owned_fields_not_persisted_and_profile_authoritative(
     )
     save_config(db_session, str(cfgfile))
     saved = cfgfile.read_text(encoding="utf-8")
-    # profile-owned fields must NOT leak into the shared file...
+    # profile-owned VALUES must NOT leak into the shared file...
     assert "database" not in saved and "postgres" not in saved
     assert "cpu_warn: 50" not in saved
-    # ...but UI prefs and the recall metadata DO persist
+    # ...but UI prefs, the recall metadata, AND the active profile name persist
+    # (profile_name is now retained so the next launch can reload the profile,
+    # which re-supplies the owned VALUES via the profile layer)
     assert "nord" in saved
     assert "ctxA" in saved and "db" in saved
+    assert "profile: db" in saved
 
-    # context B (no remembered entry) launches generic: must NOT inherit db's
-    # namespaces/thresholds via the shared file
+    # reloading the (generic, no --profile) file keeps the recorded profile_name
+    # while the profile-owned VALUES read back as the generic defaults (no leak):
+    # the values were reset on persist; the name only flags which profile to
+    # reload next launch (cli.main does that reload authoritatively).
     generic = load_config(user_path=str(cfgfile))
     assert generic.namespaces == ["default"]
     assert (generic.cpu_warn, generic.cpu_crit) == (75, 90)
-    assert generic.profile_name == "generic"
+    assert generic.profile_name == "db"
     assert generic.remember_profile_per_context is True
     assert generic.profiles_by_context == {"ctxA": "db"}
 
@@ -1152,6 +1157,84 @@ def test_profile_owned_fields_not_persisted_and_profile_authoritative(
     assert loaded.theme == "nord"
     # and a quoted/escaped context key round-trips intact
     assert "profiles_by_context" in dump_config_yaml(db_session)
+
+
+def test_last_profile_health_round_trips_through_persist_and_reload(
+        tmp_path: Path, monkeypatch) -> None:
+    """The reported data-loss bug: a profile's health probes survive a relaunch.
+
+    Saving a Config whose profile is active drops the owned VALUES but keeps the
+    profile NAME. Reloading the way ``cli.main`` does (load_profile(name) +
+    load_config(profile_authoritative=True)) re-supplies namespaces + the health
+    probes (with their fields) from the profile layer — so the health row that
+    "stops appearing after using the app" comes back.
+    """
+    import kutop.config as kconfig
+    from kutop.config import (
+        HealthProbe,
+        Profile,
+        load_config,
+        load_profile,
+        save_config,
+    )
+
+    monkeypatch.setattr(kconfig, "_USER_PROFILE_DIR", str(tmp_path))
+    (tmp_path / "arbitrum-l3.yaml").write_text(
+        """
+name: arbitrum-l3
+namespaces: [l3-rollup, l3-batcher]
+health_probes:
+  - name: sequencer
+    url: http://seq.local/health
+    fields:
+      block: 'block=(\\d+)'
+      peers: 'peers=(\\d+)'
+""".strip(),
+        encoding="utf-8",
+    )
+
+    cfgfile = tmp_path / "config.yaml"
+
+    # a session running the arbitrum-l3 profile: cfg carries the profile's
+    # materialized namespaces + health probes (as cfg would after load).
+    profile = load_profile("arbitrum-l3")
+    session = load_config(profile=profile, user_path=str(cfgfile),
+                          profile_authoritative=True)
+    assert session.profile_name == "arbitrum-l3"
+    assert session.namespaces == ["l3-rollup", "l3-batcher"]
+    assert session.health_probes == [
+        {"name": "sequencer", "url": "http://seq.local/health",
+         "fields": {"block": "block=(\\d+)", "peers": "peers=(\\d+)"}}
+    ]
+
+    # persist it (as the running app does on a user action)
+    save_config(session, str(cfgfile))
+    saved = cfgfile.read_text(encoding="utf-8")
+    # the saved file keeps the active profile NAME...
+    assert "profile: arbitrum-l3" in saved
+    # ...but drops the profile-owned VALUES (namespaces + health probes)
+    assert "l3-rollup" not in saved and "l3-batcher" not in saved
+    assert "sequencer" not in saved and "seq.local" not in saved
+
+    # a plain reload (no --profile) reads the file back: the owned VALUES are the
+    # generic baseline, but the recorded profile_name flags which profile to reload
+    plain = load_config(user_path=str(cfgfile))
+    assert plain.profile_name == "arbitrum-l3"
+    assert plain.namespaces == ["default"]
+    assert plain.health_probes == []
+
+    # cli.main reloads that profile authoritatively -> namespaces + health probes
+    # (with their fields) are restored, so the health panel reappears.
+    reloaded_profile = load_profile(plain.profile_name)
+    assert isinstance(reloaded_profile, Profile)
+    assert all(isinstance(hp, HealthProbe) for hp in reloaded_profile.health_probes)
+    reloaded = load_config(profile=reloaded_profile, user_path=str(cfgfile),
+                           profile_authoritative=True)
+    assert reloaded.namespaces == ["l3-rollup", "l3-batcher"]
+    assert reloaded.health_probes == [
+        {"name": "sequencer", "url": "http://seq.local/health",
+         "fields": {"block": "block=(\\d+)", "peers": "peers=(\\d+)"}}
+    ]
 
 
 def test_sidebar_keys_panel_can_be_hidden() -> None:

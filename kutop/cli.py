@@ -250,22 +250,34 @@ def main(argv: Optional[list[str]] = None) -> int:
         profile_authoritative=bool(args.profile),
     )
 
-    # Context-keyed profile recall (opt-in via the sidebar "Remember for this
-    # context" toggle): when the user did NOT pass --profile, load the profile
-    # remembered for the active kube context. An explicit --profile always wins
-    # and skips this. Kept kubectl-free for --self-test / --snapshot.
-    if (args.profile is None and cfg.remember_profile_per_context
-            and cfg.profiles_by_context
-            and not (args.self_test or args.snapshot)):
-        from .fetch import current_context_name
+    # Reload the last active profile when the user did NOT pass --profile. An
+    # explicit --profile always wins and skips this. Kept kubectl-free for
+    # --self-test / --snapshot. Two sources feed the target, in priority:
+    #   (a) per-context recall (opt-in via the sidebar "Remember for this
+    #       context" toggle): the profile remembered for the active kube context.
+    #   (b) the global "remember last profile" default: the profile_name carried
+    #       in the saved config (the last active profile), when set & non-generic.
+    # When a target is found it is loaded authoritatively so its
+    # namespaces/thresholds/timezone/probes win over the persisted file (which
+    # intentionally stores only the generic baseline of those VALUES).
+    if args.profile is None and not (args.self_test or args.snapshot):
+        target = ""
+        if cfg.remember_profile_per_context and cfg.profiles_by_context:
+            from .fetch import current_context_name
 
-        # strip each candidate before the `or` so a blank --context falls
-        # through to the resolved kube current-context.
-        ctx_key = (args.context or "").strip() or (current_context_name() or "").strip()
-        remembered = cfg.profiles_by_context.get(ctx_key, "") if ctx_key else ""
-        if remembered and remembered != "generic":
+            # strip each candidate before the `or` so a blank --context falls
+            # through to the resolved kube current-context.
+            ctx_key = (args.context or "").strip() or (
+                current_context_name() or "").strip()
+            remembered = cfg.profiles_by_context.get(ctx_key, "") if ctx_key else ""
+            if remembered and remembered != "generic":
+                target = remembered
+        # fall back to the last active profile recorded in the saved config
+        if not target and cfg.profile_name and cfg.profile_name != "generic":
+            target = cfg.profile_name
+        if target:
             try:
-                profile = load_profile(remembered)
+                profile = load_profile(target)
                 cfg = load_config(
                     profile=profile,
                     user_path=args.config,
@@ -274,7 +286,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     profile_authoritative=True,
                 )
             except Exception:
-                pass  # remembered profile gone/broken -> keep the generic load
+                pass  # target profile gone/broken -> keep the generic load
 
     apply_detail_preset(cfg, args.detail)
 
