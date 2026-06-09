@@ -916,6 +916,141 @@ def test_sidebar_context_dropdown_switches_cluster(tmp_path: Path, monkeypatch) 
     asyncio.run(drive())
 
 
+def test_rebuild_contexts_handles_current_not_in_options_and_empty(
+        tmp_path: Path, monkeypatch) -> None:
+    """LIVE path: discovery refills the CONTEXT Select after mount.
+
+    rebuild_contexts must never raise even when the active context is not in the
+    discovered list (falls back to the first option) or when discovery returns an
+    empty list, mirroring how a worker thread drives it via _populate_ns_list.
+    """
+    import kutop.config as kconfig
+    from textual.widgets import Select
+
+    from kutop.render.app import TopApp
+
+    monkeypatch.setattr(kconfig, "CONFIG_PATH", str(tmp_path / "config.yaml"))
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="ctx-a",
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            sidebar = app.query_one("#sidebar")
+            sel = app.query_one("#side_context", Select)
+
+            # 1) current ("ctx-a") is NOT in the discovered options -> falls back
+            #    to the first option without raising InvalidSelectValueError
+            sidebar.rebuild_contexts(["ctx-b", "ctx-c"], "ctx-a")
+            await pilot.pause()
+            values = [value for _, value in sel._options]
+            assert "ctx-b" in values and "ctx-c" in values
+            assert sel.value == "ctx-b"
+
+            # 2) current IS in the refreshed list -> stays selected
+            sidebar.rebuild_contexts(["ctx-b", "ctx-c"], "ctx-c")
+            await pilot.pause()
+            assert sel.value == "ctx-c"
+
+            # 3) empty discovery list must not raise and keeps a usable value
+            sidebar.rebuild_contexts([], "")
+            await pilot.pause()
+            assert sel.value is not None
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_sidebar_context_pick_does_not_loop_or_crash(
+        tmp_path: Path, monkeypatch) -> None:
+    """LIVE path regression: a single CONTEXT pick must call set_context once.
+
+    A programmatic Select rebuild posts a queued Changed echo; without the
+    _syncing re-arm + idempotency guards this re-entered set_context in an
+    unbounded loop ending in a NoMatches crash. The pick is driven through the
+    real Select.Changed handler (sel.value = ...), exactly like a user click.
+    """
+    import kutop.config as kconfig
+    from textual.widgets import Select
+
+    from kutop.render.app import TopApp
+
+    monkeypatch.setattr(kconfig, "CONFIG_PATH", str(tmp_path / "config.yaml"))
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="ctx-a",
+                     discover_namespaces=False, auto_refresh=False)
+        calls: list[str] = []
+        orig = TopApp.set_context
+
+        def counting(self, name):  # type: ignore[no-untyped-def]
+            calls.append(name)
+            assert len(calls) <= 50, f"set_context looped: {calls[:8]}"
+            return orig(self, name)
+
+        app.set_context = counting.__get__(app, TopApp)  # type: ignore[assignment]
+
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+            sidebar = app.query_one("#sidebar")
+            # discovery fills the dropdown after mount
+            app._discovered_contexts = ["ctx-a", "ctx-b"]
+            sidebar.rebuild_contexts(["ctx-a", "ctx-b"], "ctx-a")
+            for _ in range(4):
+                await pilot.pause()
+            sidebar._ready_for_input = True
+
+            # a user picks ctx-b in the dropdown (fires Select.Changed)
+            sel = app.query_one("#side_context", Select)
+            sel.value = "ctx-b"
+            for _ in range(12):
+                await pilot.pause()
+
+            assert calls == ["ctx-b"], calls
+            assert app.context == "ctx-b"
+            assert sel.value == "ctx-b"
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_adopt_config_and_set_context_survive_unmounted_widgets(
+        tmp_path: Path, monkeypatch) -> None:
+    """LIVE path regression: _adopt_config must not raise NoMatches when a panel
+    widget is transiently absent (re-entered before first paint / during teardown).
+    """
+    import copy
+
+    import kutop.config as kconfig
+
+    from kutop.render.app import TopApp
+
+    monkeypatch.setattr(kconfig, "CONFIG_PATH", str(tmp_path / "config.yaml"))
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="ctx-a",
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+
+            # simulate a transient un-mounted state and re-adopt the config
+            app.query_one("#summary_bar").remove()
+            await pilot.pause()
+            cfg = copy.deepcopy(app.cfg)
+            app._adopt_config(cfg, persist=False)  # must NOT raise NoMatches
+
+            # set_context driving through the same path also stays crash-free
+            app.set_context("ctx-b")
+            await pilot.pause()
+            assert app.context == "ctx-b"
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_profiles_by_context_yaml_roundtrip(tmp_path: Path) -> None:
     from kutop.config import dump_config_yaml, load_config
 

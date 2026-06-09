@@ -27,6 +27,7 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.reactive import Reactive
 from textual.widgets import (
     Checkbox,
@@ -642,20 +643,63 @@ class SidebarPanel(Vertical):
         """
         self._context_options = list(options)
         self._context_name = (current or "").strip()
+        self._syncing = True
+        try:
+            self._apply_context_to_select()
+        finally:
+            # Keep _syncing armed across the dispatch of any queued Changed echo
+            # (delivered on a later event-loop turn): clear it on the next frame
+            # rather than in a synchronous finally so on_select_changed still sees
+            # the guard and set_context cannot re-fire in a feedback loop.
+            self._disarm_syncing_next_frame()
+
+    def _apply_context_to_select(self) -> None:
+        """Write the CONTEXT Select options + value from the cached state in one
+        place, so the widget options and the selected value can never diverge.
+
+        Single funnel shared by :meth:`rebuild_contexts` and :meth:`update_state`:
+        rebuild the options, then select the desired value, suppressing the
+        programmatic ``Select.Changed`` echo. Best-effort if the Select is not
+        mounted yet. Callers must arm/disarm ``_syncing`` around this.
+        """
         try:
             sel = self.query_one("#side_context", Select)
         except Exception:
             return
         ctx_opts = self._context_options or [self._context_name or ""]
         pairs = [(c or "(current)", c) for c in ctx_opts]
-        self._syncing = True
+        desired = (self._context_name if self._context_name in ctx_opts
+                   else ctx_opts[0])
         try:
-            sel.set_options(pairs)
-            sel.value = (self._context_name if self._context_name in ctx_opts
-                         else ctx_opts[0])
+            # prevent() suppresses the Select.Changed echo from the programmatic
+            # set_options/value writes — the reactive posts Changed as a queued
+            # message dispatched after a synchronous _syncing reset, so the
+            # _syncing guard in on_select_changed could not catch it and
+            # set_context would re-fire in an unbounded loop. We keep BOTH guards:
+            # prevent() blocks the echo, and _disarm_syncing_next_frame() re-arms
+            # _syncing so a queued echo that slips past prevent() is still ignored.
+            with sel.prevent(Select.Changed):
+                sel.set_options(pairs)
+                # set_options() already reset value to ctx_opts[0]; only re-assign
+                # when the desired value differs, so no extra Changed is generated.
+                if sel.value != desired:
+                    sel.value = desired
         except Exception:
             pass
-        finally:
+
+    def _disarm_syncing_next_frame(self) -> None:
+        """Clear ``_syncing`` on the next frame, after queued Changed echoes drain.
+
+        Programmatic ``Select.set_options``/``value`` writes post a ``Changed``
+        message that is dispatched on a *later* event-loop turn. Clearing
+        ``_syncing`` synchronously would expose that echo to ``on_select_changed``
+        and re-enter ``set_context``; deferring the reset keeps the guard live
+        until the echo has drained. Falls back to a synchronous reset if no app
+        loop is available (e.g. teardown), so the flag never sticks.
+        """
+        try:
+            self.app.call_after_refresh(lambda: setattr(self, "_syncing", False))
+        except Exception:
             self._syncing = False
 
     def ns_checkbox_state(self) -> "list[str]":
@@ -762,14 +806,19 @@ class SidebarPanel(Vertical):
                 self.query_one("#side_profile", Select).value = self._profile_name
             except Exception:
                 pass
-            try:
-                if self._context_name in self._context_options:
-                    self.query_one("#side_context", Select).value = self._context_name
-            except Exception:
-                pass
+            # Funnel the context Select through the SAME helper rebuild_contexts
+            # uses, so the widget options and the desired value can never diverge
+            # (avoids a stale display or an InvalidSelectValueError when the live
+            # context isn't yet in the Select's options).
+            if self._context_name and self._context_name not in self._context_options:
+                # keep the live context selectable even before discovery lists it
+                self._context_options = [self._context_name, *self._context_options]
+            self._apply_context_to_select()
             self._render_keys_panel()
         finally:
-            self._syncing = False
+            # Re-arm _syncing across the next frame so any queued Changed echo from
+            # the programmatic Select writes above drains while still guarded.
+            self._disarm_syncing_next_frame()
 
     def _render_keys_panel(self) -> None:
         box = self.query_one("#side_keys_box", Vertical)
@@ -853,7 +902,14 @@ class SidebarPanel(Vertical):
         elif event.select.id == "side_profile" and event.value is not Select.BLANK:
             self.app.set_profile(str(event.value))  # type: ignore[attr-defined]
         elif event.select.id == "side_context" and event.value is not Select.BLANK:
-            self.app.set_context(str(event.value))  # type: ignore[attr-defined]
+            # Idempotency guard: only act on a real change. set_options() resets the
+            # Select to its first option and posts a Changed echo; if that echo ever
+            # slips past _syncing/prevent() it would carry the CURRENT context and
+            # must be a no-op rather than re-entering set_context in a feedback loop.
+            new_context = str(event.value)
+            current = (self.app.context or "").strip()  # type: ignore[attr-defined]
+            if new_context.strip() != current:
+                self.app.set_context(new_context)  # type: ignore[attr-defined]
 
 
 # ── resizable main table ───────────────────────────────────────────────────────
@@ -1922,6 +1978,12 @@ class TopApp(App):
         self.show_alerts = cfg.show_alerts
         self.show_health = cfg.show_health
         self.namespaces = list(cfg.namespaces)
+        # Mirror the adopted context onto self.context up front so the sidebar
+        # CONTEXT dropdown (refreshed via _sync_sidebar_state below) reflects the
+        # NEW cluster immediately. Change detection still uses prev_context, which
+        # was snapshotted before this assignment; the fetcher re-wiring + refetch
+        # stay in the context-changed block at the end of this method.
+        self.context = cfg.context or None
         self.tz = _resolve_tz(cfg.timezone)
 
         # probe (re)wiring: if the alertmanager URL or health probes changed,
@@ -1930,25 +1992,36 @@ class TopApp(App):
             self.fetcher.alertmanager_url = cfg.alertmanager_url
             self.fetcher.health_probes = self._probe_specs(cfg)
 
-        # summary style change -> reflow the header tiles
-        sb = self.query_one("#summary_bar", SummaryBar)
-        if sb.style_mode != cfg.summary_style:
-            sb.set_style_mode(cfg.summary_style)
+        # summary style change -> reflow the header tiles. Guard the lookup: a
+        # context switch can re-enter _adopt_config (sidebar -> set_context) before
+        # the dashboard is mounted, or during a transient teardown, where
+        # #summary_bar is momentarily absent — degrade gracefully instead of
+        # raising NoMatches and freezing/crashing the live cluster switch.
+        try:
+            sb = self.query_one("#summary_bar", SummaryBar)
+            if sb.style_mode != cfg.summary_style:
+                sb.set_style_mode(cfg.summary_style)
+        except NoMatches:
+            pass
 
         # rebuild columns if the visible set/order OR the sort indicator changed.
         # Compare against the table's ACTUAL header labels (which now carry the
         # ▲/▼ sort glyph) so a sort_key/sort_desc change re-stamps the header.
-        mt = self.query_one("#main_table", DataTable)
-        want = [self._column_label(k) for k in cfg.visible_columns()]
-        have = [col.label.plain for col in mt.ordered_columns]
-        if want != have:
-            self._build_main_columns(mt)
-        else:
-            # columns unchanged but the adopted config may carry a different
-            # name_width (e.g. hot-reload 'R' or an edited config) — re-pin it.
-            idx = self._name_column_index(mt)
-            if idx is not None:
-                self._apply_name_width(mt, idx)
+        # Same transient-unmount guard as the summary bar above.
+        try:
+            mt = self.query_one("#main_table", DataTable)
+            want = [self._column_label(k) for k in cfg.visible_columns()]
+            have = [col.label.plain for col in mt.ordered_columns]
+            if want != have:
+                self._build_main_columns(mt)
+            else:
+                # columns unchanged but the adopted config may carry a different
+                # name_width (e.g. hot-reload 'R' or an edited config) — re-pin it.
+                idx = self._name_column_index(mt)
+                if idx is not None:
+                    self._apply_name_width(mt, idx)
+        except NoMatches:
+            pass
 
         # Refresh cadence is fixed; pin it so an adopted/legacy config can never
         # change the timer or desync the live value.
@@ -2046,26 +2119,35 @@ class TopApp(App):
         self.cfg.show_alerts = self.show_alerts
         self.cfg.show_health = self.show_health
         self.cfg.show_keys = bool(self.cfg.show_keys)
-        self.query_one("#summary_bar").set_class(not self.cfg.show_summary, "-hidden")
-        self.query_one("#trends").set_class(not self.cfg.show_trends, "-hidden")
-        self.query_one("#main_table").set_class(not self.cfg.show_podtable, "-hidden")
-        self.query_one("#events_table").set_class(not self.show_events, "-hidden")
-        self.query_one("#pvc_table").set_class(not self.show_pvc, "-hidden")
-        self.query_one("#bottom_box").set_class(
-            not (self.show_events or self.show_pvc), "-hidden"
-        )
-        # Show the alerts panel whenever it is toggled on; when no
-        # alertmanager_url is configured it renders a setup hint (see
-        # _render_alerts) instead of being silently hidden.
-        alerts_on = self.show_alerts
-        self.query_one("#alerts_panel").set_class(not alerts_on, "-hidden")
-        # Plugin panels are best-effort: absent plugins mount no panel, enabled
-        # plugins are toggled through their declared panel id.
-        any_plugin_on = self._apply_plugin_panel_visibility()
-        # collapse the whole top row when no panel is shown (no empty band)
-        self.query_one("#top_panels").set_class(
-            not (alerts_on or any_plugin_on), "-hidden"
-        )
+        # Panel toggles touch many mounted widgets. A context switch can re-enter
+        # this via set_context -> _adopt_config before the dashboard has mounted
+        # (or during a transient teardown), where the panel widgets are momentarily
+        # absent — degrade gracefully instead of raising NoMatches and crashing the
+        # live cluster switch. The cfg mirroring above already happened, so state
+        # stays correct and the next mounted render reflects it.
+        try:
+            self.query_one("#summary_bar").set_class(not self.cfg.show_summary, "-hidden")
+            self.query_one("#trends").set_class(not self.cfg.show_trends, "-hidden")
+            self.query_one("#main_table").set_class(not self.cfg.show_podtable, "-hidden")
+            self.query_one("#events_table").set_class(not self.show_events, "-hidden")
+            self.query_one("#pvc_table").set_class(not self.show_pvc, "-hidden")
+            self.query_one("#bottom_box").set_class(
+                not (self.show_events or self.show_pvc), "-hidden"
+            )
+            # Show the alerts panel whenever it is toggled on; when no
+            # alertmanager_url is configured it renders a setup hint (see
+            # _render_alerts) instead of being silently hidden.
+            alerts_on = self.show_alerts
+            self.query_one("#alerts_panel").set_class(not alerts_on, "-hidden")
+            # Plugin panels are best-effort: absent plugins mount no panel, enabled
+            # plugins are toggled through their declared panel id.
+            any_plugin_on = self._apply_plugin_panel_visibility()
+            # collapse the whole top row when no panel is shown (no empty band)
+            self.query_one("#top_panels").set_class(
+                not (alerts_on or any_plugin_on), "-hidden"
+            )
+        except NoMatches:
+            pass
         if persist:
             self._persist_state()
         self._sync_sidebar_state()
