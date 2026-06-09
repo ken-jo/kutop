@@ -267,8 +267,16 @@ The active profile can also be **switched live** from the **PROFILE** dropdown
 at the top of the sidebar (`Tab`/`b`). The list is discovered from your profile
 directories (plus `generic` for the no-profile default); selecting one re-applies
 that profile's ordering, namespaces, timezone, thresholds, alert source, and
-health probes immediately. The live switch is session-only — it is not persisted
-and does not override a `--profile` you launch with next time.
+health probes immediately.
+
+By default a live switch is session-only. Tick **Remember for this context**
+(below the dropdown) to persist the choice **keyed by your current kube context**:
+kutop stores a `context → profile` map (`profiles_by_context`) in
+`~/.config/kutop/config.yaml` and, on the next launch without `--profile`,
+auto-loads the profile remembered for the active context — so each cluster keeps
+its own workload profile. An explicit `--profile` always wins and skips the
+lookup. This is stored in kutop's own config only; kutop never writes to your
+kubeconfig.
 
 ## Alerts & custom panels (no port-forward)
 

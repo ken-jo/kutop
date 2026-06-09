@@ -35,6 +35,26 @@ _KUBECTL_TIMEOUT = 6
 _STATS_TIMEOUT = 4
 
 
+def current_context_name(context: Optional[str] = None) -> str:
+    """The active kube context name, or '' if it cannot be determined.
+
+    Returns an explicit ``context`` override when given; otherwise asks
+    ``kubectl config current-context``. Standalone (no Fetcher needed) so the CLI
+    can resolve the context before the app is built. Best-effort: any failure
+    (kubectl absent, no current context) yields ''.
+    """
+    if context:
+        return context
+    try:
+        proc = subprocess.run(
+            ["kubectl", "config", "current-context"],
+            capture_output=True, text=True, timeout=_KUBECTL_TIMEOUT,
+        )
+    except Exception:
+        return ""
+    return (proc.stdout or "").strip() if proc.returncode == 0 else ""
+
+
 class Fetcher:
     """Stateless-ish kubectl fetcher. Holds connection params only.
 

@@ -483,6 +483,7 @@ class SidebarPanel(Vertical):
         allow_delete: bool = False,
         profile_name: str = "generic",
         profile_options: "Optional[list[str]]" = None,
+        remember_profile: bool = False,
         interval: float = REFRESH_INTERVAL_SECS,
         context: Optional[str] = None,
         name_filter: str = "",
@@ -506,6 +507,7 @@ class SidebarPanel(Vertical):
         self._allow_delete = allow_delete
         self._profile_name = profile_name or "generic"
         self._profile_options = list(profile_options or [])
+        self._remember_profile = remember_profile
         self._interval = interval
         self._context_name = context or ""
         self._name_filter = name_filter
@@ -524,6 +526,8 @@ class SidebarPanel(Vertical):
                 id="side_profile",
                 allow_blank=False,
             )
+            yield Checkbox("Remember for this context", value=self._remember_profile,
+                           id="chk_remember_profile", compact=True)
             yield Label("NAMESPACES", classes="side_section side_section_spaced")
             with VerticalScroll(id="side_ns_box"):
                 yield from self._ns_checkboxes()
@@ -580,6 +584,7 @@ class SidebarPanel(Vertical):
             group_by_node=self._group_by_node,
             allow_delete=self._allow_delete,
             profile_name=self._profile_name,
+            remember_profile=self._remember_profile,
             interval=self._interval,
             context=self._context_name,
             name_filter=self._name_filter,
@@ -644,6 +649,7 @@ class SidebarPanel(Vertical):
         group_by_node: bool,
         allow_delete: bool,
         profile_name: str,
+        remember_profile: bool,
         interval: float,
         context: str,
         name_filter: str,
@@ -664,6 +670,7 @@ class SidebarPanel(Vertical):
         self._group_by_node = group_by_node
         self._allow_delete = allow_delete
         self._profile_name = profile_name or "generic"
+        self._remember_profile = remember_profile
         self._interval = interval
         self._context_name = context or ""
         self._name_filter = name_filter
@@ -710,6 +717,7 @@ class SidebarPanel(Vertical):
             self._set_checkbox("chk_sort_desc", sort_desc)
             self._set_checkbox("chk_group", group_by_node)
             self._set_checkbox("chk_allow_delete", allow_delete)
+            self._set_checkbox("chk_remember_profile", remember_profile)
             try:
                 self.query_one("#side_sort", Select).value = self._sort_key
             except Exception:
@@ -793,6 +801,8 @@ class SidebarPanel(Vertical):
                 app._render_main_table()  # type: ignore[attr-defined]
         elif cb.id == "chk_allow_delete":
             app.set_allow_destructive(event.value)  # type: ignore[attr-defined]
+        elif cb.id == "chk_remember_profile":
+            app.set_remember_profile_per_context(event.value)  # type: ignore[attr-defined]
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if self._syncing or not self._ready_for_input:
@@ -1130,6 +1140,7 @@ class TopApp(App):
                 allow_delete=self.allow_destructive,
                 profile_name=self.cfg.profile_name,
                 profile_options=self._profile_opts,
+                remember_profile=self.cfg.remember_profile_per_context,
                 interval=self.interval,
                 context=self._display_context(),
                 name_filter=self._effective_filter(),
@@ -2047,6 +2058,7 @@ class TopApp(App):
             group_by_node=self.cfg.group_by_node,
             allow_delete=self.allow_destructive,
             profile_name=self.cfg.profile_name,
+            remember_profile=self.cfg.remember_profile_per_context,
             interval=self.interval,
             context=self._display_context(),
             name_filter=self._effective_filter(),
@@ -2367,8 +2379,10 @@ class TopApp(App):
         Profile-authoritative: the chosen profile's ordering, namespaces,
         timezone, thresholds, alertmanager URL, and health probes replace the
         current ones, while the user's session UI prefs (theme, columns, sort,
-        panels, name width) are preserved. Session-only — intentionally NOT
-        persisted, so it never quietly fights a future ``--profile`` launch.
+        panels, name width) are preserved. The switch itself is session-only
+        (``persist=False``), so it never silently rewrites the saved config — but
+        if "Remember for this context" is enabled, the ``context -> profile`` map
+        entry is persisted so the next launch (without ``--profile``) reloads it.
         """
         name = (name or "generic").strip()
         if name == (self.cfg.profile_name or "generic"):
@@ -2400,7 +2414,62 @@ class TopApp(App):
         if new_profile.namespaces:
             cfg.namespaces = list(new_profile.namespaces)
         self._adopt_config(cfg, persist=False)
+        self._remember_current_profile()
         self.notify(f"profile: {new_profile.name}")
+
+    def _context_key(self) -> str:
+        """The active kube context, used as the profiles_by_context map key.
+
+        The FULL resolved context name (e.g. an EKS ARN), not the truncated
+        sidebar display. Empty when no context is resolved yet (e.g. headless
+        tests / kubectl unavailable) — callers skip persistence on an empty key.
+        """
+        return (self.context or self._resolved_context or "").strip()
+
+    def _remember_current_profile(self) -> None:
+        """Persist the current context -> profile mapping when remembering is on.
+
+        No-op unless ``remember_profile_per_context`` is enabled and a context is
+        resolved. Selecting the ``generic`` (no-)profile clears the entry, so the
+        map only ever holds real, reloadable profile names.
+        """
+        if not self.cfg.remember_profile_per_context:
+            return
+        key = self._context_key()
+        if not key:
+            return
+        name = self.cfg.profile_name or "generic"
+        if name == "generic":
+            self.cfg.profiles_by_context.pop(key, None)
+        else:
+            self.cfg.profiles_by_context[key] = name
+        self._persist_state()
+
+    def set_remember_profile_per_context(self, value: bool) -> None:
+        """Toggle context-keyed profile recall (sidebar 'Remember for this context').
+
+        Turning it on immediately records the active context's current profile;
+        turning it off forgets just this context's entry. Either way the flag and
+        map are persisted to kutop's config (never the kubeconfig).
+        """
+        value = bool(value)
+        if value == self.cfg.remember_profile_per_context:
+            return
+        self.cfg.remember_profile_per_context = value
+        if value:
+            self._remember_current_profile()
+        else:
+            key = self._context_key()
+            if key:
+                self.cfg.profiles_by_context.pop(key, None)
+        self._persist_state()
+        self._sync_sidebar_state()
+        ctx = self._context_key() or "this context"
+        self.notify(
+            f"remembering profile for {ctx}" if value
+            else "stopped remembering profile for this context",
+            timeout=3,
+        )
 
     def set_allow_destructive(self, value: bool) -> None:
         """Toggle the live destructive-delete gate (sidebar 'Allow delete').

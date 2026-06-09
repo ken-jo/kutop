@@ -240,12 +240,38 @@ def main(argv: Optional[list[str]] = None) -> int:
     profile = load_profile(args.profile) if args.profile else Profile()
 
     # Layer the unified config: defaults -> profile -> user file -> CLI flags.
+    base_over = _base_overrides(args)
+    cli_over = _cli_overrides(args)
     cfg = load_config(
         profile=profile,
         user_path=args.config,
-        base_overrides=_base_overrides(args),
-        cli_overrides=_cli_overrides(args),
+        base_overrides=base_over,
+        cli_overrides=cli_over,
     )
+
+    # Context-keyed profile recall (opt-in via the sidebar "Remember for this
+    # context" toggle): when the user did NOT pass --profile, load the profile
+    # remembered for the active kube context. An explicit --profile always wins
+    # and skips this. Kept kubectl-free for --self-test / --snapshot.
+    if (args.profile is None and cfg.remember_profile_per_context
+            and cfg.profiles_by_context
+            and not (args.self_test or args.snapshot)):
+        from .fetch import current_context_name
+
+        ctx_key = (args.context or current_context_name() or "").strip()
+        remembered = cfg.profiles_by_context.get(ctx_key, "") if ctx_key else ""
+        if remembered and remembered != "generic":
+            try:
+                profile = load_profile(remembered)
+                cfg = load_config(
+                    profile=profile,
+                    user_path=args.config,
+                    base_overrides=base_over,
+                    cli_overrides=cli_over,
+                )
+            except Exception:
+                pass  # remembered profile gone/broken -> keep the generic load
+
     apply_detail_preset(cfg, args.detail)
 
     # --dump-config: print the complete annotated skeleton and exit (no cluster).

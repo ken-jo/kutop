@@ -803,6 +803,61 @@ health_probes:
     asyncio.run(drive())
 
 
+def test_profiles_by_context_yaml_roundtrip(tmp_path: Path) -> None:
+    from kutop.config import dump_config_yaml, load_config
+
+    # an EKS-ARN-style context key exercises the quoted-key YAML emission
+    arn = "arn:aws:eks:us-east-1:123456789:cluster/prod"
+    cfg = Config(remember_profile_per_context=True,
+                 profiles_by_context={arn: "prod-stack"})
+    p = tmp_path / "config.yaml"
+    p.write_text(dump_config_yaml(cfg), encoding="utf-8")
+
+    loaded = load_config(user_path=str(p))
+    assert loaded.remember_profile_per_context is True
+    assert loaded.profiles_by_context == {arn: "prod-stack"}
+
+
+def test_remember_profile_persists_context_map(tmp_path: Path, monkeypatch) -> None:
+    import kutop.config as kconfig
+    from textual.widgets import Checkbox
+
+    from kutop.render.app import TopApp
+
+    monkeypatch.setattr(kconfig, "_USER_PROFILE_DIR", str(tmp_path))
+    monkeypatch.setattr(kconfig, "CONFIG_PATH", str(tmp_path / "config.yaml"))
+    (tmp_path / "teststack.yaml").write_text(
+        "name: teststack\nnamespaces: [team-x]\n", encoding="utf-8")
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="ctx-a",
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+            assert app._context_key() == "ctx-a"
+
+            # enabling remember + switching profile records the choice per context
+            app.set_remember_profile_per_context(True)
+            app.set_profile("teststack")
+            await pilot.pause()
+            assert app.cfg.remember_profile_per_context is True
+            assert app.cfg.profiles_by_context == {"ctx-a": "teststack"}
+            assert app.query_one("#chk_remember_profile", Checkbox).value is True
+
+            # the map was persisted to the (redirected) config file
+            saved = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+            assert "ctx-a" in saved and "teststack" in saved
+
+            # switching back to generic forgets this context's entry
+            app.set_profile("generic")
+            await pilot.pause()
+            assert app.cfg.profiles_by_context == {}
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_sidebar_keys_panel_can_be_hidden() -> None:
     from textual.widgets import Static
 

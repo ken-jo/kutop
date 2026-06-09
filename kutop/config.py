@@ -611,6 +611,14 @@ class Config:
     # Profile name that contributed (read-only display).
     profile_name: str = "generic"
 
+    # Opt-in profile recall, keyed by kube context. When
+    # ``remember_profile_per_context`` is on, switching the sidebar PROFILE
+    # records ``{context: profile_name}`` here; on launch (no --profile) the
+    # entry for the active context is auto-loaded. Stored in kutop's own config —
+    # never written to the user's kubeconfig.
+    remember_profile_per_context: bool = False
+    profiles_by_context: dict = field(default_factory=dict)
+
     # ── derived helpers ──────────────────────────────────────────────────
     def threshold(self, kind: str) -> "tuple[int, int]":
         """Return (warn, crit) for kind in {cpu, mem, pvc}."""
@@ -643,6 +651,7 @@ class Config:
                 "summary_style": self.summary_style,
                 "group_by_node": self.group_by_node,
                 "name_width": self.name_width,
+                "remember_profile_per_context": self.remember_profile_per_context,
             },
             "cluster": {
                 "namespaces": list(self.namespaces),
@@ -674,6 +683,7 @@ class Config:
             },
             "columns": list(self.columns),
             "profile": self.profile_name,
+            "profiles_by_context": dict(self.profiles_by_context),
         }
 
 
@@ -756,6 +766,16 @@ def _config_from_dict(d: dict) -> Config:
                 "fields": dict(p.get("fields", {}) or {}),
             })
 
+    # profiles_by_context: a {context: profile_name} map, coerced to clean str->str
+    # (drop blank keys/values) so a hand-edited or partial file can't crash load.
+    pbc_in = d.get("profiles_by_context", {}) or {}
+    profiles_by_context: dict = {}
+    if isinstance(pbc_in, dict):
+        for ctx_name, prof in pbc_in.items():
+            ks, vs = str(ctx_name).strip(), str(prof).strip()
+            if ks and vs:
+                profiles_by_context[ks] = vs
+
     def _int(src, key, default):
         try:
             return int(src.get(key, default))
@@ -792,6 +812,9 @@ def _config_from_dict(d: dict) -> Config:
         health_probes=health_probes,
         columns=columns,
         profile_name=str(d.get("profile", "generic")),
+        remember_profile_per_context=_coerce_bool(
+            view.get("remember_profile_per_context"), False),
+        profiles_by_context=profiles_by_context,
     )
 
 
@@ -940,6 +963,16 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append("#   built-in defaults -> --profile -> this file -> CLI flags.")
     lines.append(f"profile: {cfg.profile_name}        # active profile name (read-only)")
     lines.append("")
+    lines.append("# profiles remembered per kube context (managed by the sidebar")
+    lines.append("# 'Remember for this context' toggle; auto-loaded on launch when")
+    lines.append("# --profile is omitted). Kutop-owned — never written to kubeconfig.")
+    if cfg.profiles_by_context:
+        lines.append("profiles_by_context:")
+        for ctx_name, prof in cfg.profiles_by_context.items():
+            lines.append(f'  "{ctx_name}": "{prof}"')
+    else:
+        lines.append("profiles_by_context: {}")
+    lines.append("")
     lines.append("view:")
     lines.append(
         f"  # refresh interval is fixed at {cfg.interval:g}s and metrics-server "
@@ -954,6 +987,7 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append(f"  summary_style: {cfg.summary_style}    # {' | '.join(_VALID_SUMMARY_STYLES)} (top header layout)")
     lines.append(f"  group_by_node: {b(cfg.group_by_node)}   # group pods under their node header rows")
     lines.append(f"  name_width: {cfg.name_width}           # NODE/POD column width in cells (drag its right edge to resize; {NAME_WIDTH_MIN}..{NAME_WIDTH_MAX})")
+    lines.append(f"  remember_profile_per_context: {b(cfg.remember_profile_per_context)}  # persist the sidebar PROFILE pick, keyed by kube context")
     lines.append("")
     lines.append("cluster:")
     ns = ", ".join(cfg.namespaces) if cfg.namespaces else ""
