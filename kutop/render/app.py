@@ -486,6 +486,7 @@ class SidebarPanel(Vertical):
         remember_profile: bool = False,
         interval: float = REFRESH_INTERVAL_SECS,
         context: Optional[str] = None,
+        context_options: "Optional[list[str]]" = None,
         name_filter: str = "",
         key_context: str = "DASHBOARD",
         key_rows: "Optional[list[tuple[str, str]]]" = None,
@@ -510,6 +511,7 @@ class SidebarPanel(Vertical):
         self._remember_profile = remember_profile
         self._interval = interval
         self._context_name = context or ""
+        self._context_options = list(context_options or [])
         self._name_filter = name_filter
         self._key_context = key_context
         self._key_rows = list(key_rows or [])
@@ -519,7 +521,16 @@ class SidebarPanel(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("", id="side_status")
         with VerticalScroll(id="side_scroll"):
-            yield Label("PROFILE", classes="side_section")
+            yield Label("CONTEXT", classes="side_section")
+            ctx_opts = self._context_options or [self._context_name or ""]
+            yield Select(
+                [(c or "(current)", c) for c in ctx_opts],
+                value=(self._context_name if self._context_name in ctx_opts
+                       else ctx_opts[0]),
+                id="side_context",
+                allow_blank=False,
+            )
+            yield Label("PROFILE", classes="side_section side_section_spaced")
             yield Select(
                 [(p, p) for p in self._profile_options] or [("generic", "generic")],
                 value=self._profile_name,
@@ -621,6 +632,31 @@ class SidebarPanel(Vertical):
         for existing in list(box.query(Checkbox)):
             existing.remove()
         box.mount(*self._ns_checkboxes())
+
+    def rebuild_contexts(self, options: list[str], current: str) -> None:
+        """Repopulate the CONTEXT Select from discovered kubeconfig contexts.
+
+        Mirrors :meth:`rebuild_namespaces`: context discovery runs after mount, so
+        the Select starts with just the current context and is refilled here.
+        Keeps the active context selected; best-effort if not mounted yet.
+        """
+        self._context_options = list(options)
+        self._context_name = (current or "").strip()
+        try:
+            sel = self.query_one("#side_context", Select)
+        except Exception:
+            return
+        ctx_opts = self._context_options or [self._context_name or ""]
+        pairs = [(c or "(current)", c) for c in ctx_opts]
+        self._syncing = True
+        try:
+            sel.set_options(pairs)
+            sel.value = (self._context_name if self._context_name in ctx_opts
+                         else ctx_opts[0])
+        except Exception:
+            pass
+        finally:
+            self._syncing = False
 
     def ns_checkbox_state(self) -> "list[str]":
         """The currently-ticked namespaces, in display order."""
@@ -726,6 +762,11 @@ class SidebarPanel(Vertical):
                 self.query_one("#side_profile", Select).value = self._profile_name
             except Exception:
                 pass
+            try:
+                if self._context_name in self._context_options:
+                    self.query_one("#side_context", Select).value = self._context_name
+            except Exception:
+                pass
             self._render_keys_panel()
         finally:
             self._syncing = False
@@ -811,6 +852,8 @@ class SidebarPanel(Vertical):
             self.app.set_sort_key(str(event.value))  # type: ignore[attr-defined]
         elif event.select.id == "side_profile" and event.value is not Select.BLANK:
             self.app.set_profile(str(event.value))  # type: ignore[attr-defined]
+        elif event.select.id == "side_context" and event.value is not Select.BLANK:
+            self.app.set_context(str(event.value))  # type: ignore[attr-defined]
 
 
 # ── resizable main table ───────────────────────────────────────────────────────
@@ -1116,6 +1159,19 @@ class TopApp(App):
             names.insert(0, self.cfg.context)
         return names
 
+    def _sidebar_context_options(self) -> list[str]:
+        """Cheap context list for the sidebar Select — cache only, no kubectl.
+
+        Uses contexts already discovered (filled by the discover worker) plus the
+        active one, so compose stays instant; rebuild_contexts refreshes the list
+        once discovery completes.
+        """
+        names = list(self._discovered_contexts)
+        cur = (self._display_context() or "").strip()
+        if cur and cur not in names:
+            names.insert(0, cur)
+        return names
+
     # ── compose ──────────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
         yield ThemeHeader(show_clock=True, icon="☰")
@@ -1143,6 +1199,7 @@ class TopApp(App):
                 remember_profile=self.cfg.remember_profile_per_context,
                 interval=self.interval,
                 context=self._display_context(),
+                context_options=self._sidebar_context_options(),
                 name_filter=self._effective_filter(),
                 key_context="DASHBOARD",
                 key_rows=[],
@@ -1315,23 +1372,34 @@ class TopApp(App):
             discovered = self.fetcher.list_namespaces()
         except Exception:
             discovered = []
-        if discovered:
-            self.call_from_thread(self._populate_ns_list, discovered)
+        try:
+            self._context_options()  # fill the _discovered_contexts cache (kubectl)
+        except Exception:
+            pass
+        # always repopulate so the CONTEXT dropdown refreshes even if the ns list
+        # came back empty
+        self.call_from_thread(self._populate_ns_list, discovered)
 
     def _populate_ns_list(self, discovered: list[str]) -> None:
-        """Rebuild the sidebar NAMESPACE checkboxes from live discovery.
+        """Rebuild the sidebar NAMESPACE checkboxes + CONTEXT dropdown from live
+        discovery.
 
-        Keeps the currently-ticked set ticked (and ensures every selected
-        namespace stays present even if discovery somehow omits it).
+        Keeps the currently-ticked namespaces ticked (and ensures every selected
+        namespace stays present even if discovery omits it), and refills the
+        context Select from the now-discovered kubeconfig contexts.
         """
-        # remember the full cluster ns list for the Options multi-select
-        self._discovered_ns = list(discovered)
         try:
             sidebar = self.query_one("#sidebar", SidebarPanel)
         except Exception:
             return
-        sidebar.rebuild_namespaces(
-            self._sidebar_ns_options(discovered), list(self.namespaces)
+        if discovered:
+            # remember the full cluster ns list for the Options multi-select
+            self._discovered_ns = list(discovered)
+            sidebar.rebuild_namespaces(
+                self._sidebar_ns_options(discovered), list(self.namespaces)
+            )
+        sidebar.rebuild_contexts(
+            self._sidebar_context_options(), self._display_context()
         )
 
     # ── background fetch worker ────────────────────────────────────────────────
@@ -2442,6 +2510,27 @@ class TopApp(App):
         # strip each candidate before the `or` so a blank/whitespace --context
         # falls through to the resolved current-context instead of collapsing to "".
         return (self.context or "").strip() or (self._resolved_context or "").strip()
+
+    def set_context(self, name: str) -> None:
+        """Switch the active kube context (cluster) live from the sidebar.
+
+        Mirrors the Options>Cluster picker: adopt the new context (``_adopt_config``
+        rewires the fetcher + refetches), then re-discover the new cluster's
+        namespaces so the sidebar list matches. Persistence follows the usual rule
+        — a generic session keeps it; a profile session resets it on save.
+        """
+        name = (name or "").strip()
+        if name == (self.context or ""):
+            return
+        import copy
+
+        cfg = copy.deepcopy(self.cfg)
+        cfg.context = name
+        self._adopt_config(cfg, persist=True)
+        if self._discover_namespaces:
+            self.run_worker(self._discover_ns_worker, thread=True,
+                            exclusive=False, group="ns")
+        self.notify(f"context: {name or 'current'}")
 
     def _remember_current_profile(self) -> None:
         """Persist the current context -> profile mapping when remembering is on.

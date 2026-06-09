@@ -887,6 +887,35 @@ def test_profile_switches_kube_context_on_select(tmp_path: Path, monkeypatch) ->
     asyncio.run(drive())
 
 
+def test_sidebar_context_dropdown_switches_cluster(tmp_path: Path, monkeypatch) -> None:
+    import kutop.config as kconfig
+    from textual.widgets import Select
+
+    from kutop.render.app import TopApp
+
+    # don't touch the real ~/.config/kutop/config.yaml on the persisting switch
+    monkeypatch.setattr(kconfig, "CONFIG_PATH", str(tmp_path / "config.yaml"))
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="ctx-a",
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+            # the sidebar exposes a CONTEXT dropdown
+            app.query_one("#side_context", Select)
+
+            # selecting a context switches the live cluster + rewires the fetcher
+            app.set_context("ctx-b")
+            await pilot.pause()
+            assert app.cfg.context == "ctx-b"
+            assert app.context == "ctx-b"
+            assert app.fetcher.context == "ctx-b"
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_profiles_by_context_yaml_roundtrip(tmp_path: Path) -> None:
     from kutop.config import dump_config_yaml, load_config
 
