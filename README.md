@@ -273,7 +273,7 @@ health probes immediately, and refetches at once. If the profile sets a
 profile can bundle "which cluster + how to view it"; leave it empty to keep the
 current context.
 
-Above PROFILE, the sidebar's **CONTEXT** dropdown switches the active kube
+Below PROFILE, the sidebar's **CONTEXT** dropdown switches the active kube
 context (cluster) on its own — for hopping between clusters without a profile.
 Its list is discovered from your kubeconfig; selecting one rewires the fetcher,
 re-discovers that cluster's namespaces, and refetches immediately. (`o` →

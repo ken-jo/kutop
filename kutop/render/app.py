@@ -522,16 +522,7 @@ class SidebarPanel(Vertical):
     def compose(self) -> ComposeResult:
         yield Static("", id="side_status")
         with VerticalScroll(id="side_scroll"):
-            yield Label("CONTEXT", classes="side_section")
-            ctx_opts = self._context_options or [self._context_name or ""]
-            yield Select(
-                [(c or "(current)", c) for c in ctx_opts],
-                value=(self._context_name if self._context_name in ctx_opts
-                       else ctx_opts[0]),
-                id="side_context",
-                allow_blank=False,
-            )
-            yield Label("PROFILE", classes="side_section side_section_spaced")
+            yield Label("PROFILE", classes="side_section")
             yield Select(
                 [(p, p) for p in self._profile_options] or [("generic", "generic")],
                 value=self._profile_name,
@@ -540,6 +531,15 @@ class SidebarPanel(Vertical):
             )
             yield Checkbox("Remember for this context", value=self._remember_profile,
                            id="chk_remember_profile", compact=True)
+            yield Label("CONTEXT", classes="side_section side_section_spaced")
+            ctx_opts = self._context_options or [self._context_name or ""]
+            yield Select(
+                [(c or "(current)", c) for c in ctx_opts],
+                value=(self._context_name if self._context_name in ctx_opts
+                       else ctx_opts[0]),
+                id="side_context",
+                allow_blank=False,
+            )
             yield Label("NAMESPACES", classes="side_section side_section_spaced")
             with VerticalScroll(id="side_ns_box"):
                 yield from self._ns_checkboxes()
