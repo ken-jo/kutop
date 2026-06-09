@@ -803,6 +803,42 @@ health_probes:
     asyncio.run(drive())
 
 
+def test_set_profile_refreshes_even_without_namespace_change(
+        tmp_path: Path, monkeypatch) -> None:
+    import kutop.config as kconfig
+
+    from kutop.render.app import TopApp
+
+    monkeypatch.setattr(kconfig, "_USER_PROFILE_DIR", str(tmp_path))
+    # two profiles that watch the SAME namespace but differ in thresholds, so a
+    # switch between them does NOT change the namespace set
+    (tmp_path / "pa.yaml").write_text(
+        "name: pa\nnamespaces: [shared]\nthresholds: {cpu_warn: 10}\n",
+        encoding="utf-8")
+    (tmp_path / "pb.yaml").write_text(
+        "name: pb\nnamespaces: [shared]\nthresholds: {cpu_warn: 20}\n",
+        encoding="utf-8")
+
+    async def drive() -> None:
+        app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            calls: list = []
+            app.refresh_snapshot = lambda: calls.append(1)  # type: ignore[assignment]
+
+            app.set_profile("pa")          # default -> shared (namespace change)
+            await pilot.pause()
+            calls.clear()
+            app.set_profile("pb")          # shared -> shared (NO namespace change)
+            await pilot.pause()
+            # a profile switch must still refresh so new thresholds/probes apply
+            assert calls, "profile switch should refresh even without a ns change"
+            assert app.cfg.cpu_warn == 20
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_profiles_by_context_yaml_roundtrip(tmp_path: Path) -> None:
     from kutop.config import dump_config_yaml, load_config
 

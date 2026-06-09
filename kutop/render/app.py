@@ -2420,6 +2420,11 @@ class TopApp(App):
                           else list(Config().namespaces))
         self._adopt_config(cfg, persist=False)
         self._remember_current_profile()
+        # A profile switch can change alert/health probes and thresholds even when
+        # the namespace set is unchanged, so fetch immediately instead of waiting
+        # for the next poll. No-op if a refresh is already in flight (e.g. when
+        # _adopt_config already triggered one for a namespace change).
+        self.refresh_snapshot()
         self.notify(f"profile: {new_profile.name}")
 
     def _context_key(self) -> str:
