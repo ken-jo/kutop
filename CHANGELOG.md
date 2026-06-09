@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.0 - 2026-06-09
+
+### Added
+
+- Sidebar **PROFILE** dropdown to switch the active workload profile live; a
+  profile may set a `context:` so selecting it also switches to that kube
+  context (cluster). The last active profile is remembered across launches, and
+  an opt-in **"Remember for this context"** toggle records a per-context profile
+  (`profiles_by_context`) in `~/.config/kutop/config.yaml` — never in kubeconfig.
+- Sidebar **CONTEXT** dropdown to switch the kube context (cluster) on its own,
+  discovered from your kubeconfig; selecting one rewires the fetcher,
+  re-discovers that cluster's namespaces, and refetches immediately.
+- In-app **"Allow delete"** sidebar toggle that gates pod deletion (select a pod
+  row, press `x`, confirm in a popup). `--allow-destructive` now only seeds this
+  toggle's initial state.
+- A fixed `metrics 15s` header readout showing metrics-server's scrape
+  resolution (how fresh the CPU/MEM numbers are).
+
+### Changed
+
+- The refresh cadence is now **fixed at 5s** and no longer adjustable; the
+  top-right interval adjuster and the Options-modal interval stepper were
+  removed. Polling faster than metrics-server's scrape resolution only re-shows
+  identical metric values, so the knob was misleading.
+- A legacy second positional (`kutop <ns> <interval>`) is still accepted but
+  ignored with a one-line notice.
+- Removed the ktop/kubetop legacy config/state migration and legacy profile
+  directories; configs and profiles now resolve from `~/.config/kutop` and the
+  packaged defaults only. PyYAML is a hard runtime dependency.
+
+### Fixed
+
+- The CONTEXT dropdown could freeze the app on a cluster switch (an unbounded
+  `set_context` ↔ `Select.set_options` feedback loop) and then crash with
+  `NoMatches`; the dropdown now refreshes without re-entering and `_adopt_config`
+  guards its widget lookups.
+- Persistence no longer lets the saved config shadow the active profile or leak
+  one context's profile into others: profile-owned values (namespaces,
+  thresholds, timezone, probes, context) are re-supplied by the profile layer
+  while the active profile name is retained, so a profile's custom health
+  survives a restart. Saves now honour `--config`.
+- Summary tiles colour CPU/MEM from the active thresholds; fixed three ruff
+  F821 forward-reference warnings and de-duplicated the health-probe coercion.
+
 ## 0.3.3 - 2026-06-04
 
 ### Added

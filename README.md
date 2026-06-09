@@ -23,18 +23,27 @@ no in-cluster agent. `kutop` is useful when you want a Kubernetes terminal
 dashboard, pod monitor, node resource view, k8s observability console, or a
 `kubetop`/`ktop` style CLI that feels closer to `btop`.
 
+![kutop Kubernetes TUI dashboard — sidebar profile/context switchers, a fixed 5s refresh with a metrics-server freshness readout, and Summary, Trends, Alerts, custom Health, Pods, Events, and PVC panels (demo data)](docs/kutop-main-all-panels.svg)
+
 ## Highlights
 
 * Kubernetes pod and node monitoring directly in the terminal.
 * Live CPU and memory trend sparklines plus per-pod usage-vs-limit gauges.
 * Problem-first signals for Pending, Failed, OOMKilled, CrashLoopBackOff, and
   restarting workloads.
+* **Sidebar profile & context switchers** — pick a workload profile (it can
+  bundle its own kube context) or hop clusters live; your last profile is
+  remembered across launches.
+* **Fixed 5s refresh** for problem signals, plus a `metrics 15s` header readout
+  showing how fresh the CPU/MEM numbers are (metrics-server's scrape resolution).
 * Optional Events, PVC storage, Alertmanager, health-check, and contextual Keys
   sidebar panels.
 * Multi-namespace views, sorting, filtering, grouping, and a configurable
   sidebar for fast cluster triage.
 * Profile-driven thresholds, pod ordering, timezone, alert sources, and health
   probes so the core stays generic.
+* Confirm-gated pod deletion via an in-app **Allow delete** toggle — no global
+  launch flag required.
 * Headless SVG screenshots for README assets, release notes, and visual QA.
 
 ```
@@ -201,14 +210,11 @@ in the footer and native help.
 
 `kutop` can render a headless SVG frame for README images, reviews, and visual
 QA. It uses live cluster data when reachable and falls back to a generic
-synthetic frame when not.
+synthetic frame when not. The representative dashboard (every panel enabled:
+Summary, Trends, Alerts, custom Health, Pods, Events, PVC) is shown at the top of
+this README; the per-tab Options views are below.
 
-Main dashboard with every panel enabled: Summary, Trends, Alerts, the custom
-Health plugin panel, Pods, Events, and PVC storage:
-
-![kutop main dashboard with alerts, custom health, events, and PVC panels](docs/kutop-main-all-panels.svg)
-
-Options modal views:
+Options modal views (View, Columns, Panels, Thresholds, Cluster, Profile):
 
 | View | Columns | Panels |
 |------|---------|--------|
