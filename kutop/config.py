@@ -35,31 +35,14 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-try:
-    import yaml  # type: ignore
-    _HAS_YAML = True
-except ImportError:  # keep core usable without PyYAML
-    _HAS_YAML = False
+import yaml
 
 _BUILTIN_PROFILE_DIR = os.path.join(os.path.dirname(__file__), "profiles")
 _USER_PROFILE_DIR = os.path.expanduser("~/.config/kutop/profiles")
-_LEGACY_KUBETOP_PROFILE_DIR = os.path.expanduser("~/.config/kubetop/profiles")
-_LEGACY_KTOP_PROFILE_DIR = os.path.expanduser("~/.config/ktop/profiles")
 
-# User config + legacy state locations.
+# User config location.
 CONFIG_DIR = os.path.expanduser("~/.config/kutop")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
-_STATE_PATH = os.path.join(CONFIG_DIR, "state.json")
-
-# Pre-rename config dirs. The project has used ktop -> kubetop -> kutop names.
-# When ~/.config/kutop/config.yaml is absent but an old config exists we copy it
-# over on first load so existing users keep their settings.
-_LEGACY_KUBETOP_CONFIG_DIR = os.path.expanduser("~/.config/kubetop")
-_LEGACY_KUBETOP_CONFIG_PATH = os.path.join(_LEGACY_KUBETOP_CONFIG_DIR, "config.yaml")
-_LEGACY_KUBETOP_STATE_PATH = os.path.join(_LEGACY_KUBETOP_CONFIG_DIR, "state.json")
-_LEGACY_KTOP_CONFIG_DIR = os.path.expanduser("~/.config/ktop")
-_LEGACY_KTOP_CONFIG_PATH = os.path.join(_LEGACY_KTOP_CONFIG_DIR, "config.yaml")
-_LEGACY_KTOP_STATE_PATH = os.path.join(_LEGACY_KTOP_CONFIG_DIR, "state.json")
 
 
 # ─────────────────────────────── Profile ────────────────────────────────────
@@ -119,12 +102,7 @@ class Profile:
 def _profile_path(name_or_path: str) -> Optional[str]:
     if os.path.sep in name_or_path or name_or_path.endswith((".yaml", ".yml")):
         return name_or_path if os.path.exists(name_or_path) else None
-    for d in (
-        _USER_PROFILE_DIR,
-        _LEGACY_KUBETOP_PROFILE_DIR,
-        _LEGACY_KTOP_PROFILE_DIR,
-        _BUILTIN_PROFILE_DIR,
-    ):
+    for d in (_USER_PROFILE_DIR, _BUILTIN_PROFILE_DIR):
         p = os.path.join(d, f"{name_or_path}.yaml")
         if os.path.exists(p):
             return p
@@ -132,17 +110,12 @@ def _profile_path(name_or_path: str) -> Optional[str]:
 
 
 def load_profile(name_or_path: Optional[str]) -> Profile:
-    """Load a profile by name (user, legacy, then built-in dirs) or path.
+    """Load a profile by name (user then built-in dir) or explicit path.
 
     Returns the generic default Profile when name_or_path is falsy or unresolved.
     """
     if not name_or_path:
         return Profile()
-    if not _HAS_YAML:
-        raise RuntimeError(
-            "PyYAML is required to load profiles. Reinstall kutop or run without "
-            "--profile for the generic view."
-        )
     path = _profile_path(name_or_path)
     if not path:
         raise FileNotFoundError(f"profile not found: {name_or_path}")
@@ -169,22 +142,17 @@ def load_profile(name_or_path: Optional[str]) -> Profile:
 
 
 def list_profiles() -> "list[str]":
-    """Discover selectable profile names from the user, legacy, and built-in dirs.
+    """Discover selectable profile names from the user and built-in dirs.
 
-    Returns de-duplicated profile stems (a user/legacy profile shadows a built-in
-    of the same name). Import-light (``os.listdir`` only) so it is cheap enough to
-    call for the sidebar dropdown. Profiles given by an explicit ``--profile
-    <path>`` are not enumerable and so are not listed. The generic (no-profile)
-    default is NOT included here — callers prepend it.
+    Returns de-duplicated profile stems (a user profile shadows a built-in of the
+    same name). Import-light (``os.listdir`` only) so it is cheap enough to call
+    for the sidebar dropdown. Profiles given by an explicit ``--profile <path>``
+    are not enumerable and so are not listed. The generic (no-profile) default is
+    NOT included here — callers prepend it.
     """
     seen: set = set()
     names: list = []
-    for d in (
-        _USER_PROFILE_DIR,
-        _LEGACY_KUBETOP_PROFILE_DIR,
-        _LEGACY_KTOP_PROFILE_DIR,
-        _BUILTIN_PROFILE_DIR,
-    ):
+    for d in (_USER_PROFILE_DIR, _BUILTIN_PROFILE_DIR):
         try:
             entries = sorted(os.listdir(d))
         except OSError:
@@ -865,25 +833,12 @@ def _profile_layer(profile: Optional[Profile]) -> dict:
 
 
 def _read_user_file(path: str) -> dict:
-    """Read a user config YAML/JSON file. Returns {} on any problem."""
+    """Read a user config YAML file. Returns {} on a missing file or any error."""
     if not path or not os.path.exists(path):
-        if path == CONFIG_PATH:
-            # One-time rename migration: pre-rename kubetop/ktop configs are
-            # adopted so existing users keep their settings (highest priority).
-            migrated = _migrate_legacy_config()
-            if migrated:
-                return migrated
-            # else fall back to absorbing the legacy state.json sidebar choices
-            return _migrate_legacy_state()
         return {}
     try:
         with open(path, encoding="utf-8") as fh:
-            text = fh.read()
-        if _HAS_YAML:
-            data = yaml.safe_load(text) or {}
-        else:
-            import json
-            data = json.loads(text or "{}")
+            data = yaml.safe_load(fh.read()) or {}
         if not isinstance(data, dict):
             return {}
         # An empty alertmanager_url / health_probes in the user file is the
@@ -924,81 +879,6 @@ def _drop_transient_filter_state(layer: dict) -> dict:
     return out
 
 
-def _migrate_legacy_config() -> dict:
-    """Adopt a pre-rename config file into the new kutop location.
-
-    The project was renamed ktop -> kubetop -> kutop. When the new
-    ``~/.config/kutop/config.yaml`` does not yet exist but an old config does, we
-    read it and copy it across so existing users keep every setting.
-    Returns the parsed config dict (so it layers exactly like a user file would)
-    or ``{}`` when there is nothing to migrate. Never raises.
-    """
-    if os.path.exists(CONFIG_PATH):
-        return {}
-    source_path = ""
-    for candidate in (_LEGACY_KUBETOP_CONFIG_PATH, _LEGACY_KTOP_CONFIG_PATH):
-        if os.path.exists(candidate):
-            source_path = candidate
-            break
-    if not source_path:
-        return {}
-    try:
-        with open(source_path, encoding="utf-8") as fh:
-            text = fh.read()
-        if _HAS_YAML:
-            data = yaml.safe_load(text) or {}
-        else:
-            import json
-            data = json.loads(text or "{}")
-        if not isinstance(data, dict):
-            return {}
-    except Exception:
-        return {}
-    # Best-effort copy into the new location so the migration is sticky and the
-    # old file is left untouched. Failure here is non-fatal (the loaded dict is
-    # still returned, just not yet persisted under the new name).
-    try:
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
-            fh.write(text)
-    except Exception:
-        pass
-    return data
-
-
-def _migrate_legacy_state() -> dict:
-    """Absorb a legacy ``state.json`` (kutop/kubetop/ktop) into a layer.
-
-    Returns a partial config dict (only the keys the old state knew about) so
-    the user's previous sidebar choices survive the upgrade. Checks the current
-    config dir first, then pre-rename dirs. Never raises.
-    """
-    st = None
-    for candidate in (_STATE_PATH, _LEGACY_KUBETOP_STATE_PATH, _LEGACY_KTOP_STATE_PATH):
-        try:
-            import json
-            with open(candidate, encoding="utf-8") as fh:
-                loaded = json.load(fh)
-            if isinstance(loaded, dict):
-                st = loaded
-                break
-        except Exception:
-            continue
-    if st is None:
-        return {}
-    layer: dict = {"view": {}, "cluster": {}, "panels": {}}
-    if "sort_mode" in st:
-        layer["view"]["sort_mode"] = st["sort_mode"]
-    if "namespaces" in st and st["namespaces"]:
-        layer["cluster"]["namespaces"] = list(st["namespaces"])
-    if "show_events" in st:
-        layer["panels"]["events"] = bool(st["show_events"])
-    if "show_pvc" in st:
-        layer["panels"]["pvc"] = bool(st["show_pvc"])
-    # prune empties
-    return {k: v for k, v in layer.items() if v}
-
-
 def load_config(
     profile: Optional[Profile] = None,
     user_path: Optional[str] = None,
@@ -1027,22 +907,12 @@ def load_config(
 def save_config(cfg: Config, path: Optional[str] = None) -> str:
     """Persist a Config to ``~/.config/kutop/config.yaml`` (or ``path``).
 
-    Returns the path written. Raises if PyYAML is unavailable (caller decides
-    how to surface that). Creates the directory tree as needed.
+    Returns the path written. Creates the directory tree as needed.
     """
     target = path or CONFIG_PATH
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    text = dump_config_yaml(cfg)
     with open(target, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    # Migration complete: the legacy state.json has been absorbed into config.yaml.
-    if target == CONFIG_PATH:
-        for old_state in (_STATE_PATH, _LEGACY_KUBETOP_STATE_PATH, _LEGACY_KTOP_STATE_PATH):
-            if os.path.exists(old_state):
-                try:
-                    os.remove(old_state)
-                except Exception:
-                    pass
+        fh.write(dump_config_yaml(cfg))
     return target
 
 

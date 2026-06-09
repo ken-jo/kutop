@@ -169,9 +169,7 @@ cadence is fixed at 5s and is no longer configurable — a legacy second
 positional (`kutop demo-ns 3`) is still accepted but ignored, with a one-line
 notice. CPU/MEM metrics come from metrics-server, whose default scrape
 resolution is 15s, so the header shows a fixed `metrics 15s` freshness readout
-(polling faster than that would just re-show identical values). Existing
-`~/.config/kubetop` and legacy `~/.config/ktop` configs are migrated on first
-load; named profiles are also resolved from those legacy profile directories.
+(polling faster than that would just re-show identical values).
 
 ## Keybindings
 
