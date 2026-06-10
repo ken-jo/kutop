@@ -15,6 +15,8 @@ import sys
 from dataclasses import dataclass
 from typing import Optional, TextIO
 
+from .fetch import current_context_name
+
 
 METRICS_SERVER_COMPONENTS_URL = (
     "https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml"
@@ -148,6 +150,13 @@ def maybe_bootstrap_metrics_server(
 
     input_stream = input_stream or sys.stdin
     output_stream = output_stream or sys.stderr
+    # The two kubectl probes below can block up to ~2x the timeout before the
+    # fullscreen TUI appears; say so up front instead of looking hung.
+    print(
+        "[kutop] checking metrics-server (up to ~12s; skip with --no-metrics-bootstrap)…",
+        file=output_stream,
+    )
+    output_stream.flush()
     result = check_metrics_preflight(context=context, timeout=timeout)
     if result.available:
         return result
@@ -173,7 +182,14 @@ def maybe_bootstrap_metrics_server(
     )
     should_prompt = _is_interactive(input_stream, output_stream) if interactive is None else interactive
     if should_prompt:
-        output_stream.write("[kutop] Install Metrics Server via the official components manifest now? [y/n] ")
+        # Name the context the apply would actually mutate so a reflexive 'y'
+        # cannot silently target the wrong cluster. Default is No.
+        prompt_ctx = current_context_name(context)
+        target = f"context '{prompt_ctx}'" if prompt_ctx else "the current context"
+        output_stream.write(
+            f"[kutop] Install Metrics Server into {target} via the official "
+            "components manifest now? [y/N] "
+        )
         output_stream.flush()
         if _answer_is_yes(input_stream.readline()):
             cmd = _kubectl_cmd(context, "apply", "-f", METRICS_SERVER_COMPONENTS_URL)
