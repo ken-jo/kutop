@@ -42,8 +42,12 @@ presentation (ordering, timezone, thresholds).
   names, pod prefixes, or priorities).
 - **`config.py`** — two structures: `Profile` (the *only* place workload literals live: pod
   ordering, timezone, alertmanager URL, health probes) and `Config` (runtime-editable: panels,
-  columns, thresholds, namespaces, interval, theme). Config resolution order (later wins):
-  **defaults → profile file → `~/.config/kutop/config.yaml` → CLI overrides**. Configs/profiles
+  columns, thresholds, namespaces, theme — the refresh cadence is fixed at 5s,
+  `REFRESH_INTERVAL_SECS`, and no longer user-editable). Config resolution order (later wins):
+  **defaults → profile file → `~/.config/kutop/config.yaml` → CLI overrides**. An unparseable
+  user file never silently resets preferences: it is backed up to `config.yaml.invalid`
+  (mode-preserving copy), the load falls back to defaults, and the failure travels in
+  `Config.load_warnings` for the app to surface as a toast on mount. Configs/profiles
   resolve from `~/.config/kutop` and the packaged defaults only (legacy kubetop/ktop locations
   are no longer read or migrated). When a profile is active, `load_config(profile_authoritative=
   True)` lets the profile's namespaces/thresholds/probes win over the persisted file, and
@@ -62,9 +66,27 @@ presentation (ordering, timezone, thresholds).
   API (`/api/v1/nodes/<node>/proxy/stats/summary`) per node because metrics-server does not
   expose it — one node failing never aborts the refresh. `cancel()` kills in-flight processes
   for immediate quit.
-- **`render/app.py`** (`TopApp`) — the Textual app; `render/widgets.py` holds custom widgets;
-  `render/theme.tcss` + `theme.tcss` hold styles. Owns keybindings, the Options modal, sorting,
-  filtering, grouping, log/describe/delete actions. Fetch lifecycle: `_fetch_gen` is a scope
+- **`render/`** — split along class seams. **`app.py`** (`TopApp`) owns keybindings
+  (`_BINDING_SPECS` is the single source of truth for keys), sorting, filtering, grouping,
+  Options-modal wiring, and the pod actions (logs `l`, describe `d`, shell `t`, delete `x`,
+  rollout restart `X`). `modals.py` holds the log/describe/event modals; `sidebar.py` the
+  `SidebarPanel`/`SidebarState` (namespace checkboxes, sort/panel toggles, PROFILE/CONTEXT
+  dropdowns, the 'Allow delete/restart (x/X)' gate, and the MENU section — Options/Keys/
+  Screenshot/Quit — that replaced the old hamburger ThemeMenuModal: the ☰ header icon reveals
+  the sidebar or focuses its first MENU button, and Esc inside the sidebar returns focus to the
+  pod table); `options.py` the `OptionsModal`; `table.py` the drag-resizable main table;
+  `header.py` the header widgets; `widgets.py` the remaining presentation widgets (SummaryBar,
+  TrendGraph, ConfirmModal, …); `render/theme.tcss` the styles. Quit is keyboard-complete and
+  two-step: `q` arms a 4s hint, a second `q` or Enter confirms, Esc cancels — `check_action`
+  disables the Enter confirm while a modal, a text input, or the sidebar has focus. Delete and
+  rollout restart are double-gated: the live 'Allow delete/restart' toggle (seeded by
+  `--allow-destructive`, intentionally never persisted) plus a ConfirmModal naming the full
+  target identity (context, namespace, pod, rollout target). Restart maps a ReplicaSet owner to
+  its Deployment only when the RS name suffix is pod-template-hash-like
+  (`model.pod_template_hash_like`); other ReplicaSets are reported un-rollable. While the
+  cluster is unreachable before the first snapshot, the main table shows persistent guidance
+  rows (error + `kubectl get nodes` hint + retry cadence) instead of a bare loading row.
+  Fetch lifecycle: `_fetch_gen` is a scope
   token bumped on every namespace/context/profile switch so an in-flight old-scope result is
   dropped; scope changes/manual refresh go through `_request_refresh()` (queued if a fetch is
   in flight), timer ticks through `refresh_snapshot()` (skipped if in flight). Textual PRIVATE
@@ -79,9 +101,18 @@ presentation (ordering, timezone, thresholds).
   `tools/snapshot.py` so there is a single render path. Falls back to a synthetic frame when no
   cluster is reachable.
 - **`metrics.py`** — interactive Metrics Server preflight/bootstrap on live startup
-  (skippable via `--no-metrics-bootstrap` / `KUTOP_NO_METRICS_BOOTSTRAP=1`).
+  (skippable via `--no-metrics-bootstrap` / `KUTOP_NO_METRICS_BOOTSTRAP=1`). A stderr notice
+  announces the preflight (it can block ~12s before the TUI appears); the install prompt names
+  the exact kubectl context it would mutate, and only an exact `y`/`yes` answer runs the
+  cluster-mutating `kubectl apply`.
 - **`probes.py`** — fetches `/`-prefixed profile URLs via `kubectl get --raw` through the
   API-server proxy (no port-forward), reusing kubeconfig auth.
+- **`cli.py`** — argparse entrypoint (textual stays lazily imported; see invariants). Validates
+  `--sort`/`--summary-style` via argparse choices against the public `SORTABLE_KEYS`/
+  `SUMMARY_STYLES` tuples; accepts-but-ignores the deprecated positional interval (stderr note
+  plus an in-app toast; cadence is fixed at 5s); and fails fast with exit code 2 and setup
+  guidance when kubectl is missing on the live path (`--self-test`/`--snapshot`/`--dump-config`
+  still work without kubectl).
 
 ## Invariants to preserve
 
