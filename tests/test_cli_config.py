@@ -1751,6 +1751,12 @@ def test_options_modal_context_dropdown_discovers_kube_contexts(monkeypatch) -> 
         )
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
+            # Context discovery is now async (off the UI thread, so opening
+            # Options never blocks on kubectl). At mount the discovery worker
+            # calls _context_options() to warm _discovered_contexts; drive that
+            # same synchronous, mocked path deterministically here before the
+            # modal reads the warmed cache.
+            app._context_options()
             app.action_open_options()
             await pilot.pause()
 
