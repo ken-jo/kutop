@@ -913,8 +913,12 @@ class TopApp(App):
             self._notify_refresh_error(snap.error, full=True, errors=snap.errors)
             if not self._loaded:
                 # no previous frame exists yet: a 4s toast alone would leave
-                # the bare Loading row sitting there forever
-                self._render_startup_guidance(snap.error)
+                # the bare Loading row sitting there forever. The guidance row
+                # carries the SAME aggregated detail as the toast so a
+                # multi-source outage names every culprit on the one surface
+                # that persists.
+                self._render_startup_guidance(
+                    self._refresh_error_detail(snap.error, snap.errors))
             return
         if snap.error:
             # partial failure: apply what we have, but say what is missing
@@ -931,19 +935,15 @@ class TopApp(App):
         self._append_trend(self.mem_hist, s.mem_used_mi, s.mem_cap_mi)
         self._render()
 
-    def _notify_refresh_error(
-        self, error: str, *, full: bool,
-        errors: "Optional[list]" = None,
-    ) -> None:
-        """Toast a refresh error once — not on every 5s retry with the same text.
+    @staticmethod
+    def _refresh_error_detail(error: str, errors: "Optional[list]" = None) -> str:
+        """One canonical aggregated failure line, shared by the refresh toast
+        and the startup-guidance rows so both surfaces always agree.
 
-        ``errors`` (Snapshot.errors) carries every distinct failure of the
-        cycle: a single failure keeps the historical one-line shape, multiple
-        failures are aggregated ('2 failures: ns-a: ...; pvc: ...', up to 3
-        shown, '+N more' beyond) so a multi-namespace RBAC problem names each
-        broken source instead of only the first. The dedup compares the
-        aggregated detail, preserving the once-per-distinct-text contract
-        (reset to '' by the next clean refresh).
+        A single failure keeps the historical one-line shape; multiple
+        failures aggregate as '2 failures: ns-a: ...; pvc: ...' (up to 3
+        shown, 60 chars each, '+N more' beyond) so a multi-namespace RBAC
+        problem names each broken source instead of only the first.
         """
         distinct: "list[str]" = []
         for msg in [error] + list(errors or []):
@@ -955,11 +955,25 @@ class TopApp(App):
             detail = f"{len(distinct)} failures: " + "; ".join(shown)
             if len(distinct) > 3:
                 detail += f"; +{len(distinct) - 3} more"
-        else:
-            detail = distinct[0] if distinct else error
-        if detail == self._last_refresh_error:
+            return detail
+        return distinct[0] if distinct else error
+
+    def _notify_refresh_error(
+        self, error: str, *, full: bool,
+        errors: "Optional[list]" = None,
+    ) -> None:
+        """Toast a refresh error once — not on every 5s retry with the same text.
+
+        The dedup compares severity plus the aggregated detail (reset by the
+        next clean refresh), so the same outage stays silent on retries but a
+        degraded refresh escalating to a full failure with identical text
+        still gets its error-severity toast.
+        """
+        detail = self._refresh_error_detail(error, errors)
+        key = ("failed|" if full else "degraded|") + detail
+        if key == self._last_refresh_error:
             return
-        self._last_refresh_error = detail
+        self._last_refresh_error = key
         if full:
             self.notify(f"refresh failed: {detail}", severity="error", timeout=4)
         else:
@@ -1504,7 +1518,10 @@ class TopApp(App):
 
         if persist:
             try:
-                save_config(self.cfg, self._config_path)
+                # profile= matters: without it _config_for_persist takes the
+                # conservative legacy branch under an active profile and
+                # strips the user's saved namespaces/context/timezone too.
+                save_config(self.cfg, self._config_path, profile=self.profile)
             except Exception:
                 pass
 

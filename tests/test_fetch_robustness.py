@@ -114,6 +114,82 @@ def test_snapshot_errors_defaults_empty_and_error_stays_primary() -> None:
     assert snap.errors == [snap.error]
 
 
+def test_concurrency_determinism_no_optional_leak() -> None:
+    """fetch_core() run twice: required failures all present, optional 'top ...'
+    failures absent, errors/error identical across both cycles (sorted
+    determinism), and snap.error == snap.errors[0].
+    """
+    import time
+
+    class JitteredFetcher(Fetcher):
+        """_run sleeps a per-namespace amount then raises for three namespaces;
+        top nodes / top pods go through _run_optional so their failures must
+        never reach snap.errors."""
+
+        # jitter table keyed on the ns arg (or '' for global calls)
+        _SLEEP = {"team-a": 0.012, "team-b": 0.004, "team-c": 0.008}
+        _FAIL_NS = {"team-a", "team-b", "team-c"}
+
+        def _run(self, *args: str, timeout: int = 6) -> str:
+            # Derive jitter: last arg for namespace-scoped calls, 0 otherwise
+            ns = args[-1] if args and args[-1] in self._SLEEP else ""
+            time.sleep(self._SLEEP.get(ns, 0.002))
+
+            joined = " ".join(args)
+
+            # optional calls — these will be intercepted by _run_optional's
+            # thread-local sink, but we still raise so the sink gets exercised
+            if args[0] == "top":
+                raise RuntimeError("metrics-server unavailable")
+
+            if joined == "get nodes -o json":
+                return json.dumps({"items": []})
+
+            # three required namespaces fail
+            for ns_fail in self._FAIL_NS:
+                if f"-n {ns_fail}" in joined:
+                    raise RuntimeError(f"forbidden: {ns_fail}")
+
+            # 'good' namespace succeeds
+            if "get pods -n" in joined:
+                return json.dumps({"items": []})
+
+            return ""
+
+    namespaces = ["team-a", "team-b", "team-c", "good"]
+    fetcher = JitteredFetcher(namespaces)
+
+    snap1 = fetcher.fetch_core()
+    snap2 = fetcher.fetch_core()
+
+    required_ns = {"team-a", "team-b", "team-c"}
+
+    for snap in (snap1, snap2):
+        # (a) all three required failures present in both cycles
+        for ns in required_ns:
+            assert any(ns in e for e in snap.errors), (
+                f"expected failure for {ns} missing from snap.errors: {snap.errors}"
+            )
+
+        # (b) no optional 'top ...' failure leaked into snap.errors
+        assert not any("metrics-server" in e or e.startswith("top ") for e in snap.errors), (
+            f"optional 'top ...' failure leaked into snap.errors: {snap.errors}"
+        )
+
+        # (d) snap.error == snap.errors[0]
+        assert snap.error == snap.errors[0], (
+            f"snap.error {snap.error!r} != snap.errors[0] {snap.errors[0]!r}"
+        )
+
+    # (c) snap.errors identical across both cycles (sorted determinism)
+    assert snap1.errors == snap2.errors, (
+        f"errors not deterministic across cycles:\n  cycle1={snap1.errors}\n  cycle2={snap2.errors}"
+    )
+    assert snap1.error == snap2.error, (
+        f"snap.error not deterministic: {snap1.error!r} vs {snap2.error!r}"
+    )
+
+
 def test_pvc_usage_is_keyed_by_namespace_and_name() -> None:
     # same claim name in two namespaces (same chart, two installs) — the
     # kubelet volume entry must update only the PVC in ITS namespace

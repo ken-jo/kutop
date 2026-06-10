@@ -506,9 +506,9 @@ Fix: check connectivity with `kubectl get nodes`; kutop recovers on the next
 Cause: part of the fetch failed — typically one or more namespaces are
 Forbidden for your user. Everything that could be fetched is still shown.
 The toast now names each failing source (up to 3, e.g. `2 failures: get pods
--n team-a: forbidden; get pvc -n team-b: timeout`), with `+N more` when there
-are additional failures — so you can fix RBAC gaps one namespace at a time
-*(unreleased)*.
+-n team-a: forbidden; get pvc -n team-b: timeout`), each capped at 60 chars
+(`…`), with `+N more` when there are additional failures — so you can fix RBAC
+gaps one namespace at a time *(unreleased)*.
 Fix: deselect the failing namespace(s), or grant RBAC `get/list` on pods,
 nodes, events, and PVCs in each (see
 [Requirements & permissions](#requirements--permissions)).
