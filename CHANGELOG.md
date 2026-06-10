@@ -17,9 +17,29 @@
   curated core set (`s` sort, `g` group, `/` search, `b` sidebar) instead of a
   placeholder, and focusing the warning-events table switches to an EVENTS
   context (`enter` details, `e` hide) the moment focus moves.
+- **Rollout-restart action on `X`**: restarts the focused pod's controller
+  (`deployment/<name>` derived from the ReplicaSet owner by stripping the
+  trailing `-<pod-template-hash>`, or `statefulset/`/`daemonset/` directly)
+  behind the same in-app **Allow delete** gate, with a full-identity confirm
+  modal showing context, namespace, pod, and the exact `restarts:` target; bare
+  pods and Job/unknown-owned pods get a warning toast suggesting delete (`x`)
+  instead. The sidebar KEYS · POD ROW panel shows a Restart row that flips
+  between "Restart" and "Restart disabled" with the destructive gate.
+- **Sidebar MENU section** hosting the former hamburger actions: Options, Keys,
+  Screenshot, and Quit; menu Quit exits directly without the two-press `q`
+  confirmation.
 
 ### Fixed
 
+- A malformed `~/.config/kutop/config.yaml` no longer silently resets every
+  saved preference: the broken file is backed up to `config.yaml.invalid` before
+  the app's next save can overwrite it, the app launches with defaults, and a
+  warning toast explains what happened.
+- While the very first cluster snapshot keeps failing (bad kubeconfig, VPN down),
+  the pod table now shows persistent guidance rows — `cluster unreachable: …`,
+  `check: kubectl get nodes`, and `retrying every 5s...` — instead of an eternal
+  bare Loading row with only a 4s toast; the rows track error-text changes and
+  the first successful snapshot clears them.
 - An unreachable cluster now keeps the previous frame and shows an error toast
   (once per distinct error) instead of silently replacing the dashboard with an
   empty, error-free snapshot; partial failures (e.g. one forbidden namespace)
@@ -67,6 +87,36 @@
   reaches the focused widget unchanged.
 - The pod delete confirmation spells out the full target identity — cluster
   context, namespace, and pod name — before anything executes.
+- **Fail fast on missing `kubectl`**: exit code 2 with an actionable stderr
+  message (install kubectl, set KUBECONFIG, verify with `kubectl get nodes`)
+  instead of launching a TUI that can never load; `--self-test`, `--snapshot`,
+  and `--dump-config` still run kubectl-free.
+- The header hamburger (☰) now opens the unified sidebar command surface: it
+  reveals the sidebar when hidden and focuses the sidebar's MENU section when
+  already visible — no longer opens a popup menu.
+- `Esc` inside the sidebar returns focus to the pod table.
+- **`--sort` and `--summary-style`** now validate their values at the command
+  line (rejecting unknown values with a clear argparse error) instead of
+  silently coercing them to defaults; `--sort` help now lists the full
+  canonical key set (`priority`/`name`/`cpu`/`mem`/`cpu_pct`/`mem_pct`/`restarts`/`phase`/`node`/`namespace`/`age`/`storage`/`owner`).
+- An unknown `--theme` (or a stale theme name in the config file) still
+  launches with the default theme but now shows a warning toast instead of
+  falling back silently.
+- The metrics-server preflight now announces itself on stderr before its
+  `kubectl` calls (`[kutop] checking metrics-server (up to ~12s; skip with
+  --no-metrics-bootstrap)…`) instead of appearing to hang for up to ~12s
+  before the TUI shows.
+- The interactive Metrics Server install prompt now names the `kubectl` context
+  the apply would target (e.g. `[kutop] Install Metrics Server into context
+  'dev' via the official components manifest now? [y/N]`) and advertises No as
+  the default; an empty answer still declines and only an explicit `y`/`Y`
+  applies the manifest.
+- Passing the deprecated positional interval argument (e.g. `kutop ns 5`) now
+  also shows a one-time in-app toast after the TUI mounts in addition to the
+  stderr notice, which the fullscreen TUI previously covered immediately.
+- Removed the ThemeMenuModal popup and `TopApp.action_open_theme_menu`
+  (replaced by the sidebar MENU; `kutop.render.widgets.options` no longer
+  exports `ThemeMenuModal`).
 - `kutop --help` now ends with a short orientation epilog: prerequisites,
   the config-file path with a `--dump-config` pointer, the profiles
   directory, and the docs URL.
