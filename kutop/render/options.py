@@ -10,6 +10,7 @@ actions (Options / Keys / Screenshot / Quit) live in the sidebar MENU section
 
 from __future__ import annotations
 
+import copy
 from typing import Optional
 
 from textual.app import ComposeResult
@@ -87,17 +88,20 @@ class OptionsModal(ModalScreen):
     Organised into topic TABS (``TabbedContent`` / ``TabPane``): View, Columns,
     Panels, Thresholds, Cluster, Profile. Each pane scrolls internally so no tab
     overflows on a short (~80x24) terminal; the modal header and the footer action
-    row (Export / Close) stay OUTSIDE the tabs and are always visible. Editing a
-    control applies immediately (via the app's ``apply_config`` callbacks) and
-    persists to ``~/.config/kutop/config.yaml``. An "Export config" button writes
-    the complete config and reports the path.
+    row (Export / Cancel / Close) stay OUTSIDE the tabs and are always visible.
+    Editing a control applies immediately (via the app's ``apply_config``
+    callbacks) and persists to ``~/.config/kutop/config.yaml``. An "Export
+    config" button writes the complete config and reports the path.
 
     The app passes its live :class:`Config`; this modal mutates a working copy
     and calls back into the app so the dashboard re-renders without a relaunch.
+    Opening snapshots that config: Esc / "Cancel (esc)" reverts every edit by
+    re-adopting the snapshot through the same apply path, while Close / "o"
+    keeps the edits.
     """
 
     BINDINGS = [
-        ("escape", "close", "Close"),
+        ("escape", "cancel", "Cancel"),
         ("o", "close", "Close"),
     ]
 
@@ -110,6 +114,8 @@ class OptionsModal(ModalScreen):
     ) -> None:
         super().__init__()
         self._cfg = cfg
+        # full effective config at open time: Esc / Cancel reverts to this
+        self._orig_cfg = copy.deepcopy(cfg)
         self._reg = build_column_registry()
         self._themes = list(themes or [cfg.theme])
         if cfg.theme not in self._themes:
@@ -135,7 +141,8 @@ class OptionsModal(ModalScreen):
     def compose(self) -> ComposeResult:
         c = self._cfg
         with Vertical(id="opt_box"):
-            yield Label("OPTIONS / SETTINGS  —  the full config skeleton (ESC/o to close)",
+            yield Label("OPTIONS / SETTINGS  —  the full config skeleton "
+                        "(o keeps changes, ESC cancels)",
                         id="opt_hdr")
             with TabbedContent(id="opt_tabs"):
                 # View ──────────────────────────────────────────────────────
@@ -288,6 +295,7 @@ class OptionsModal(ModalScreen):
 
             with Horizontal(id="opt_footer"):
                 yield Button("Export config", id="opt_export", variant="primary")
+                yield Button("Cancel (esc)", id="opt_cancel", variant="default")
                 yield Button("Close", id="opt_close", variant="default")
             yield Label("", id="opt_status")
 
@@ -563,6 +571,8 @@ class OptionsModal(ModalScreen):
             path = self.app.export_config(self._cfg)  # type: ignore[attr-defined]
             self._set_status(f"exported -> {path}" if path
                              else "export failed (PyYAML missing?)")
+        elif bid == "opt_cancel":
+            self.action_cancel()
         elif bid in ("opt_close",):
             self.action_close()
 
@@ -586,4 +596,22 @@ class OptionsModal(ModalScreen):
 
     def action_close(self) -> None:
         self._restore_theme_preview()
+        self.dismiss()
+
+    def action_cancel(self) -> None:
+        """Revert every edit made since the modal opened, then dismiss.
+
+        Re-adopts the opening snapshot through the same apply/persist path the
+        live edits used, so the reverted state is also written back to disk.
+        Adopting resets the app theme to the snapshot's, which covers a
+        committed theme change; a previewed-but-uncommitted theme never touched
+        the working config, so when nothing was committed only the preview is
+        restored and the config file stays untouched.
+        """
+        if self._cfg == self._orig_cfg:
+            self._restore_theme_preview()
+            self.dismiss()
+            return
+        self._theme_preview_dirty = False
+        self.app.apply_config(copy.deepcopy(self._orig_cfg))  # type: ignore[attr-defined]
         self.dismiss()
