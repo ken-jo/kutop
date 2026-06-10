@@ -72,6 +72,35 @@ def test_cli_rejects_unknown_summary_style() -> None:
     assert _build_parser().parse_args(["--summary-style", "tiles"]).summary_style == "tiles"
 
 
+def test_main_exits_2_when_kubectl_missing(monkeypatch) -> None:
+    import io
+
+    from kutop import cli
+
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
+    err = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stderr", err)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main([])
+
+    assert excinfo.value.code == 2
+    message = err.getvalue()
+    assert "kubectl not found" in message
+    assert "kubectl get nodes" in message
+    assert "KUBECONFIG" in message
+
+
+def test_self_test_still_runs_when_kubectl_missing(monkeypatch, tmp_path: Path) -> None:
+    from kutop import cli
+
+    # --self-test renders a synthetic frame and must stay kubectl-free: the
+    # missing-kubectl gate only guards the live TUI path.
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
+
+    assert cli.main(["--self-test", "--config", str(tmp_path / "config.yaml")]) == 0
+
+
 def test_detail_presets_adjust_columns_and_panels() -> None:
     wide = apply_detail_preset(Config(), "wide")
     assert wide.summary_style == "compact"
@@ -1490,6 +1519,99 @@ def test_initial_refresh_applies_core_snapshot_before_enrichment() -> None:
 
             assert app._loaded is True
             assert fake.calls[:2] == ["core", "enrich"]
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_first_fetch_failure_shows_persistent_guidance_until_snapshot() -> None:
+    from textual.widgets import DataTable
+
+    from kutop.fetch import Fetcher
+    from kutop.model import Node, Pod, Snapshot
+    from kutop.render.app import TopApp
+
+    class UnreachableFetcher(Fetcher):
+        """Every kubectl call fails, as with a dead/unauthorized cluster."""
+
+        def _run(self, *args: str, timeout: int = 0) -> str:
+            raise RuntimeError("Unable to connect to the server: dial tcp: timeout")
+
+    class GoodFetcher:
+        def fetch_core(self) -> Snapshot:
+            snap = Snapshot()
+            snap.nodes = [
+                Node(name="node-a", cpu_mcpu=1, cpu_cap_mcpu=10, ready=True)
+            ]
+            snap.pods = [
+                Pod(name="pod-a", namespace="default", node="node-a",
+                    phase="Running", ready="1/1")
+            ]
+            return snap
+
+        def enrich_snapshot(self, snap: Snapshot) -> Snapshot:
+            return snap
+
+        def fetch(self) -> Snapshot:
+            return self.enrich_snapshot(self.fetch_core())
+
+        def cancel(self) -> None:
+            pass
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        app.fetcher = UnreachableFetcher(["default"])  # type: ignore[assignment]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            def first_cells(mt: DataTable) -> list[str]:
+                return [str(mt.get_row_at(i)[0]) for i in range(mt.row_count)]
+
+            app.refresh_snapshot()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if not app._fetching:
+                    break
+            await pilot.pause()
+
+            # no snapshot ever applied: the bare Loading row is replaced by
+            # persistent guidance instead of a 4s toast nobody can re-read
+            assert app._loaded is False
+            mt = app.query_one("#main_table", DataTable)
+            rows = first_cells(mt)
+            assert any("cluster unreachable" in r for r in rows)
+            assert any("connect" in r for r in rows)
+            assert any("check: kubectl get nodes" in r for r in rows)
+            assert any("retrying every 5s" in r for r in rows)
+            assert not any("Loading cluster snapshot" in r for r in rows)
+
+            # a retry failing with DIFFERENT text updates the guidance rows
+            changed = Snapshot()
+            changed.error = "get nodes: certificate has expired"
+            app._apply_snapshot(changed)
+            await pilot.pause()
+            rows = first_cells(mt)
+            assert any("certificate has expired" in r for r in rows)
+
+            # the first successful snapshot replaces the guidance with pods
+            app.fetcher = GoodFetcher()  # type: ignore[assignment]
+            app.refresh_snapshot()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app._loaded and not app._fetching:
+                    break
+            await pilot.pause()
+            assert app._loaded is True
+            rows = first_cells(mt)
+            assert any("pod-a" in r for r in rows)
+            assert not any("cluster unreachable" in r for r in rows)
+            assert not any("kubectl get nodes" in r for r in rows)
 
             await pilot.exit(None)
 

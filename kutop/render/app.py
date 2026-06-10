@@ -883,6 +883,10 @@ class TopApp(App):
         if snap.error and not snap.nodes and not snap.pods:
             # full failure: keep previous frame, surface error
             self._notify_refresh_error(snap.error, full=True)
+            if not self._loaded:
+                # no previous frame exists yet: a 4s toast alone would leave
+                # the bare Loading row sitting there forever
+                self._render_startup_guidance(snap.error)
             return
         if snap.error:
             # partial failure: apply what we have, but say what is missing
@@ -908,6 +912,29 @@ class TopApp(App):
             self.notify(f"refresh failed: {error}", severity="error", timeout=4)
         else:
             self.notify(f"refresh degraded: {error}", severity="warning", timeout=4)
+
+    def _render_startup_guidance(self, error: str) -> None:
+        """Persistent first-run guidance: shown only while NO snapshot has ever
+        applied and the refresh keeps failing (cluster unreachable / bad
+        kubeconfig). Re-rendered on every failed retry so the text tracks the
+        latest error; the first successful snapshot re-renders the table and
+        thereby clears it.
+        """
+        try:
+            mt = self.query_one("#main_table", DataTable)
+        except Exception:
+            return
+        short = " ".join((error or "unknown error").split())
+        if len(short) > 140:
+            short = short[:139] + "…"
+        pad = ["-"] * (len(self.cfg.visible_columns()) - 1)
+        mt.clear()
+        mt.add_row(Text(f"cluster unreachable: {short}", style="bold red"),
+                   *pad, key="startup_error")
+        mt.add_row(Text("check: kubectl get nodes", style="bold yellow"),
+                   *pad, key="startup_hint")
+        mt.add_row(Text(f"retrying every {self.interval:g}s...", style="dim"),
+                   *pad, key="startup_retry")
 
     @staticmethod
     def _append_trend(hist: deque[int], used: int, cap: int) -> None:
