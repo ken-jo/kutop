@@ -77,6 +77,43 @@ def test_one_failing_namespace_keeps_partial_pods_and_reports_error() -> None:
     assert "broken" in snap.error or "forbidden" in snap.error
 
 
+class TwoBadNamespacesFetcher(Fetcher):
+    """Both namespaces fail with DISTINCT errors; the API server is reachable."""
+
+    def _run(self, *args: str, timeout: int = 0) -> str:
+        joined = " ".join(args)
+        if args[0] == "top":
+            raise RuntimeError("Metrics API not available")
+        if joined == "get nodes -o json":
+            return json.dumps({"items": []})
+        if joined == "get pods -n team-a -o json":
+            raise RuntimeError("forbidden: User cannot list pods")
+        if joined == "get pods -n team-b -o json":
+            raise RuntimeError("dial tcp: i/o timeout")
+        return ""
+
+
+def test_every_distinct_failure_is_recorded_in_snapshot_errors() -> None:
+    snap = TwoBadNamespacesFetcher(["team-a", "team-b"]).fetch_core()
+    # both broken sources are individually diagnosable (namespace in the label)
+    assert len(snap.errors) == 2
+    assert any("team-a" in e and "forbidden" in e for e in snap.errors)
+    assert any("team-b" in e and "timeout" in e for e in snap.errors)
+    # .error keeps its historical contract: the single primary (first) failure
+    assert snap.error == snap.errors[0]
+
+
+def test_snapshot_errors_defaults_empty_and_error_stays_primary() -> None:
+    from kutop.model import Snapshot
+
+    blank = Snapshot()
+    assert blank.error == "" and blank.errors == []
+
+    snap = OneBadNamespaceFetcher(["good", "broken"]).fetch_core()
+    assert snap.error  # unchanged single-failure behaviour
+    assert snap.errors == [snap.error]
+
+
 def test_pvc_usage_is_keyed_by_namespace_and_name() -> None:
     # same claim name in two namespaces (same chart, two installs) — the
     # kubelet volume entry must update only the PVC in ITS namespace
