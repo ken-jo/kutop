@@ -101,7 +101,9 @@ sudo apt install kutop
 
 ## Release Process
 
-1. Update `version` in `pyproject.toml`.
+1. Update `version` in `pyproject.toml` and `__version__` in `kutop/__init__.py`
+   (they must match; the release workflow reads the former, `kutop --version`
+   reports the latter).
 2. Commit and push to `master`.
 3. Create and push a matching tag:
 
