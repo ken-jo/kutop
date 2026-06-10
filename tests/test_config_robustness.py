@@ -93,3 +93,51 @@ def test_config_for_persist_keeps_fields_the_profile_does_not_own() -> None:
     out = _config_for_persist(cfg, None)
     assert out.timezone == ""
     assert out.namespaces == ["default"]
+
+
+def test_corrupt_user_file_warns_backs_up_and_loads_defaults(tmp_path: Path) -> None:
+    cfgfile = tmp_path / "config.yaml"
+    corrupt = "view:\n  theme: [unclosed\n"
+    cfgfile.write_text(corrupt, encoding="utf-8")
+
+    cfg = load_config(user_path=str(cfgfile))
+
+    assert cfg.theme == "textual-dark"          # defaults, not a crash
+    assert len(cfg.load_warnings) == 1
+    assert "could not be parsed" in cfg.load_warnings[0]
+    backup = tmp_path / "config.yaml.invalid"
+    assert str(backup) in cfg.load_warnings[0]
+    # the broken-but-recoverable file was copied aside BEFORE the app's next
+    # save_config can clobber the original
+    assert backup.read_text(encoding="utf-8") == corrupt
+    save_config(cfg, str(cfgfile))
+    assert backup.read_text(encoding="utf-8") == corrupt
+    reloaded = load_config(user_path=str(cfgfile))
+    assert reloaded.load_warnings == []
+
+
+def test_non_mapping_user_file_warns_and_backs_up(tmp_path: Path) -> None:
+    cfgfile = tmp_path / "config.yaml"
+    cfgfile.write_text("- not\n- a mapping\n", encoding="utf-8")
+
+    cfg = load_config(user_path=str(cfgfile))
+
+    assert cfg.namespaces == ["default"]
+    assert len(cfg.load_warnings) == 1
+    assert "top level must be a mapping" in cfg.load_warnings[0]
+    assert (tmp_path / "config.yaml.invalid").exists()
+
+    # a missing file stays the silent first-launch default — no warning
+    assert load_config(user_path=str(tmp_path / "absent.yaml")).load_warnings == []
+
+
+def test_load_warnings_are_runtime_only(tmp_path: Path) -> None:
+    cfg = Config(load_warnings=["boom"])
+    assert "load_warnings" not in cfg.to_dict()
+    assert "boom" not in dump_config_yaml(cfg)
+    assert cfg == Config()  # excluded from equality-sensitive persistence paths
+
+    cfgfile = tmp_path / "config.yaml"
+    save_config(cfg, str(cfgfile))
+    assert "boom" not in cfgfile.read_text(encoding="utf-8")
+    assert load_config(user_path=str(cfgfile)).load_warnings == []

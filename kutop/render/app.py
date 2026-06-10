@@ -311,7 +311,14 @@ class TopApp(App):
             )
             config.columns = config.visible_columns()
         self.cfg = config
-        self.theme = self._coerce_theme(self.cfg.theme)
+        requested_theme = str(self.cfg.theme or "textual-dark")
+        self.theme = self._coerce_theme(requested_theme)
+        if self.theme != requested_theme:
+            # an unknown --theme/file theme must launch (fall back) but not
+            # silently: on_mount surfaces every load warning as a toast
+            self.cfg.load_warnings.append(
+                f"theme {requested_theme!r} is not available; using {self.theme}"
+            )
         self.cfg.theme = self.theme
 
         self.namespaces = list(self.cfg.namespaces)
@@ -633,6 +640,11 @@ class TopApp(App):
                 severity="warning",
                 timeout=6,
             )
+
+        # Surface config-load problems (unparseable user file, unknown theme)
+        # as toasts — a silent fallback to defaults looks like lost preferences.
+        for warning in self.cfg.load_warnings:
+            self.notify(warning, severity="warning", timeout=8)
 
     def _build_main_columns(self, mt: DataTable) -> None:
         """(Re)build the main table columns from the config's visible-column list.
@@ -1662,6 +1674,8 @@ class TopApp(App):
             self.notify(f"reload failed: {exc}", severity="error")
             return
         self.apply_config(cfg)
+        for warning in cfg.load_warnings:
+            self.notify(warning, severity="warning", timeout=8)
         src = self._config_path or "~/.config/kutop/config.yaml"
         self.notify(f"config reloaded from {src}")
 

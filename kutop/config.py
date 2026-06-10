@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -647,6 +648,12 @@ class Config:
     remember_profile_per_context: bool = False
     profiles_by_context: dict = field(default_factory=dict)
 
+    # Runtime-only: problems collected while loading (e.g. an unparseable user
+    # file) for the app to surface as toasts. Like name_filter's transient
+    # search state this never persists — to_dict()/dump_config_yaml() skip it,
+    # and compare=False keeps it out of equality-based persistence checks.
+    load_warnings: list = field(default_factory=list, compare=False, repr=False)
+
     # ── derived helpers ──────────────────────────────────────────────────
     def threshold(self, kind: str) -> "tuple[int, int]":
         """Return (warn, crit) for kind in {cpu, mem, pvc}."""
@@ -888,30 +895,58 @@ def _profile_layer(profile: Optional[Profile]) -> dict:
     return layer
 
 
-def _read_user_file(path: str) -> dict:
-    """Read a user config YAML file. Returns {} on a missing file or any error."""
+def _parse_failure_warning(path: str, exc: Exception) -> str:
+    """User-facing warning for an unreadable config file, after backing it up.
+
+    The broken file is copied to ``<path>.invalid`` (best-effort, overwrite ok)
+    BEFORE the app's next save_config can clobber it — the user's hand edits
+    are broken but recoverable, and silently replacing them with defaults
+    looks like data loss.
+    """
+    backup = f"{path}.invalid"
+    try:
+        shutil.copyfile(path, backup)
+    except OSError:
+        backup = ""
+    reason = " ".join(str(exc).split()) or exc.__class__.__name__
+    if len(reason) > 120:
+        reason = reason[:117] + "..."
+    msg = f"{path} could not be parsed ({reason}); using defaults"
+    if backup:
+        msg += f" — backup saved to {backup}"
+    return msg
+
+
+def _read_user_file(path: str) -> "tuple[dict, list]":
+    """Read a user config YAML file; returns ``(data, warnings)``.
+
+    A missing file is normal -> ``({}, [])``. A present-but-unreadable file
+    means every saved preference would silently reset, so it yields ``{}``
+    plus a warning for the app to surface (and a ``.invalid`` backup, see
+    :func:`_parse_failure_warning`).
+    """
     if not path or not os.path.exists(path):
-        return {}
+        return {}, []
     try:
         with open(path, encoding="utf-8") as fh:
             data = yaml.safe_load(fh.read()) or {}
         if not isinstance(data, dict):
-            return {}
-        # An empty alertmanager_url / health_probes in the user file is the
-        # auto-persisted default ("not set by the user"), not an intentional
-        # override — drop it so it doesn't clobber a value the profile provides.
-        # A non-empty user value still wins (it survives this strip).
-        probes = data.get("probes")
-        if isinstance(probes, dict):
-            if not probes.get("alertmanager_url"):
-                probes.pop("alertmanager_url", None)
-            if not probes.get("health_probes"):
-                probes.pop("health_probes", None)
-            if not probes:
-                data.pop("probes", None)
-        return data
-    except Exception:
-        return {}
+            raise ValueError("top level must be a mapping")
+    except Exception as exc:
+        return {}, [_parse_failure_warning(path, exc)]
+    # An empty alertmanager_url / health_probes in the user file is the
+    # auto-persisted default ("not set by the user"), not an intentional
+    # override — drop it so it doesn't clobber a value the profile provides.
+    # A non-empty user value still wins (it survives this strip).
+    probes = data.get("probes")
+    if isinstance(probes, dict):
+        if not probes.get("alertmanager_url"):
+            probes.pop("alertmanager_url", None)
+        if not probes.get("health_probes"):
+            probes.pop("health_probes", None)
+        if not probes:
+            data.pop("probes", None)
+    return data, []
 
 
 def _drop_transient_filter_state(layer: dict) -> dict:
@@ -1022,13 +1057,16 @@ def load_config(
     if base_overrides:
         merged = _deep_merge(merged, base_overrides)
     path = user_path or CONFIG_PATH
-    user_layer = _drop_transient_filter_state(_read_user_file(path))
+    user_raw, load_warnings = _read_user_file(path)
+    user_layer = _drop_transient_filter_state(user_raw)
     if profile_authoritative:
         user_layer = _strip_profile_owned(user_layer, profile)
     merged = _deep_merge(merged, user_layer)
     if cli_overrides:
         merged = _deep_merge(merged, cli_overrides)
-    return _config_from_dict(merged)
+    cfg = _config_from_dict(merged)
+    cfg.load_warnings.extend(load_warnings)
+    return cfg
 
 
 def _config_for_persist(cfg: Config, profile: "Optional[Profile]" = None) -> Config:
