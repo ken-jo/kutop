@@ -8,6 +8,7 @@ fields the active profile actually supplies.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import yaml
@@ -129,6 +130,80 @@ def test_non_mapping_user_file_warns_and_backs_up(tmp_path: Path) -> None:
 
     # a missing file stays the silent first-launch default — no warning
     assert load_config(user_path=str(tmp_path / "absent.yaml")).load_warnings == []
+
+
+def test_every_persistable_config_field_round_trips(tmp_path: Path) -> None:
+    """Walk every dataclasses.fields(Config) entry through dump -> load.
+
+    A NEW Config option silently missing from to_dict()/dump_config_yaml()/
+    _config_from_dict() must fail here forever: each field gets a non-default
+    value (a type-derived flip unless its validator needs a curated one) and
+    must survive a dump_config_yaml -> load_config round trip.
+    """
+    # Fields config.py deliberately keeps out of the persisted file:
+    #   interval      - fixed cadence; dump annotates it, load always resets it
+    #   sort_mode     - legacy mirror derived from sort_key on load
+    #   name_filter   - transient live search; scrubbed by dump AND load
+    #   load_warnings - runtime-only load diagnostics (compare=False)
+    not_persisted = {"interval", "sort_mode", "name_filter", "load_warnings"}
+
+    # Validated fields need values their load-side validators accept; anything
+    # NOT listed falls back to the type-derived flip below, so a future field
+    # is still exercised without touching this map.
+    curated = {
+        "timezone": "Asia/Seoul",
+        "sort_key": "mem",                       # must be in SORTABLE_KEYS
+        "theme": "nord",
+        "summary_style": "tiles",                # must be in SUMMARY_STYLES
+        "name_width": 42,                        # within NAME_WIDTH bounds
+        "namespaces": ["team-a", "team-b"],
+        "context": "ctx-roundtrip",
+        "cpu_warn": 51, "cpu_crit": 61,
+        "mem_warn": 52, "mem_crit": 62,
+        "pvc_warn": 53, "pvc_crit": 63,
+        "alertmanager_url": "http://am.local/api/v2/alerts",
+        "health_probes": [
+            {"name": "svc", "url": "http://h/health",
+             "fields": {"ready": "ready=(\\w+)"}},
+        ],
+        "columns": ["name", "namespace", "cpu", "age"],  # valid registry keys
+        "profile_name": "round-trip-prof",
+        "profiles_by_context": {"ctx-roundtrip": "round-trip-prof"},
+    }
+
+    defaults = Config()
+    expected: dict = {}
+    for f in dataclasses.fields(Config):
+        if f.name in not_persisted:
+            continue
+        default = getattr(defaults, f.name)
+        if f.name in curated:
+            value = curated[f.name]
+        elif isinstance(default, bool):          # bool before int: bool is int
+            value = not default
+        elif isinstance(default, (int, float)):
+            value = default + 7
+        elif isinstance(default, str):
+            value = default + "-nondefault"
+        elif isinstance(default, list):
+            value = list(default) + ["nondefault"]
+        elif isinstance(default, dict):
+            value = dict(default, nondefault="nondefault")
+        else:
+            raise AssertionError(
+                f"no non-default strategy for new field Config.{f.name}; add a "
+                "curated value here AND wire it into to_dict/dump/load")
+        assert value != default, f"Config.{f.name}: flip produced the default"
+        expected[f.name] = value
+
+    cfgfile = tmp_path / "config.yaml"
+    cfgfile.write_text(dump_config_yaml(Config(**expected)), encoding="utf-8")
+    loaded = load_config(user_path=str(cfgfile))
+
+    for name, value in expected.items():
+        assert getattr(loaded, name) == value, (
+            f"Config.{name} did not survive dump_config_yaml -> load_config; "
+            "check to_dict()/dump_config_yaml()/_config_from_dict()")
 
 
 def test_load_warnings_are_runtime_only(tmp_path: Path) -> None:
