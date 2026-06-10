@@ -13,6 +13,10 @@
   the target container on multi-container pods, and the header shows the last
   termination reason + exit code. The opt-in LAST REASON column now appends
   the exit code, e.g. `OOMKilled(137)`.
+- The sidebar KEYS panel now covers every focus context: the dashboard shows a
+  curated core set (`s` sort, `g` group, `/` search, `b` sidebar) instead of a
+  placeholder, and focusing the warning-events table switches to an EVENTS
+  context (`enter` details, `e` hide) the moment focus moves.
 
 ### Fixed
 
@@ -56,6 +60,20 @@
 
 ### Changed
 
+- The two-step `q` quit flow is now keyboard-complete: `Enter` confirms a
+  pending quit and `Esc` cancels it without also clearing an active search in
+  the same keypress. The confirm only fires on the base dashboard — opening a
+  modal or the search bar abandons the pending quit, and `Enter` otherwise
+  reaches the focused widget unchanged.
+- The pod delete confirmation spells out the full target identity — cluster
+  context, namespace, and pod name — before anything executes.
+- `kutop --help` now ends with a short orientation epilog: prerequisites,
+  the config-file path with a `--dump-config` pointer, the profiles
+  directory, and the docs URL.
+- README: beginner-first restructure (Quick start, a no-cluster demo path,
+  Configuration, Troubleshooting, FAQ), and the "Latest release" badge is now
+  PyPI-backed — immune to the shields.io GitHub token-pool exhaustion that
+  intermittently rendered "Unable to select next GitHub token from pool".
 - CI now enforces `ruff check` and runs a non-blocking latest-textual/rich
   canary job; Textual private-API imports are confined to
   `kutop/render/_compat.py`.
