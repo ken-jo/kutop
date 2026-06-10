@@ -269,10 +269,11 @@ that would just re-show identical values).
 |-----|--------|
 | `q` `q` | quit (first press shows a confirmation toast) |
 | `r` | refresh now |
-| `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster, Profile) |
+| `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster, Profile); inside the modal, **Close** (or `o`) keeps changes while **Cancel (esc)** / `Esc` discards every edit and restores the settings as they were when the modal opened *(unreleased)* |
 | `b` | toggle the control sidebar; the header ☰ button also reveals the sidebar or, if already visible, jumps focus to the sidebar MENU section (Options / Keys / Screenshot / Quit — menu Quit exits immediately, unlike the two-press `q` flow) *(unreleased)* |
 | `/` | search / filter pods by name |
 | `Esc` | clear the search filter |
+| `Esc` (in Options modal) | cancel / discard all edits and restore the pre-open settings *(unreleased)* |
 | `s` / `S` | cycle sort column / flip sort direction (or click a column header) |
 | `g` | group pods under their node |
 | `l` | logs for the focused pod (`kubectl logs -f`) |
@@ -502,10 +503,14 @@ Fix: check connectivity with `kubectl get nodes`; kutop recovers on the next
 5s refresh once the cluster is reachable again.
 
 **A `refresh degraded: ...` warning toast.**
-Cause: part of the fetch failed — typically one namespace is Forbidden for
-your user. Everything that could be fetched is still shown.
-Fix: deselect that namespace, or get RBAC `get/list` on pods, nodes, events,
-and PVCs in it (see
+Cause: part of the fetch failed — typically one or more namespaces are
+Forbidden for your user. Everything that could be fetched is still shown.
+The toast now names each failing source (up to 3, e.g. `2 failures: get pods
+-n team-a: forbidden; get pvc -n team-b: timeout`), with `+N more` when there
+are additional failures — so you can fix RBAC gaps one namespace at a time
+*(unreleased)*.
+Fix: deselect the failing namespace(s), or grant RBAC `get/list` on pods,
+nodes, events, and PVCs in each (see
 [Requirements & permissions](#requirements--permissions)).
 
 **The PVC panel's USED column shows `-`.**
@@ -529,6 +534,14 @@ never persisted.
 Fix: press `b`, tick **Allow delete/restart (x/X)** (or launch with `--allow-destructive`),
 then confirm the popup. The restart confirm (`X`) shows the exact workload
 target (`deployment/<name>`, `statefulset/<name>`, etc.) before anything runs.
+
+**A pod delete (`x`) or restart (`X`) shows a failure toast but the message
+is cut off.**
+Cause: previously, kubectl stderr was truncated at 80 chars, which hid
+admission-webhook denials and RBAC messages.
+Fix: the toast now shows up to 200 chars of kubectl's stderr (whitespace
+collapsed); the full stderr is also written to the Textual devtools log
+(`textual console` in a second terminal) *(unreleased)*.
 
 **Summary tiles disappear on a narrow terminal.**
 Cause: intentional — whole tiles are dropped to fit rather than wrapping and
