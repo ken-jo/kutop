@@ -168,6 +168,11 @@ class Fetcher:
             return self._run(*args, timeout=timeout)
         except Exception as exc:
             label = " ".join(list(args)[:3]) or "kubectl"
+            # Namespace-scoped calls keep their namespace in the label so two
+            # namespaces failing the same way (multi-ns RBAC) stay distinct in
+            # Snapshot.errors instead of collapsing into one "get pods -n".
+            if label.endswith(" -n") and len(args) > 3:
+                label += f" {args[3]}"
             self._fetch_errors.append(f"{label}: {exc}")
             return ""
 
@@ -249,11 +254,13 @@ class Fetcher:
                 snap.nodes = list(nodes_by_name.values())
             except Exception as exc:  # node fetch is foundational; surface but continue
                 snap.error = f"nodes: {exc}"
+                snap.errors.append(snap.error)
 
             try:
                 snap.pods = pods_future.result()
             except Exception as exc:
                 snap.error = snap.error or f"pods: {exc}"
+                snap.errors.append(f"pods: {exc}")
 
         # pod_count per node (from the pods we just listed in the target ns;
         # node objects may carry more from other namespaces but this is a useful
@@ -265,11 +272,24 @@ class Fetcher:
         # Surface kubectl failures swallowed by _run_safe: with no data AND a
         # recorded error this is a full failure (caller keeps the previous
         # frame); with partial data the snapshot still applies, error attached.
-        if not snap.error and self._fetch_errors:
-            snap.error = self._fetch_errors[0]
+        self._fold_fetch_errors(snap)
 
         snap.summary = self._build_summary(snap)
         return snap
+
+    def _fold_fetch_errors(self, snap: Snapshot) -> None:
+        """Fold ``self._fetch_errors`` into ``snap``. Idempotent.
+
+        ``Snapshot.errors`` collects EVERY distinct failure of the cycle so a
+        multi-namespace refresh can report each broken source; ``Snapshot.error``
+        keeps its historical contract as the single primary failure (first
+        recorded), so existing callers/tests are unaffected.
+        """
+        for msg in self._fetch_errors:
+            if msg not in snap.errors:
+                snap.errors.append(msg)
+        if not snap.error and snap.errors:
+            snap.error = snap.errors[0]
 
     def enrich_snapshot(self, snap: Snapshot) -> Snapshot:
         """Fill slower auxiliary panels and storage details into ``snap``."""
@@ -280,11 +300,13 @@ class Fetcher:
                 snap.events = events_future.result()
             except Exception as exc:
                 snap.error = snap.error or f"events: {exc}"
+                snap.errors.append(f"events: {exc}")
 
             try:
                 snap.pvcs = pvcs_future.result()
             except Exception as exc:
                 snap.error = snap.error or f"pvcs: {exc}"
+                snap.errors.append(f"pvcs: {exc}")
 
         # Kubelet stats summary (BUG FIX #2) drives both the cluster-wide PVC
         # panel usage AND per-pod storage attribution. Fetch each node's summary
@@ -351,8 +373,7 @@ class Fetcher:
         # the refresh — the core runs fully without any plugin present.
         self._run_plugins(snap)
 
-        if not snap.error and self._fetch_errors:
-            snap.error = self._fetch_errors[0]
+        self._fold_fetch_errors(snap)
 
         snap.summary = self._build_summary(snap)
         return snap

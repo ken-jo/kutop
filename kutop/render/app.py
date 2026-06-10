@@ -910,7 +910,7 @@ class TopApp(App):
             return  # fetched under an old namespace/context scope: drop it
         if snap.error and not snap.nodes and not snap.pods:
             # full failure: keep previous frame, surface error
-            self._notify_refresh_error(snap.error, full=True)
+            self._notify_refresh_error(snap.error, full=True, errors=snap.errors)
             if not self._loaded:
                 # no previous frame exists yet: a 4s toast alone would leave
                 # the bare Loading row sitting there forever
@@ -918,7 +918,7 @@ class TopApp(App):
             return
         if snap.error:
             # partial failure: apply what we have, but say what is missing
-            self._notify_refresh_error(snap.error, full=False)
+            self._notify_refresh_error(snap.error, full=False, errors=snap.errors)
         else:
             self._last_refresh_error = ""
         self.snapshot = snap
@@ -931,15 +931,39 @@ class TopApp(App):
         self._append_trend(self.mem_hist, s.mem_used_mi, s.mem_cap_mi)
         self._render()
 
-    def _notify_refresh_error(self, error: str, *, full: bool) -> None:
-        """Toast a refresh error once — not on every 5s retry with the same text."""
-        if error == self._last_refresh_error:
-            return
-        self._last_refresh_error = error
-        if full:
-            self.notify(f"refresh failed: {error}", severity="error", timeout=4)
+    def _notify_refresh_error(
+        self, error: str, *, full: bool,
+        errors: "Optional[list]" = None,
+    ) -> None:
+        """Toast a refresh error once — not on every 5s retry with the same text.
+
+        ``errors`` (Snapshot.errors) carries every distinct failure of the
+        cycle: a single failure keeps the historical one-line shape, multiple
+        failures are aggregated ('2 failures: ns-a: ...; pvc: ...', up to 3
+        shown, '+N more' beyond) so a multi-namespace RBAC problem names each
+        broken source instead of only the first. The dedup compares the
+        aggregated detail, preserving the once-per-distinct-text contract
+        (reset to '' by the next clean refresh).
+        """
+        distinct: "list[str]" = []
+        for msg in [error] + list(errors or []):
+            msg = " ".join(str(msg).split())
+            if msg and msg not in distinct:
+                distinct.append(msg)
+        if len(distinct) > 1:
+            shown = [m if len(m) <= 60 else m[:59] + "…" for m in distinct[:3]]
+            detail = f"{len(distinct)} failures: " + "; ".join(shown)
+            if len(distinct) > 3:
+                detail += f"; +{len(distinct) - 3} more"
         else:
-            self.notify(f"refresh degraded: {error}", severity="warning", timeout=4)
+            detail = distinct[0] if distinct else error
+        if detail == self._last_refresh_error:
+            return
+        self._last_refresh_error = detail
+        if full:
+            self.notify(f"refresh failed: {detail}", severity="error", timeout=4)
+        else:
+            self.notify(f"refresh degraded: {detail}", severity="warning", timeout=4)
 
     def _render_startup_guidance(self, error: str) -> None:
         """Persistent first-run guidance: shown only while NO snapshot has ever
@@ -2237,6 +2261,23 @@ class TopApp(App):
             on_confirm,
         )
 
+    def _action_failure_detail(self, action: str, stderr: bytes) -> str:
+        """Compact kubectl stderr for an action-failure toast.
+
+        200 chars (whitespace collapsed) keeps the actual RBAC/admission/
+        webhook reason visible — kubectl errors routinely exceed the old 80.
+        The complete stderr also goes to the textual logger for anyone running
+        under `textual console` (no toast hint for it: a plain `kutop` launch
+        has no devtools, so the log is unreachable for normal users).
+        """
+        text = stderr.decode(errors="ignore")
+        try:
+            self.log(f"{action} stderr: {text}")
+        except Exception:
+            pass  # logging must never mask the real failure
+        short = " ".join(text.split())
+        return short if len(short) <= 200 else short[:199] + "…"
+
     def _do_delete_pod(self, name: str, ns: str) -> None:
         async def runner() -> None:
             cmd = ["kubectl"]
@@ -2251,8 +2292,8 @@ class TopApp(App):
                 if proc.returncode == 0:
                     self.notify(f"deleted {name}")
                 else:
-                    self.notify(f"delete failed: {err.decode(errors='ignore')[:80]}",
-                                severity="error")
+                    detail = self._action_failure_detail(f"delete pod {name}", err)
+                    self.notify(f"delete failed: {detail}", severity="error")
             except Exception as exc:
                 self.notify(f"delete error: {exc}", severity="error")
             self._request_refresh()
@@ -2350,10 +2391,8 @@ class TopApp(App):
                 if proc.returncode == 0:
                     self.notify(f"restarted {target}")
                 else:
-                    self.notify(
-                        f"restart failed: {err.decode(errors='ignore')[:80]}",
-                        severity="error",
-                    )
+                    detail = self._action_failure_detail(f"restart {target}", err)
+                    self.notify(f"restart failed: {detail}", severity="error")
             except Exception as exc:
                 self.notify(f"restart error: {exc}", severity="error")
             self._request_refresh()

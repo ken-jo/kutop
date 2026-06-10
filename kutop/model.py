@@ -296,6 +296,10 @@ class Snapshot:
     health: list[HealthResult] = field(default_factory=list)  # M3 (health probes)
     summary: Summary = field(default_factory=Summary)
     error: str = ""        # non-empty if the refresh failed; renderer keeps prior frame
+    # EVERY distinct failure recorded this cycle (error is always errors[0] when
+    # set by the fetcher); lets the renderer report each broken source instead
+    # of only the first. error stays the primary/compat field.
+    errors: list = field(default_factory=list)
 
 
 # kube-controller-manager names Deployment-created ReplicaSets
