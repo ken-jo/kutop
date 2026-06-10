@@ -369,6 +369,11 @@ class TopApp(App):
         self._refresh_timer = None
         self._loaded = False
         self._quit_hint_deadline = 0.0
+        # last startup-failure text, so column rebuilds while unloaded can
+        # restore the guidance rows instead of leaving the table blank
+        self._startup_error = ""
+        # anchors for fire-and-forget runners: the loop holds only weak refs
+        self._bg_tasks: "set[asyncio.Task]" = set()
         # Fetch lifecycle: _fetching gates one worker at a time; _fetch_gen is a
         # scope token bumped on every namespace/context/profile change so a
         # snapshot fetched under the OLD scope is dropped instead of being
@@ -832,17 +837,40 @@ class TopApp(App):
         self._quit_hint_deadline = now + timeout
         self.notify("Press q again to quit", title="Quit?", timeout=timeout)
 
+    def _cancel_pending_quit(self, *, announce: bool = True) -> bool:
+        """Settle a pending quit-hint window; True when one was pending.
+
+        Every interaction that moves the user onto something else (search,
+        menu focus, modals, Esc from the sidebar) routes through here so a
+        stale window can never turn a later Enter into a surprise exit."""
+        if monotonic() > self._quit_hint_deadline:
+            return False
+        self._quit_hint_deadline = 0.0
+        if announce:
+            try:
+                self.clear_notifications()
+            except Exception:
+                pass
+            self.notify("quit cancelled", timeout=2)
+        return True
+
     def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
         """Disable the Enter quit-confirm binding unless a quit is genuinely
         pending on the base dashboard. While no hint window is active, while a
-        modal owns the screen, or while a text input has focus, Enter must
-        reach the focused widget (row select, modal button, search submit) —
-        a priority app binding would otherwise consume it first."""
+        modal owns the screen, while a text input has focus, or while focus is
+        anywhere inside the sidebar (its MENU buttons own Enter), the key must
+        reach the focused widget — a priority app binding would otherwise
+        consume it first."""
         if action == "confirm_quit":
             if monotonic() > self._quit_hint_deadline:
                 return False
             try:
                 if len(self.screen_stack) > 1 or isinstance(self.focused, Input):
+                    return False
+                if self.focused is not None and any(
+                    getattr(node, "id", None) == "sidebar"
+                    for node in self.focused.ancestors_with_self
+                ):
                     return False
             except Exception:
                 pass  # not running yet: no screen stack to consult
@@ -857,7 +885,7 @@ class TopApp(App):
         """Opening any modal abandons a pending quit confirmation: the user
         has moved on to another interaction, so Enter inside (or right after)
         the modal must never fall through to quit."""
-        self._quit_hint_deadline = 0.0
+        self._cancel_pending_quit(announce=False)
         return super().push_screen(screen, *args, **kwargs)
 
     def action_quit(self) -> None:
@@ -920,6 +948,7 @@ class TopApp(App):
         latest error; the first successful snapshot re-renders the table and
         thereby clears it.
         """
+        self._startup_error = error or "unknown error"
         try:
             mt = self.query_one("#main_table", DataTable)
         except Exception:
@@ -935,6 +964,17 @@ class TopApp(App):
                    *pad, key="startup_hint")
         mt.add_row(Text(f"retrying every {self.interval:g}s...", style="dim"),
                    *pad, key="startup_retry")
+
+    def _repopulate_unloaded_table(self, mt: DataTable) -> None:
+        """A column rebuild clears every row; before the first snapshot the
+        table must keep its loading row or startup guidance, not go blank."""
+        if self._loaded:
+            return
+        if self._startup_error:
+            self._render_startup_guidance(self._startup_error)
+            return
+        mt.add_row(Text("Loading cluster snapshot...", style="bold yellow"),
+                   *(["-"] * (len(self.cfg.visible_columns()) - 1)), key="loading")
 
     @staticmethod
     def _append_trend(hist: deque[int], used: int, cap: int) -> None:
@@ -1404,6 +1444,7 @@ class TopApp(App):
             have = [col.label.plain for col in mt.ordered_columns]
             if want != have:
                 self._build_main_columns(mt)
+                self._repopulate_unloaded_table(mt)
             else:
                 # columns unchanged but the adopted config may carry a different
                 # name_width (e.g. hot-reload 'R' or an edited config) — re-pin it.
@@ -1477,6 +1518,9 @@ class TopApp(App):
         Hidden sidebar -> reveal it; visible sidebar -> land focus on its first
         MENU control, so the click always reaches the unified command surface.
         """
+        # Reaching for the menu abandons a pending quit — the focused MENU
+        # button owns the next Enter (also gated in check_action).
+        self._cancel_pending_quit(announce=False)
         sb = self.query_one("#sidebar", SidebarPanel)
         if sb.has_class("-hidden"):
             self.action_toggle_sidebar()
@@ -1798,6 +1842,7 @@ class TopApp(App):
         try:
             mt = self.query_one("#main_table", DataTable)
             self._build_main_columns(mt)
+            self._repopulate_unloaded_table(mt)
         except Exception:
             pass
 
@@ -1820,7 +1865,7 @@ class TopApp(App):
 
         Starting a search abandons a pending quit confirmation, so Enter that
         submits the filter can never double as a quit confirm."""
-        self._quit_hint_deadline = 0.0
+        self._cancel_pending_quit(announce=False)
         bar = self.query_one("#search_bar", SearchBar)
         bar.set_class(False, "-hidden")
         bar.set_value(self._search_term)
@@ -1833,13 +1878,7 @@ class TopApp(App):
         A pending quit hint is settled first: that Esc only cancels the quit,
         so a search filter never disappears in the same keypress.
         """
-        if monotonic() <= self._quit_hint_deadline:
-            self._quit_hint_deadline = 0.0
-            try:
-                self.clear_notifications()
-            except Exception:
-                pass
-            self.notify("quit cancelled", timeout=2)
+        if self._cancel_pending_quit():
             return
         if not self._search_term and self.query_one("#search_bar", SearchBar).has_class("-hidden"):
             return
@@ -2171,7 +2210,7 @@ class TopApp(App):
         # (seeded by --allow-destructive) AND the confirm modal below.
         if not self.allow_destructive:
             self.notify(
-                "delete disabled — enable 'Allow delete' in the sidebar "
+                "delete disabled — enable 'Allow delete/restart' in the sidebar "
                 "(or launch with --allow-destructive)",
                 severity="warning", timeout=4,
             )
@@ -2218,7 +2257,9 @@ class TopApp(App):
                 self.notify(f"delete error: {exc}", severity="error")
             self._request_refresh()
 
-        asyncio.create_task(runner())
+        task = asyncio.create_task(runner())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     def _rollout_target(self, pod: Pod) -> "tuple[Optional[str], str]":
         """Map a pod's controlling owner to a ``kubectl rollout restart`` target.
@@ -2232,18 +2273,22 @@ class TopApp(App):
         ``Deployment`` owner or as a raw ``ReplicaSet`` ownerReference. A
         ReplicaSet created by a Deployment is named ``<deploy>-<podTemplateHash>``
         (standard, dependency-free naming), so the Deployment is derived by
-        stripping the trailing ``-<hash>`` segment — no extra API call. A
-        ReplicaSet name with no ``-`` segment cannot be derived that way and is
-        reported as un-rollable rather than guessed.
+        stripping the trailing ``-<hash>`` segment — no extra API call — but
+        ONLY when that segment actually looks like a pod-template-hash
+        (``model.pod_template_hash_like``). A standalone or CRD-managed
+        ReplicaSet (e.g. ``web-canary``, an Argo Rollouts RS) is reported as
+        un-rollable instead of being mistaken for a Deployment named like its
+        prefix.
         """
         kind, name = pod.owner_kind, pod.owner_name
         if not kind or not name:
             return None, "pod has no controller to roll"
         if kind == "ReplicaSet":
-            deploy = name.rsplit("-", 1)[0] if "-" in name else ""
-            if not deploy:
-                return None, f"cannot derive a Deployment from ReplicaSet '{name}'"
-            return f"deployment/{deploy}", ""
+            base, _, suffix = name.rpartition("-")
+            if base and model.pod_template_hash_like(suffix):
+                return f"deployment/{base}", ""
+            return None, (f"ReplicaSet '{name}' doesn't look Deployment-managed; "
+                          "restart it via its own controller")
         if kind in ("Deployment", "StatefulSet", "DaemonSet"):
             return f"{kind.lower()}/{name}", ""
         return None, f"{kind} pods don't support rollout restart"
@@ -2253,7 +2298,7 @@ class TopApp(App):
         # under the controller, so it must never fire from one stray keypress.
         if not self.allow_destructive:
             self.notify(
-                "restart disabled — enable 'Allow delete' in the sidebar "
+                "restart disabled — enable 'Allow delete/restart' in the sidebar "
                 "(or launch with --allow-destructive)",
                 severity="warning", timeout=4,
             )
@@ -2313,7 +2358,9 @@ class TopApp(App):
                 self.notify(f"restart error: {exc}", severity="error")
             self._request_refresh()
 
-        asyncio.create_task(runner())
+        task = asyncio.create_task(runner())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     # ── event panel detail on row select ───────────────────────────────────────
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:

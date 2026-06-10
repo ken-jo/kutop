@@ -19,7 +19,7 @@ from .config import (
     Profile,
     SNAPSHOT_DETAIL_LEVELS,
     SORTABLE_KEYS,
-    _VALID_SUMMARY_STYLES,
+    SUMMARY_STYLES,
     apply_detail_preset,
     dump_config_yaml,
     load_config,
@@ -64,14 +64,14 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="IANA timezone for timestamps (overrides config; '' = local)")
     ap.add_argument("--context", default=None, help="kubeconfig context to use")
     ap.add_argument("--theme", default=None,
-                    help="Textual app theme name (also selectable from the hamburger menu)")
+                    help="Textual app theme name (also selectable from Options, key 'o')")
     ap.add_argument("--sort", default=None, choices=SORTABLE_KEYS, metavar="KEY",
                     help="initial sort key (" + "/".join(SORTABLE_KEYS) + ")")
     ap.add_argument("--sort-desc", action="store_true",
                     help="reverse the initial sort direction")
-    ap.add_argument("--summary-style", default=None, choices=_VALID_SUMMARY_STYLES,
+    ap.add_argument("--summary-style", default=None, choices=SUMMARY_STYLES,
                     help="top summary header layout ("
-                         + " | ".join(_VALID_SUMMARY_STYLES) + ")")
+                         + " | ".join(SUMMARY_STYLES) + ")")
     ap.add_argument("--group-by-node", action="store_true",
                     help="group pods under their node (cluster topology view)")
     ap.add_argument("--filter", default=None,
@@ -79,8 +79,9 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--only-problems", action="store_true",
                     help="show only problem pods (non-Running / restarts>0 / oom)")
     ap.add_argument("--allow-destructive", action="store_true",
-                    help="start with pod deletion enabled (seeds the in-app "
-                         "'Allow delete' sidebar toggle; still confirm-gated)")
+                    help="start with pod delete (x) and rollout restart (X) enabled "
+                         "(seeds the in-app 'Allow delete/restart' sidebar toggle; "
+                         "still confirm-gated)")
     ap.add_argument("--no-metrics-bootstrap", action="store_true",
                     help="skip the interactive Metrics Server preflight/install prompt")
     ap.add_argument("--log-tail", type=int, default=150,

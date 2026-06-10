@@ -106,7 +106,7 @@ kutop --snapshot demo.svg  # writes one demo dashboard frame to an SVG
 * Profile-driven thresholds, pod ordering, timezone, alert sources, and health
   probes so the core stays generic.
 * Confirm-gated pod deletion and workload rollout-restart via an in-app
-  **Allow delete** toggle — no global launch flag required.
+  **Allow delete/restart (x/X)** toggle — no global launch flag required.
 * Headless SVG screenshots for README assets, release notes, and visual QA.
 
 ```
@@ -202,8 +202,8 @@ modify and defaults to No:
 components manifest now? [y/N]
 ```
 
-An empty answer or anything other than `y`/`Y` leaves the cluster unchanged.
-Pressing `y` runs the official components manifest:
+Only `y` or `yes` (case-insensitive) applies the manifest; any other answer, including an empty one, leaves the cluster unchanged.
+Pressing `y` or `yes` runs the official components manifest:
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
@@ -227,7 +227,7 @@ RBAC needs depend on which panels/actions you use:
   paths.
 * Logs/describe/delete/restart: the corresponding pod `logs`, `get`, `delete`,
   or `kubectl rollout restart` permissions. Both `x` (delete) and `X` (rollout
-  restart) stay disabled until you turn on the **Allow delete** toggle in the
+  restart) stay disabled until you turn on the **Allow delete/restart (x/X)** toggle in the
   sidebar (or launch with `--allow-destructive`, which just seeds that toggle
   on) AND accept the confirmation popup. The toggle is not persisted — it
   resets to off on each launch.
@@ -245,7 +245,7 @@ python -m kutop demo-ns             # module form
 python -m kubetop demo-ns           # legacy module alias
 kutop --context demo-context demo-ns  # pick a kubeconfig context
 kutop --sort cpu                    # initial sort key: priority/name/cpu/mem/cpu_pct/mem_pct/restarts/phase/node/namespace/age/storage/owner (unknown values exit 2)
-kutop --allow-destructive           # start with the 'Allow delete' toggle on — enables both x delete and X restart (still confirm-gated)
+kutop --allow-destructive           # start with the 'Allow delete/restart (x/X)' toggle on — enables both x delete and X restart (still confirm-gated)
 kutop --no-metrics-bootstrap        # skip startup Metrics Server prompt
 kutop --dump-config                 # print the full annotated config skeleton
 kutop --self-test                   # headless smoke test (no cluster), exits 0
@@ -270,7 +270,7 @@ that would just re-show identical values).
 | `q` `q` | quit (first press shows a confirmation toast) |
 | `r` | refresh now |
 | `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster, Profile) |
-| `b` | toggle the control sidebar; the header ☰ button also reveals the sidebar or, if already visible, jumps focus to the sidebar MENU section (Options / Keys / Screenshot / Quit — menu Quit exits immediately, unlike the two-press `q` flow) |
+| `b` | toggle the control sidebar; the header ☰ button also reveals the sidebar or, if already visible, jumps focus to the sidebar MENU section (Options / Keys / Screenshot / Quit — menu Quit exits immediately, unlike the two-press `q` flow) *(unreleased)* |
 | `/` | search / filter pods by name |
 | `Esc` | clear the search filter |
 | `s` / `S` | cycle sort column / flip sort direction (or click a column header) |
@@ -278,9 +278,9 @@ that would just re-show identical values).
 | `l` | logs for the focused pod (`kubectl logs -f`) |
 | `d` | describe the focused pod |
 | `t` | shell into the focused pod (`kubectl exec -it`, bash with sh fallback) — the dashboard suspends and resumes when the shell exits *(unreleased)* |
-| `x` | delete the focused pod (needs the sidebar **Allow delete** toggle on, then confirm) |
-| `X` | restart the focused pod's workload via `kubectl rollout restart` (same **Allow delete** gate, then a confirm showing context / namespace / pod / target; the Deployment is derived from the ReplicaSet name) |
-| `Esc` (in sidebar) | return focus to the pod table |
+| `x` | delete the focused pod (needs the sidebar **Allow delete/restart (x/X)** toggle on, then confirm) |
+| `X` | restart the focused pod's workload via `kubectl rollout restart` (same **Allow delete/restart (x/X)** gate, then a confirm showing context / namespace / pod / target; the Deployment is derived from the ReplicaSet name) *(unreleased)* |
+| `Esc` (in sidebar) | return focus to the pod table *(unreleased)* |
 | `e` / `v` | toggle the Events / PVC panels |
 | `a` / `h` | toggle the Alerts / Health panels (profile-driven) |
 | `R` | reload `~/.config/kutop/config.yaml` live |
@@ -305,7 +305,7 @@ The **NODE/POD column is resizable**: drag the `│` handle on its header to wid
 or narrow it (the width persists). Click any column header to sort by it.
 
 The sidebar Keys panel intentionally shows only the current work context. For
-example, a focused pod row surfaces `l` logs, `d` describe, and `x` delete, while
+example, a focused pod row surfaces `l` logs, `d` describe, `x` delete, `t` shell, and `X` restart, while
 the search bar surfaces `/`, `Enter`, and `Esc`; global shortcut summaries stay
 in the footer and native help.
 
@@ -343,7 +343,7 @@ kutop --dump-config
 profile: "generic"        # active profile name (read-only)
 view:
   timezone: ""          # IANA tz for timestamps; "" = host local
-  theme: "textual-dark"    # app theme; choose from the sidebar MENU (☰)
+  theme: "textual-dark"    # app theme; choose from Options (o)
 # ... every other option follows, each with an explanatory comment
 ```
 
@@ -473,7 +473,7 @@ cluster reads and cannot start without one.
 Fix: install kubectl (`https://kubernetes.io/docs/tasks/tools/`), ensure it is
 on PATH, point it at your cluster (set `KUBECONFIG` or use `~/.kube/config`),
 then verify with `kubectl get nodes`. Note: `--self-test`, `--snapshot`, and
-`--dump-config` work without kubectl and always exit 0 / write output.
+`--dump-config` work without kubectl and exit 0 on success.
 
 **The pod table shows rows: `cluster unreachable: … / check: kubectl get nodes / retrying every 5s...`**
 Cause: kutop launched but the first cluster snapshot failed — bad kubeconfig,
@@ -524,9 +524,9 @@ Fix: set `probes.alertmanager_url` / `probes.health_probes` in a profile or
 
 **Pressing `x` says `delete disabled`, or `X` says `restart disabled`.**
 Cause: by design. Pod deletion and workload rollout-restart are both gated
-behind the sidebar **Allow delete** toggle, which always starts off and is
+behind the sidebar **Allow delete/restart (x/X)** toggle, which always starts off and is
 never persisted.
-Fix: press `b`, tick **Allow delete** (or launch with `--allow-destructive`),
+Fix: press `b`, tick **Allow delete/restart (x/X)** (or launch with `--allow-destructive`),
 then confirm the popup. The restart confirm (`X`) shows the exact workload
 target (`deployment/<name>`, `statefulset/<name>`, etc.) before anything runs.
 
@@ -563,7 +563,7 @@ btop inspires the look but knows nothing about Kubernetes.
 **Is it safe to point at a production cluster?**
 kutop is read-mostly. Normal operation only reads (`kubectl get/top`, plus
 logs/describe on demand). The two destructive actions — pod delete (`x`) and
-workload rollout-restart (`X`) — are double-gated: the sidebar **Allow delete**
+workload rollout-restart (`X`) — are double-gated: the sidebar **Allow delete/restart (x/X)**
 toggle must be on (it resets to off every launch and is never persisted) and a
 confirmation popup must be accepted; the restart confirm spells out the cluster
 context, namespace, pod, and the exact workload target before anything runs.

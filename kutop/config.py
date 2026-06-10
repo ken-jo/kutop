@@ -46,7 +46,7 @@ __all__ = [
     "apply_detail_preset", "snapshot_detail_size", "clamp_name_width",
     "CONFIG_DIR", "CONFIG_PATH", "REFRESH_INTERVAL_SECS",
     "METRICS_RESOLUTION_SECS", "SNAPSHOT_DETAIL_LEVELS", "SORTABLE_KEYS",
-    "SORT_KEY_TO_COLUMN", "COLUMN_TO_SORT_KEY",
+    "SUMMARY_STYLES", "SORT_KEY_TO_COLUMN", "COLUMN_TO_SORT_KEY",
     "NAME_WIDTH_MIN", "NAME_WIDTH_MAX", "NAME_WIDTH_DEFAULT",
 ]
 
@@ -500,7 +500,7 @@ def build_column_registry() -> "dict[str, ColumnSpec]":
 
 
 _VALID_SORT = ("priority", "cpu", "mem", "name")   # legacy sort_mode values
-_VALID_SUMMARY_STYLES = ("tiles", "compact")
+SUMMARY_STYLES = ("tiles", "compact")
 
 # NODE/POD name-column width bounds (cells). The column is mouse-resizable; the
 # value is clamped to this range on load and on every drag so the column stays
@@ -775,7 +775,7 @@ def _config_from_dict(d: dict) -> Config:
     theme = str(view.get("theme", "textual-dark") or "textual-dark")
     panel_backgrounds = _coerce_bool(view.get("panel_backgrounds"), True)
     summary_style = str(view.get("summary_style", "compact"))
-    if summary_style not in _VALID_SUMMARY_STYLES:
+    if summary_style not in SUMMARY_STYLES:
         summary_style = "compact"
     group_by_node = _coerce_bool(view.get("group_by_node"), False)
     name_width = clamp_name_width(view.get("name_width", NAME_WIDTH_DEFAULT))
@@ -905,7 +905,9 @@ def _parse_failure_warning(path: str, exc: Exception) -> str:
     """
     backup = f"{path}.invalid"
     try:
-        shutil.copyfile(path, backup)
+        # copy2 preserves the source mode: a chmod-600 config (probe URLs can
+        # embed tokens) must not get a world-readable .invalid copy beside it.
+        shutil.copy2(path, backup)
     except OSError:
         backup = ""
     reason = " ".join(str(exc).split()) or exc.__class__.__name__
@@ -1194,9 +1196,9 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append(f"  timezone: {q(cfg.timezone)}          # IANA tz for timestamps; \"\" = host local")
     lines.append(f"  sort_key: {cfg.sort_key}      # sort column: {' | '.join(SORTABLE_KEYS)}")
     lines.append(f"  sort_desc: {b(cfg.sort_desc)}        # reverse sort direction (▼)")
-    lines.append(f"  theme: {q(cfg.theme)}    # app theme; choose from the hamburger menu")
+    lines.append(f"  theme: {q(cfg.theme)}    # app theme; choose from Options (o)")
     lines.append(f"  panel_backgrounds: {b(cfg.panel_backgrounds)} # fill panel/search backgrounds with the theme surface color")
-    lines.append(f"  summary_style: {cfg.summary_style}    # {' | '.join(_VALID_SUMMARY_STYLES)} (top header layout)")
+    lines.append(f"  summary_style: {cfg.summary_style}    # {' | '.join(SUMMARY_STYLES)} (top header layout)")
     lines.append(f"  group_by_node: {b(cfg.group_by_node)}   # group pods under their node header rows")
     lines.append(f"  name_width: {cfg.name_width}           # NODE/POD column width in cells (drag its right edge to resize; {NAME_WIDTH_MIN}..{NAME_WIDTH_MAX})")
     lines.append(f"  remember_profile_per_context: {b(cfg.remember_profile_per_context)}  # persist the sidebar PROFILE pick, keyed by kube context")

@@ -127,7 +127,9 @@ def _is_interactive(input_stream: TextIO, output_stream: TextIO) -> bool:
 
 
 def _answer_is_yes(answer: str) -> bool:
-    return answer.strip().lower().startswith("y")
+    # Exact y/yes only: this gates a kubectl apply against the cluster, so a
+    # mistyped "y..." with second thoughts in it must not count as consent.
+    return answer.strip().lower() in ("y", "yes")
 
 
 def maybe_bootstrap_metrics_server(
@@ -153,7 +155,8 @@ def maybe_bootstrap_metrics_server(
     # The two kubectl probes below can block up to ~2x the timeout before the
     # fullscreen TUI appears; say so up front instead of looking hung.
     print(
-        "[kutop] checking metrics-server (up to ~12s; skip with --no-metrics-bootstrap)…",
+        f"[kutop] checking metrics-server (up to ~{2 * timeout}s; "
+        "skip with --no-metrics-bootstrap)…",
         file=output_stream,
     )
     output_stream.flush()

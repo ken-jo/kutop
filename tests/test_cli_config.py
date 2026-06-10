@@ -1628,6 +1628,61 @@ def test_first_fetch_failure_shows_persistent_guidance_until_snapshot() -> None:
     asyncio.run(drive())
 
 
+def test_startup_guidance_survives_sort_and_column_changes() -> None:
+    """Guidance rows shown during the first-fetch failure must persist across
+    sort cycles and column rebuilds — the table must not become blank while
+    the cluster is still unreachable."""
+    from textual.widgets import DataTable
+
+    from kutop.fetch import Fetcher
+    from kutop.render.app import TopApp
+
+    class UnreachableFetcher(Fetcher):
+        def _run(self, *args: str, timeout: int = 0) -> str:
+            raise RuntimeError("Unable to connect to the server: cluster unreachable")
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        app.fetcher = UnreachableFetcher(["default"])  # type: ignore[assignment]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            def first_cells(mt: DataTable) -> list[str]:
+                return [str(mt.get_row_at(i)[0]) for i in range(mt.row_count)]
+
+            # trigger a fetch attempt so the guidance rows appear
+            app.refresh_snapshot()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if not app._fetching:
+                    break
+            await pilot.pause()
+
+            mt = app.query_one("#main_table", DataTable)
+            assert app._loaded is False
+            rows = first_cells(mt)
+            assert any("cluster unreachable" in r for r in rows)
+            assert mt.row_count >= 3
+
+            # cycle the sort key — triggers a column rebuild via _render_main_table
+            app.action_cycle_sort()
+            await pilot.pause()
+
+            # guidance rows must still be present after the rebuild
+            rows_after = first_cells(mt)
+            assert mt.row_count >= 3
+            assert any("cluster unreachable" in r for r in rows_after)
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_header_hamburger_reveals_hidden_sidebar() -> None:
     from kutop.render.app import ThemeHeaderIcon, TopApp
 
@@ -1968,6 +2023,119 @@ def test_pending_quit_never_pierces_modals_or_search(monkeypatch) -> None:
             assert quits == []
 
             await pilot.exit(None)
+
+    asyncio.run(drive())
+    assert quits == []
+
+
+def test_pending_quit_never_pierces_sidebar_menu(monkeypatch) -> None:
+    """Reaching for the sidebar menu abandons a pending quit; Enter inside the
+    sidebar (focus is within the sidebar ancestor chain) must never fall through
+    the priority app binding and quit — the Options modal should open instead."""
+    from time import monotonic
+
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import OptionsModal
+
+    quits: list[bool] = []
+    monkeypatch.setattr(TopApp, "action_quit", lambda self: quits.append(True))
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            # (a) arm the quit hint, then open the menu (sidebar visible by default)
+            app.action_quit_hint()
+            app.action_open_menu()
+            await pilot.pause()
+            # reaching for the menu abandons the quit window
+            assert app._quit_hint_deadline == 0.0
+            # focus should land on the Options button in the sidebar
+            assert app.focused is not None
+            assert app.focused.id == "side_menu_options"
+
+            # (b) re-arm while focus is inside the sidebar — check_action must
+            # gate out the binding even with a live deadline
+            app.action_quit_hint()
+            app._quit_hint_deadline = monotonic() + 4  # ensure alive
+            assert app.check_action("confirm_quit", ()) is False
+
+            # pressing Enter with sidebar focus opens the Options modal (not quit)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert quits == []
+            assert len(app.screen_stack) > 1
+            assert isinstance(app.screen, OptionsModal)
+            # close the modal
+            await pilot.press("escape")
+            await pilot.pause()
+
+            # (c) verify no quit fired throughout
+            assert quits == []
+
+    asyncio.run(drive())
+    assert quits == []
+
+
+def test_esc_in_sidebar_cancels_pending_quit(monkeypatch) -> None:
+    """Esc while focus is inside the sidebar and a quit is pending must cancel
+    the quit (not the sidebar itself) and move focus back to #main_table."""
+    from kutop.render.app import TopApp
+
+    quits: list[bool] = []
+    monkeypatch.setattr(TopApp, "action_quit", lambda self: quits.append(True))
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            notices: list[str] = []
+            monkeypatch.setattr(
+                app, "notify",
+                lambda message, **kwargs: notices.append(str(message)),
+            )
+
+            # focus the Options button inside the sidebar
+            app.query_one("#side_menu_options").focus()
+            await pilot.pause()
+            assert app.focused is not None
+            assert app.focused.id == "side_menu_options"
+
+            # arm the quit hint
+            app.action_quit_hint()
+            assert app._quit_hint_deadline > 0.0
+
+            # Esc inside the sidebar runs action_focus_main (sidebar binding),
+            # which calls _cancel_pending_quit(announce=True) and moves focus
+            await pilot.press("escape")
+            await pilot.pause()
+
+            # deadline cleared
+            assert app._quit_hint_deadline == 0.0
+            # a 'quit cancelled' notification was issued
+            assert any("quit cancelled" in msg for msg in notices)
+            # focus returned to the main table
+            assert app.focused is not None
+            assert app.focused.id == "main_table"
+
+            # pressing Enter now must not quit
+            await pilot.press("enter")
+            await pilot.pause()
+            assert quits == []
 
     asyncio.run(drive())
     assert quits == []
