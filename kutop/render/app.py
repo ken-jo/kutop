@@ -20,32 +20,21 @@ import copy
 import os
 import subprocess
 from collections import deque
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import monotonic
 from typing import Optional
 
 from rich.text import Text
-from textual import events
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
-from textual.reactive import Reactive
 from textual.widgets import (
     Checkbox,
     DataTable,
     Footer,
-    Header,
     Input,
-    Label,
-    RichLog,
-    Select,
     Static,
 )
-from textual.widget import Widget
-from textual.screen import ModalScreen
-
-from ._compat import HeaderClock, HeaderClockSpace, HeaderTitle
 
 from .. import __version__, model
 from ..config import (
@@ -64,6 +53,10 @@ from ..config import (
 )
 from ..fetch import Fetcher
 from ..model import Pod, Snapshot, fmt_age, age_seconds
+from .header import MetricsIndicator, ThemeHeader, ThemeHeaderIcon
+from .modals import DescribeModal, EventDetailModal, LogViewerModal
+from .sidebar import SidebarPanel, SidebarState
+from .table import ResizableDataTable
 from .widgets import (
     _severity_style,
     OptionsModal,
@@ -75,6 +68,15 @@ from .widgets import (
     bar_gauge,
     level_color,
 )
+
+__all__ = [
+    "TopApp", "RenderCtx",
+    # re-exported for backward compatibility after the module split
+    "ThemeHeaderIcon", "MetricsIndicator", "ThemeHeader",
+    "LogViewerModal", "DescribeModal", "EventDetailModal",
+    "SidebarState", "SidebarPanel", "ResizableDataTable",
+    "REFRESH_INTERVAL_SECS",
+]
 
 _HISTORY = 120
 _HIDDEN_THEMES = {"ansi-dark", "ansi-light"}
@@ -161,76 +163,6 @@ class RenderCtx:
         return Text(model.fmt_age(secs), style="")
 
 
-class ThemeHeaderIcon(Widget):
-    """Header icon that opens kutop's menu instead of Textual's palette."""
-
-    DEFAULT_CSS = """
-    ThemeHeaderIcon {
-        dock: left;
-        padding: 0 1;
-        width: 8;
-        content-align: left middle;
-    }
-
-    ThemeHeaderIcon:hover {
-        background: $foreground 10%;
-    }
-    """
-
-    icon = Reactive("☰")
-
-    def on_mount(self) -> None:
-        self.tooltip = "Open kutop menu"
-
-    async def on_click(self, event: events.Click) -> None:
-        event.stop()
-        self.app.action_open_theme_menu()  # type: ignore[attr-defined]
-
-    def render(self) -> str:
-        return str(self.icon)
-
-
-class MetricsIndicator(Static):
-    """Top-right metrics-freshness readout (read-only).
-
-    The refresh cadence is fixed, so this slot no longer hosts a +/- control.
-    Instead it exposes how fresh the CPU/MEM numbers are: `kubectl top` reads
-    metrics-server, whose scrape resolution is METRICS_RESOLUTION_SECS, so the
-    metric values only move that often regardless of the poll cadence. Docked to
-    the right of the header clock; the app sets its text via
-    :meth:`TopApp._update_metrics_indicator`.
-    """
-
-    DEFAULT_CSS = """
-    MetricsIndicator {
-        dock: right;
-        width: auto;
-        padding: 0 1;
-        /* clear the 10-wide header clock zone so we sit to its left */
-        margin-right: 10;
-    }
-    """
-
-
-class ThemeHeader(Header):
-    """Header whose hamburger icon opens kutop's theme menu."""
-
-    def compose(self) -> ComposeResult:
-        yield ThemeHeaderIcon().data_bind(Header.icon)
-        yield HeaderTitle()
-        # Yielded before the clock: among right-docked widgets the earlier one
-        # sits further left, so this lands to the clock's left, like btop.
-        yield MetricsIndicator(id="metrics_indicator")
-        yield (
-            HeaderClock().data_bind(Header.time_format)
-            if self._show_clock
-            else HeaderClockSpace()
-        )
-
-    def _on_click(self) -> None:
-        self.app.action_open_theme_menu()  # type: ignore[attr-defined]
-
-
 # The NODE/POD name cell is fit to the COLUMN WIDTH (Config.name_width, which the
 # user can drag-resize), NOT a fixed character count. The fully-styled cell
 # (glyph + name + bracketed [ns]/(ready) annotations) is truncated with a single
@@ -313,707 +245,9 @@ def _status_glyph(pod: Pod) -> tuple[str, str]:
     return "●", "dim"
 
 
-# ── interactive modals (ported from top_v2.py) ───────────────────────────────
-
-
-class LogViewerModal(ModalScreen):
-    """Asynchronous live log streaming (`kubectl logs -f`)."""
-
-    def __init__(self, pod_name: str, ns: str, tail: int, context: Optional[str]) -> None:
-        super().__init__()
-        self.pod_name = pod_name
-        self.ns = ns
-        self.tail = tail
-        self.context = context
-        self.proc: Optional[asyncio.subprocess.Process] = None
-        self.log_task: Optional[asyncio.Task] = None
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="log_box"):
-            yield Label(f"Live Logs: {self.pod_name} [{self.ns}] — ESC/q to close", id="log_hdr")
-            yield RichLog(id="log_content", highlight=True, max_lines=2000)
-
-    async def on_mount(self) -> None:
-        self.log_task = asyncio.create_task(self._stream())
-
-    async def _stream(self) -> None:
-        log = self.query_one("#log_content", RichLog)
-        cmd = ["kubectl"]
-        if self.context:
-            cmd += ["--context", self.context]
-        cmd += ["logs", "-n", self.ns, self.pod_name, "-f", f"--tail={self.tail}"]
-        try:
-            self.proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            assert self.proc.stdout is not None
-            while True:
-                line = await self.proc.stdout.readline()
-                if not line:
-                    break
-                log.write(line.decode("utf-8", errors="ignore").rstrip())
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            log.write(f"[error] {exc}")
-
-    async def on_key(self, event) -> None:
-        if event.key in ("escape", "q"):
-            # stop the event so the close key never leaks into app bindings
-            # (q would arm the quit hint, escape would clear the search filter)
-            event.stop()
-            await self._close()
-
-    async def _close(self) -> None:
-        if self.log_task:
-            self.log_task.cancel()
-        if self.proc:
-            try:
-                self.proc.terminate()
-                await self.proc.wait()
-            except Exception:
-                pass
-        self.dismiss()
-
-
-class DescribeModal(ModalScreen):
-    """`kubectl describe pod` viewer."""
-
-    def __init__(self, pod_name: str, ns: str, context: Optional[str],
-                 owner: str = "") -> None:
-        super().__init__()
-        self.pod_name = pod_name
-        self.ns = ns
-        self.context = context
-        # e.g. "StatefulSet/<name>" — surfaced in the header when known.
-        self.owner = owner
-
-    def compose(self) -> ComposeResult:
-        owner_suffix = f" ({self.owner})" if self.owner else ""
-        with Vertical(id="desc_box"):
-            yield Label(
-                f"Describe: {self.pod_name}{owner_suffix} [{self.ns}] — ESC/q to close",
-                id="desc_hdr",
-            )
-            yield RichLog(id="desc_content", highlight=True)
-
-    async def on_mount(self) -> None:
-        log = self.query_one("#desc_content", RichLog)
-        log.write("Loading kubectl describe...")
-        cmd = ["kubectl"]
-        if self.context:
-            cmd += ["--context", self.context]
-        cmd += ["describe", "pod", self.pod_name, "-n", self.ns]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            out, err = await proc.communicate()
-            log.clear()
-            if out:
-                log.write(out.decode("utf-8", errors="ignore"))
-            if err:
-                log.write(f"\n[stderr]\n{err.decode('utf-8', errors='ignore')}")
-        except Exception as exc:
-            log.write(f"[error] {exc}")
-
-    def on_key(self, event) -> None:
-        if event.key in ("escape", "q"):
-            event.stop()  # see LogViewerModal.on_key: never leak the close key
-            self.dismiss()
-
-
-class EventDetailModal(ModalScreen):
-    """Full event metadata dialog."""
-
-    def __init__(self, name: str, reason: str, message: str) -> None:
-        super().__init__()
-        self._name = name
-        self._reason = reason
-        self._message = message
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="ev_box"):
-            yield Label("Event detail — ESC/q to close", id="ev_hdr")
-            yield RichLog(id="ev_content")
-
-    def on_mount(self) -> None:
-        log = self.query_one("#ev_content", RichLog)
-        log.write(Text.from_markup(f"[bold yellow]Object:[/]  {self._name}"))
-        log.write(Text.from_markup(f"[bold yellow]Reason:[/]  {self._reason}"))
-        log.write(Text.from_markup(f"[bold yellow]Message:[/]\n{self._message}"))
-
-    def on_key(self, event) -> None:
-        if event.key in ("escape", "q"):
-            event.stop()  # see LogViewerModal.on_key: never leak the close key
-            self.dismiss()
-
-
-# ── sidebar ───────────────────────────────────────────────────────────────────
-
-
-@dataclass
-class SidebarState:
-    """Everything the sidebar mirrors from the app, as one value object.
-
-    Replaces the 19-21 keyword arguments that were previously spelled out in
-    four hand-maintained copies (SidebarPanel ``__init__``/``on_mount``/
-    ``update_state`` and TopApp ``compose``/``_sync_sidebar_state``) — adding a
-    sidebar field now means touching this dataclass and the place that uses it.
-    """
-
-    selected: list = field(default_factory=list)
-    show_events: bool = True
-    show_pvc: bool = True
-    show_summary: bool = True
-    show_trends: bool = True
-    show_alerts: bool = True
-    show_health: bool = True
-    show_keys: bool = True
-    sort_key: str = "priority"
-    sort_desc: bool = False
-    group_by_node: bool = False
-    allow_delete: bool = False
-    profile_name: str = "generic"
-    remember_profile: bool = False
-    interval: float = REFRESH_INTERVAL_SECS
-    context: str = ""
-    name_filter: str = ""
-    key_context: str = "DASHBOARD"
-    key_rows: list = field(default_factory=list)
-
-
-class SidebarPanel(Vertical):
-    """Collapsible control sidebar: ns checkboxes, sort mode, panel toggles.
-
-    The NAMESPACE section renders one :class:`Checkbox` per known namespace; the
-    user ticks any combination and the dashboard shows the pods of every ticked
-    namespace COMBINED (the Fetcher already accepts and merges a namespace list).
-    The namespace checkboxes are the primary selector — the Options modal mirrors
-    the same ticked set via ``apply_config``.
-
-    BUG FIX #3: the controls live inside a ``VerticalScroll`` so that on short
-    terminals the lower sections (NAMESPACE / PANELS) remain reachable by
-    scrolling instead of being clipped off the bottom of the viewport. The
-    namespace checkbox list itself sits in its own bounded ``VerticalScroll`` so
-    that a cluster with many namespaces never overflows the lower controls.
-    """
-
-    #: each namespace checkbox carries this class so the change handler can tell
-    #: them apart from the panel-toggle checkboxes (which have stable ids).
-    NS_CLASS = "ns-checkbox"
-
-    def __init__(
-        self,
-        ns_options: list[str],
-        state: "Optional[SidebarState]" = None,
-        profile_options: "Optional[list[str]]" = None,
-        context_options: "Optional[list[str]]" = None,
-        **kwargs,
-    ) -> None:
-        super().__init__(**kwargs)
-        self._ns_options = list(ns_options)
-        self._profile_options = list(profile_options or [])
-        self._context_options = list(context_options or [])
-        self._ingest(state or SidebarState(selected=list(ns_options)))
-        self._syncing = False
-        self._ready_for_input = False
-        # last (options, value) actually written to the CONTEXT Select, so the
-        # every-refresh state sync can skip the rebuild when nothing changed —
-        # set_options() closes an open dropdown, which made the CONTEXT picker
-        # unusable while the 5s refresh was running.
-        self._ctx_select_applied: "Optional[tuple]" = None
-
-    def compose(self) -> ComposeResult:
-        yield Static("", id="side_status")
-        with VerticalScroll(id="side_scroll"):
-            yield Label("PROFILE", classes="side_section")
-            yield Select(
-                [(p, p) for p in self._profile_options] or [("generic", "generic")],
-                value=self._profile_name,
-                id="side_profile",
-                allow_blank=False,
-            )
-            yield Checkbox("Remember for this context", value=self._remember_profile,
-                           id="chk_remember_profile", compact=True)
-            yield Label("CONTEXT", classes="side_section side_section_spaced")
-            ctx_opts = self._context_options or [self._context_name or ""]
-            yield Select(
-                [(c or "(current)", c) for c in ctx_opts],
-                value=(self._context_name if self._context_name in ctx_opts
-                       else ctx_opts[0]),
-                id="side_context",
-                allow_blank=False,
-            )
-            yield Label("NAMESPACES", classes="side_section side_section_spaced")
-            with VerticalScroll(id="side_ns_box"):
-                yield from self._ns_checkboxes()
-            yield Label("SORT", classes="side_section side_section_spaced")
-            yield Select(
-                [(k, k) for k in SORTABLE_KEYS],
-                value=self._sort_key,
-                id="side_sort",
-                allow_blank=False,
-            )
-            yield Checkbox("Descending", value=self._sort_desc, id="chk_sort_desc",
-                           compact=True)
-            yield Checkbox("Group by node", value=self._group_by_node, id="chk_group",
-                           compact=True)
-            yield Label("PANELS", classes="side_section side_section_spaced")
-            yield Checkbox("Summary", value=self._show_summary, id="chk_summary",
-                           compact=True)
-            yield Checkbox("Trends", value=self._show_trends, id="chk_trends",
-                           compact=True)
-            yield Checkbox("Warning Events", value=self._show_events, id="chk_events",
-                           compact=True)
-            yield Checkbox("PVC Storage", value=self._show_pvc, id="chk_pvc",
-                           compact=True)
-            yield Checkbox("Alerts", value=self._show_alerts, id="chk_alerts",
-                           compact=True)
-            yield Checkbox("Health", value=self._show_health, id="chk_health",
-                           compact=True)
-            yield Checkbox("Keys", value=self._show_keys, id="chk_keys",
-                           compact=True)
-            yield Label("ACTIONS", classes="side_section side_section_spaced")
-            yield Checkbox("Allow delete (x)", value=self._allow_delete,
-                           id="chk_allow_delete", compact=True)
-        with Vertical(id="side_keys_box"):
-            yield Label(
-                "KEYS",
-                classes="side_section",
-                id="side_keys_title",
-            )
-            yield Static("", id="side_keys_body")
-
-    def _ingest(self, state: "SidebarState") -> None:
-        """Adopt a SidebarState into the panel's working attributes."""
-        self._state = state
-        self._selected = set(state.selected)
-        self._show_events = state.show_events
-        self._show_pvc = state.show_pvc
-        self._show_summary = state.show_summary
-        self._show_trends = state.show_trends
-        self._show_alerts = state.show_alerts
-        self._show_health = state.show_health
-        self._show_keys = state.show_keys
-        self._sort_key = (state.sort_key if state.sort_key in SORTABLE_KEYS
-                          else "priority")
-        self._sort_desc = state.sort_desc
-        self._group_by_node = state.group_by_node
-        self._allow_delete = state.allow_delete
-        self._profile_name = state.profile_name or "generic"
-        self._remember_profile = state.remember_profile
-        self._interval = state.interval
-        self._context_name = state.context or ""
-        self._name_filter = state.name_filter
-        self._key_context = state.key_context or "DASHBOARD"
-        self._key_rows = list(state.key_rows or [])
-
-    def on_mount(self) -> None:
-        self.border_title = "SIDEBAR"
-        self.update_state(self._state)
-        try:
-            self.call_after_refresh(self._enable_input_events)
-        except Exception:
-            self._ready_for_input = True
-
-    def _enable_input_events(self) -> None:
-        self._ready_for_input = True
-
-    def _ns_checkboxes(self):
-        """One Checkbox per known namespace; the namespace is stored in ``name``."""
-        for ns in self._ns_options:
-            yield Checkbox(ns, value=ns in self._selected, name=ns,
-                           classes=self.NS_CLASS, compact=True)
-
-    def rebuild_namespaces(self, ns_options: list[str], selected: list[str]) -> None:
-        """Repopulate the namespace checkbox list (live discovery / config sync).
-
-        Mounts a fresh Checkbox per namespace inside ``#side_ns_box`` reflecting
-        the given ticked ``selected`` set. Best effort: silently no-ops if the
-        container is not mounted yet (first synchronous compose handles that).
-        """
-        self._ns_options = list(ns_options)
-        self._selected = set(selected)
-        try:
-            box = self.query_one("#side_ns_box", VerticalScroll)
-        except Exception:
-            return
-        for existing in list(box.query(Checkbox)):
-            existing.remove()
-        box.mount(*self._ns_checkboxes())
-
-    def rebuild_contexts(self, options: list[str], current: str) -> None:
-        """Repopulate the CONTEXT Select from discovered kubeconfig contexts.
-
-        Mirrors :meth:`rebuild_namespaces`: context discovery runs after mount, so
-        the Select starts with just the current context and is refilled here.
-        Keeps the active context selected; best-effort if not mounted yet.
-        """
-        self._context_options = list(options)
-        self._context_name = (current or "").strip()
-        self._syncing = True
-        try:
-            self._apply_context_to_select()
-        finally:
-            # Keep _syncing armed across the dispatch of any queued Changed echo
-            # (delivered on a later event-loop turn): clear it on the next frame
-            # rather than in a synchronous finally so on_select_changed still sees
-            # the guard and set_context cannot re-fire in a feedback loop.
-            self._disarm_syncing_next_frame()
-
-    def _apply_context_to_select(self) -> None:
-        """Write the CONTEXT Select options + value from the cached state in one
-        place, so the widget options and the selected value can never diverge.
-
-        Single funnel shared by :meth:`rebuild_contexts` and :meth:`update_state`:
-        rebuild the options, then select the desired value, suppressing the
-        programmatic ``Select.Changed`` echo. Best-effort if the Select is not
-        mounted yet. Callers must arm/disarm ``_syncing`` around this.
-        """
-        try:
-            sel = self.query_one("#side_context", Select)
-        except Exception:
-            return
-        ctx_opts = self._context_options or [self._context_name or ""]
-        pairs = [(c or "(current)", c) for c in ctx_opts]
-        desired = (self._context_name if self._context_name in ctx_opts
-                   else ctx_opts[0])
-        state = (tuple(pairs), desired)
-        if self._ctx_select_applied == state and sel.value == desired:
-            return  # nothing changed: don't reset (and close) an open dropdown
-        try:
-            # prevent() suppresses the Select.Changed echo from the programmatic
-            # set_options/value writes — the reactive posts Changed as a queued
-            # message dispatched after a synchronous _syncing reset, so the
-            # _syncing guard in on_select_changed could not catch it and
-            # set_context would re-fire in an unbounded loop. We keep BOTH guards:
-            # prevent() blocks the echo, and _disarm_syncing_next_frame() re-arms
-            # _syncing so a queued echo that slips past prevent() is still ignored.
-            with sel.prevent(Select.Changed):
-                sel.set_options(pairs)
-                # set_options() already reset value to ctx_opts[0]; only re-assign
-                # when the desired value differs, so no extra Changed is generated.
-                if sel.value != desired:
-                    sel.value = desired
-            self._ctx_select_applied = state
-        except Exception:
-            pass
-
-    def _disarm_syncing_next_frame(self) -> None:
-        """Clear ``_syncing`` on the next frame, after queued Changed echoes drain.
-
-        Programmatic ``Select.set_options``/``value`` writes post a ``Changed``
-        message that is dispatched on a *later* event-loop turn. Clearing
-        ``_syncing`` synchronously would expose that echo to ``on_select_changed``
-        and re-enter ``set_context``; deferring the reset keeps the guard live
-        until the echo has drained. Falls back to a synchronous reset if no app
-        loop is available (e.g. teardown), so the flag never sticks.
-        """
-        try:
-            self.app.call_after_refresh(lambda: setattr(self, "_syncing", False))
-        except Exception:
-            self._syncing = False
-
-    def ns_checkbox_state(self) -> "list[str]":
-        """The currently-ticked namespaces, in display order."""
-        out: list[str] = []
-        try:
-            for cb in self.query_one("#side_ns_box", VerticalScroll).query(Checkbox):
-                if cb.value and cb.name:
-                    out.append(cb.name)
-        except Exception:
-            pass
-        return out
-
-    def update_state(self, state: "SidebarState") -> None:
-        """Refresh compact status text and control values from the app state."""
-        self._ingest(state)
-        try:
-            ns_count = len([n for n in state.selected if n])
-            ctx = self._context_name or "current"
-            # long contexts (e.g. EKS ARNs) hold the useful name at the end —
-            # show the last path segment, then tail-truncate, not the prefix
-            if len(ctx) > 24:
-                ctx = ctx.rsplit("/", 1)[-1] if "/" in ctx else ctx
-                if len(ctx) > 24:
-                    ctx = "…" + ctx[-23:]
-            direction = "desc" if self._sort_desc else "asc"
-            status = Text()
-            status.append("ns=", style="dim")
-            status.append(str(ns_count), style="bold green")
-            status.append(" | refresh=", style="dim")
-            status.append(f"{self._interval:g}s", style="bold cyan")
-            status.append("\nctx=", style="dim")
-            status.append(ctx[:24], style="bold")
-            status.append("\nsort=", style="dim")
-            status.append(self._sort_key, style="bold magenta")
-            status.append(" | dir=", style="dim")
-            status.append(direction, style="bold yellow")
-            # only show the filter line when a filter is active, so the common
-            # case stays 3 lines and leaves more room for the panel toggles
-            if self._name_filter:
-                status.append("\nfilter=", style="dim")
-                status.append(self._name_filter[:22], style="bold")
-            self.query_one("#side_status", Static).update(status)
-        except Exception:
-            pass
-        self._syncing = True
-        try:
-            self._set_checkbox("chk_summary", self._show_summary)
-            self._set_checkbox("chk_trends", self._show_trends)
-            self._set_checkbox("chk_events", self._show_events)
-            self._set_checkbox("chk_pvc", self._show_pvc)
-            self._set_checkbox("chk_alerts", self._show_alerts)
-            self._set_checkbox("chk_health", self._show_health)
-            self._set_checkbox("chk_keys", self._show_keys)
-            self._set_checkbox("chk_sort_desc", self._sort_desc)
-            self._set_checkbox("chk_group", self._group_by_node)
-            self._set_checkbox("chk_allow_delete", self._allow_delete)
-            self._set_checkbox("chk_remember_profile", self._remember_profile)
-            try:
-                self.query_one("#side_sort", Select).value = self._sort_key
-            except Exception:
-                pass
-            try:
-                self.query_one("#side_profile", Select).value = self._profile_name
-            except Exception:
-                pass
-            # Funnel the context Select through the SAME helper rebuild_contexts
-            # uses, so the widget options and the desired value can never diverge
-            # (avoids a stale display or an InvalidSelectValueError when the live
-            # context isn't yet in the Select's options).
-            if self._context_name and self._context_name not in self._context_options:
-                # keep the live context selectable even before discovery lists it
-                self._context_options = [self._context_name, *self._context_options]
-            self._apply_context_to_select()
-            self._render_keys_panel()
-        finally:
-            # Re-arm _syncing across the next frame so any queued Changed echo from
-            # the programmatic Select writes above drains while still guarded.
-            self._disarm_syncing_next_frame()
-
-    def _render_keys_panel(self) -> None:
-        box = self.query_one("#side_keys_box", Vertical)
-        title = self.query_one("#side_keys_title", Label)
-        body = self.query_one("#side_keys_body", Static)
-        box.set_class(not self._show_keys, "-hidden")
-        title.set_class(not self._show_keys, "-hidden")
-        body.set_class(not self._show_keys, "-hidden")
-        if not self._show_keys:
-            return
-        title.update(f"KEYS · {self._key_context}")
-        if not self._key_rows:
-            body.update("focus pod for keys")
-            return
-        text = Text()
-        for index, (key, label) in enumerate(self._key_rows):
-            if index:
-                text.append("\n")
-            text.append(f"{key:<5}", style="bold cyan")
-            text.append(label)
-        body.update(text)
-
-    def _set_checkbox(self, widget_id: str, value: bool) -> None:
-        try:
-            cb = self.query_one(f"#{widget_id}", Checkbox)
-            if cb.value != value:
-                cb.value = value
-        except Exception:
-            pass
-
-    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        if self._syncing or not self._ready_for_input:
-            return
-        app = self.app  # type: ignore[assignment]
-        cb = event.checkbox
-        if cb.has_class(self.NS_CLASS):
-            # a namespace was ticked/unticked -> hand the app the full ticked set
-            app.set_namespaces(self.ns_checkbox_state())  # type: ignore[attr-defined]
-        elif cb.id == "chk_summary":
-            app.cfg.show_summary = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
-        elif cb.id == "chk_trends":
-            app.cfg.show_trends = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
-        elif cb.id == "chk_events":
-            app.show_events = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
-        elif cb.id == "chk_pvc":
-            app.show_pvc = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
-        elif cb.id == "chk_alerts":
-            app.show_alerts = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
-        elif cb.id == "chk_health":
-            app.show_health = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
-        elif cb.id == "chk_keys":
-            app.cfg.show_keys = event.value  # type: ignore[attr-defined]
-            app.apply_panel_visibility(persist=True)  # type: ignore[attr-defined]
-        elif cb.id == "chk_sort_desc":
-            app.cfg.sort_desc = event.value  # type: ignore[attr-defined]
-            app._persist_state()  # type: ignore[attr-defined]
-            app._restamp_sort_header()  # type: ignore[attr-defined]
-            if app._loaded:  # type: ignore[attr-defined]
-                app._render_main_table()  # type: ignore[attr-defined]
-        elif cb.id == "chk_group":
-            app.cfg.group_by_node = event.value  # type: ignore[attr-defined]
-            app._persist_state()  # type: ignore[attr-defined]
-            if app._loaded:  # type: ignore[attr-defined]
-                app._render_main_table()  # type: ignore[attr-defined]
-        elif cb.id == "chk_allow_delete":
-            app.set_allow_destructive(event.value)  # type: ignore[attr-defined]
-        elif cb.id == "chk_remember_profile":
-            app.set_remember_profile_per_context(event.value)  # type: ignore[attr-defined]
-
-    def on_select_changed(self, event: Select.Changed) -> None:
-        if self._syncing or not self._ready_for_input:
-            return
-        if event.select.id == "side_sort" and event.value is not Select.BLANK:
-            self.app.set_sort_key(str(event.value))  # type: ignore[attr-defined]
-        elif event.select.id == "side_profile" and event.value is not Select.BLANK:
-            self.app.set_profile(str(event.value))  # type: ignore[attr-defined]
-        elif event.select.id == "side_context" and event.value is not Select.BLANK:
-            # Idempotency guard: only act on a real change. set_options() resets the
-            # Select to its first option and posts a Changed echo; if that echo ever
-            # slips past _syncing/prevent() it would carry the CURRENT context and
-            # must be a no-op rather than re-entering set_context in a feedback loop.
-            new_context = str(event.value)
-            current = (self.app.context or "").strip()  # type: ignore[attr-defined]
-            if new_context.strip() != current:
-                self.app.set_context(new_context)  # type: ignore[attr-defined]
-
-
-# ── resizable main table ───────────────────────────────────────────────────────
-
-
-class ResizableDataTable(DataTable):
-    """A ``DataTable`` whose NODE/POD (first) column is mouse-drag resizable.
-
-    The user grabs the column's RIGHT EDGE and drags to grow/shrink it live; on
-    release the new width is written to ``app.cfg.name_width`` and persisted so
-    it survives a relaunch. Everything else (header-click sort, row cursor,
-    vertical/horizontal scroll, scroll-preservation) behaves exactly as the base
-    ``DataTable`` — only a click that lands on the resize column's right boundary
-    starts a drag; all other clicks fall straight through to the base handlers.
-
-    Hit-testing is done in TABLE CONTENT coordinates: ``_get_column_region`` gives
-    the column's region (already accounting for the row-label column + the prior
-    columns + cell padding), and we convert the incoming widget-relative mouse x
-    to content-x by adding ``scroll_x``. A click within ``_GRAB`` cells of the
-    column's right boundary begins the resize.
-    """
-
-    #: index of the column whose right edge is draggable (NODE/POD = first).
-    RESIZE_COLUMN_INDEX = 0
-    #: how close (cells) to the boundary a click must land to grab it.
-    _GRAB = 1
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self._resizing = False
-        # content-x of the column's LEFT edge captured at drag start (so the new
-        # width = mouse_content_x - left, independent of scroll during the drag).
-        self._resize_left = 0
-
-    # ── geometry helpers ────────────────────────────────────────────────────
-    def _content_x(self, event_x: int) -> int:
-        """Convert a widget-relative mouse x to table CONTENT x (adds scroll_x)."""
-        return int(event_x) + int(self.scroll_x)
-
-    def _resize_boundary_x(self) -> Optional[int]:
-        """Content-x of the resize column's RIGHT edge (None if unavailable)."""
-        try:
-            region = self._get_column_region(self.RESIZE_COLUMN_INDEX)
-        except Exception:
-            return None
-        if region.width <= 0:
-            return None
-        return region.right
-
-    def _on_resize_boundary(self, event_x: int) -> bool:
-        """True if a widget-x click lands within ``_GRAB`` of the right boundary."""
-        boundary = self._resize_boundary_x()
-        if boundary is None:
-            return False
-        return abs(self._content_x(event_x) - boundary) <= self._GRAB
-
-    # ── mouse drag (public handlers; base core handlers are _on_mouse_*) ─────
-    def on_mouse_down(self, event: events.MouseDown) -> None:
-        """Begin a resize drag only when the click is on the column boundary.
-
-        Otherwise return without stopping the event so the base DataTable still
-        gets it (cursor move / header sort dispatch happen on the base handler).
-        """
-        if not self._on_resize_boundary(event.x):
-            return  # not the boundary -> let DataTable handle normally
-        region = self._get_column_region(self.RESIZE_COLUMN_INDEX)
-        self._resize_left = region.x
-        self._resizing = True
-        try:
-            self.capture_mouse()
-        except Exception:
-            pass
-        event.stop()
-        event.prevent_default()
-
-    def on_mouse_move(self, event: events.MouseMove) -> None:
-        if not self._resizing:
-            return  # not dragging -> base handles hover/scroll as usual
-        from ..config import clamp_name_width
-        # new render-region width = mouse content-x - column left edge; subtract
-        # the cell padding the region adds on both sides to recover the content
-        # width that Config.name_width represents.
-        raw = self._content_x(event.x) - self._resize_left - 2 * self.cell_padding
-        new_width = clamp_name_width(raw)
-        self._set_name_width_live(new_width)
-        event.stop()
-        event.prevent_default()
-
-    def on_mouse_up(self, event: events.MouseUp) -> None:
-        if not self._resizing:
-            return
-        self._resizing = False
-        try:
-            self.release_mouse()
-        except Exception:
-            pass
-        # commit the final width to the app config + persist (survives relaunch)
-        app = self.app
-        if app is not None and hasattr(app, "commit_name_width"):
-            try:
-                col = self.ordered_columns[self.RESIZE_COLUMN_INDEX]
-                app.commit_name_width(int(col.width))  # type: ignore[attr-defined]
-            except Exception:
-                pass
-        event.stop()
-        event.prevent_default()
-
-    def _set_name_width_live(self, width: int) -> None:
-        """Apply ``width`` to the resize column in-place and repaint (no persist)."""
-        try:
-            col = self.ordered_columns[self.RESIZE_COLUMN_INDEX]
-        except (IndexError, AttributeError):
-            return
-        col.width = int(width)
-        col.auto_width = False
-        # mirror onto the live config so the next _render's cell-fit uses it
-        app = self.app
-        if app is not None and hasattr(app, "cfg"):
-            try:
-                app.cfg.name_width = int(width)  # type: ignore[attr-defined]
-            except Exception:
-                pass
-        try:
-            self._update_column_widths(set())
-        except Exception:
-            pass
-        self.refresh()
+# Modals live in .modals, the sidebar in .sidebar, the resizable table in
+# .table, and the header widgets in .header — re-exported above for
+# backward-compatible imports.
 
 
 # ── main app ───────────────────────────────────────────────────────────────────
@@ -1097,12 +331,9 @@ class TopApp(App):
         self.cpu_hist: deque[int] = deque(maxlen=_HISTORY)
         self.mem_hist: deque[int] = deque(maxlen=_HISTORY)
 
-        # Mirror panel/sort state onto the app for the existing toggle paths.
-        self.sort_mode = self.cfg.sort_mode
-        self.show_events = self.cfg.show_events
-        self.show_pvc = self.cfg.show_pvc
-        self.show_alerts = self.cfg.show_alerts
-        self.show_health = self.cfg.show_health
+        # Panel/sort state lives ONLY on self.cfg — the show_*/sort_mode/
+        # namespaces attributes below are properties delegating to it, so the
+        # old hand-synced mirror copies (and their drift bugs) are gone.
         # Live search term (key '/'). Config.name_filter is only an initial
         # CLI --filter seed; it is cleared before any save so ad-hoc searches
         # cannot survive a relaunch.
@@ -1129,6 +360,59 @@ class TopApp(App):
         self._fetch_gen = 0
         self._refresh_pending = False
         self._last_refresh_error = ""
+
+    # ── cfg is the single source of truth ─────────────────────────────────────
+    # These properties keep the historical attribute API (sidebar handlers,
+    # toggle actions, and tests assign app.show_events etc.) while storing the
+    # value only on self.cfg — there is no copy to fall out of sync.
+
+    @property
+    def namespaces(self) -> "list[str]":
+        return list(self.cfg.namespaces)
+
+    @namespaces.setter
+    def namespaces(self, value: "list[str]") -> None:
+        self.cfg.namespaces = [str(n) for n in (value or [])]
+
+    @property
+    def sort_mode(self) -> str:
+        return self.cfg.sort_mode
+
+    @sort_mode.setter
+    def sort_mode(self, value: str) -> None:
+        self.cfg.sort_mode = value
+
+    @property
+    def show_events(self) -> bool:
+        return self.cfg.show_events
+
+    @show_events.setter
+    def show_events(self, value: bool) -> None:
+        self.cfg.show_events = bool(value)
+
+    @property
+    def show_pvc(self) -> bool:
+        return self.cfg.show_pvc
+
+    @show_pvc.setter
+    def show_pvc(self, value: bool) -> None:
+        self.cfg.show_pvc = bool(value)
+
+    @property
+    def show_alerts(self) -> bool:
+        return self.cfg.show_alerts
+
+    @show_alerts.setter
+    def show_alerts(self, value: bool) -> None:
+        self.cfg.show_alerts = bool(value)
+
+    @property
+    def show_health(self) -> bool:
+        return self.cfg.show_health
+
+    @show_health.setter
+    def show_health(self, value: bool) -> None:
+        self.cfg.show_health = bool(value)
 
     def _all_plugins(self) -> list:
         """Every registered plugin (for mounting/visibility/render).
@@ -1935,13 +1219,12 @@ class TopApp(App):
 
     # ── config persistence ──────────────────────────────────────────────────────
     def _sync_cfg_from_app(self) -> None:
-        """Fold the app's live mirror fields back into self.cfg before saving."""
-        self.cfg.sort_mode = self.sort_mode
-        self.cfg.show_events = self.show_events
-        self.cfg.show_pvc = self.show_pvc
-        self.cfg.show_alerts = self.show_alerts
-        self.cfg.show_health = self.show_health
-        self.cfg.namespaces = list(self.namespaces)
+        """Scrub transient state from self.cfg before saving.
+
+        Panel/sort/namespace state lives directly on self.cfg (see the
+        properties above), so the only thing left to normalise is the live
+        search term, which must never persist.
+        """
         self.cfg.name_filter = ""
 
     def _persist_state(self) -> None:
@@ -1992,13 +1275,6 @@ class TopApp(App):
         if self.theme != cfg.theme:
             self.theme = cfg.theme
         self.apply_theme_chrome()
-        # mirror onto the app fields the legacy toggle/sort paths still use
-        self.sort_mode = cfg.sort_mode
-        self.show_events = cfg.show_events
-        self.show_pvc = cfg.show_pvc
-        self.show_alerts = cfg.show_alerts
-        self.show_health = cfg.show_health
-        self.namespaces = list(cfg.namespaces)
         # Mirror the adopted context onto self.context up front so the sidebar
         # CONTEXT dropdown (refreshed via _sync_sidebar_state below) reflects the
         # NEW cluster immediately. Change detection still uses prev_context, which
@@ -2149,11 +1425,6 @@ class TopApp(App):
         # live re-renders) never rewrite the user's config. Only genuine user
         # actions (panel toggles, Options apply) pass persist=True. Persisting
         # on startup once corrupted configs by overwriting the loaded cfg.
-        self.cfg.show_events = self.show_events
-        self.cfg.show_pvc = self.show_pvc
-        self.cfg.show_alerts = self.show_alerts
-        self.cfg.show_health = self.show_health
-        self.cfg.show_keys = bool(self.cfg.show_keys)
         # Panel toggles touch many mounted widgets. A context switch can re-enter
         # this via set_context -> _adopt_config before the dashboard has mounted
         # (or during a transient teardown), where the panel widgets are momentarily
@@ -2374,9 +1645,8 @@ class TopApp(App):
         if key not in SORTABLE_KEYS:
             key = "priority"
         self.cfg.sort_key = key
-        # keep the legacy mirror coherent for any old code path
+        # keep the legacy sort_mode coherent for any old code path
         self.sort_mode = key if key in ("priority", "cpu", "mem", "name") else "priority"
-        self.cfg.sort_mode = self.sort_mode
         self.notify(f"sort: {key} {'▼' if self.cfg.sort_desc else '▲'}")
         self._persist_state()
         self._restamp_sort_header()
@@ -2490,7 +1760,6 @@ class TopApp(App):
         if ns_list == list(self.namespaces):
             return
         self.namespaces = ns_list
-        self.cfg.namespaces = ns_list
         self._bump_fetch_gen()  # drop any in-flight old-scope fetch result
         self.fetcher.namespaces = ns_list
         self._reset_trend_history()
