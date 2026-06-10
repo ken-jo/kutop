@@ -32,6 +32,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "A btop-like Kubernetes TUI dashboard for pods, nodes, CPU, "
             "memory, events, PVC usage, alerts, and health checks."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "requires: kubectl on PATH and a kubeconfig; CPU/MEM columns need "
+            "metrics-server\n"
+            "config:   ~/.config/kutop/config.yaml "
+            "(--dump-config prints the full annotated reference)\n"
+            "profiles: ~/.config/kutop/profiles/<name>.yaml\n"
+            "docs:     https://github.com/ken-jo/kutop"
+        ),
     )
     ap.add_argument(
         "namespaces", nargs="?", default=None,

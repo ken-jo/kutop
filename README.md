@@ -1,17 +1,15 @@
 # kutop
 
-[![Latest release](https://img.shields.io/github/v/release/ken-jo/kutop?label=latest%20release&include_prereleases&sort=semver&logo=github)](https://github.com/ken-jo/kutop/releases)
-[![PyPI version](https://img.shields.io/pypi/v/kutop?label=PyPI%20version&logo=pypi&logoColor=white&cacheSeconds=300)](https://pypi.org/project/kutop/)
-[![Wheel](https://img.shields.io/pypi/wheel/kutop?label=wheel&logo=python&logoColor=white)](https://pypi.org/project/kutop/)
-[![CI](https://img.shields.io/github/actions/workflow/status/ken-jo/kutop/ci.yml?branch=master&label=CI&logo=githubactions&logoColor=white)](https://github.com/ken-jo/kutop/actions/workflows/ci.yml)
-[![Release workflow](https://img.shields.io/github/actions/workflow/status/ken-jo/kutop/release.yml?label=release%20workflow&logo=githubactions&logoColor=white)](https://github.com/ken-jo/kutop/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/pypi/v/kutop?label=latest%20release&logo=pypi&logoColor=white&cacheSeconds=300)](https://github.com/ken-jo/kutop/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/ken-jo/kutop/ci.yml?branch=master&label=CI&logo=githubactions&logoColor=white&cacheSeconds=3600)](https://github.com/ken-jo/kutop/actions/workflows/ci.yml)
+[![Release workflow](https://img.shields.io/github/actions/workflow/status/ken-jo/kutop/release.yml?label=release%20workflow&logo=githubactions&logoColor=white&cacheSeconds=3600)](https://github.com/ken-jo/kutop/actions/workflows/release.yml)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue?logo=python&logoColor=white)](pyproject.toml)
 [![kubectl](https://img.shields.io/badge/kubectl-%C2%B11%20minor%20of%20cluster-326ce5?logo=kubernetes&logoColor=white)](https://kubernetes.io/releases/version-skew-policy/)
 [![Metrics Server](https://img.shields.io/badge/metrics--server-0.6.x%2B%20%7C%20K8s%201.19%2B-326ce5?logo=kubernetes&logoColor=white)](https://kubernetes-sigs.github.io/metrics-server/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Issues](https://img.shields.io/github/issues/ken-jo/kutop)](https://github.com/ken-jo/kutop/issues)
-[![Stars](https://img.shields.io/github/stars/ken-jo/kutop?style=social)](https://github.com/ken-jo/kutop/stargazers)
-[![Last commit](https://img.shields.io/github/last-commit/ken-jo/kutop)](https://github.com/ken-jo/kutop/commits/master)
+[![Issues](https://img.shields.io/github/issues/ken-jo/kutop?cacheSeconds=3600)](https://github.com/ken-jo/kutop/issues)
+[![Stars](https://img.shields.io/github/stars/ken-jo/kutop?style=social&cacheSeconds=3600)](https://github.com/ken-jo/kutop/stargazers)
+[![Last commit](https://img.shields.io/github/last-commit/ken-jo/kutop?cacheSeconds=3600)](https://github.com/ken-jo/kutop/commits/master)
 
 `kutop` is a modern, like-btop **Kubernetes TUI dashboard** for the terminal. It
 turns `kubectl` and your kubeconfig into a fast, readable view of pods, nodes,
@@ -24,6 +22,71 @@ dashboard, pod monitor, node resource view, k8s observability console, or a
 `kubetop`/`ktop` style CLI that feels closer to `btop`.
 
 ![kutop Kubernetes TUI dashboard — sidebar profile/context switchers, a fixed 5s refresh with a metrics-server freshness readout, and Summary, Trends, Alerts, custom Health, Pods, Events, and PVC panels (demo data)](docs/kutop-main-all-panels.svg)
+
+## Quick start
+
+Three checks, one install command, one run command.
+
+1. Check your tools. Each command should succeed:
+
+   ```bash
+   kubectl version --client   # kubectl is installed and on PATH
+   kubectl get nodes          # kubeconfig and auth reach your cluster
+   kubectl top nodes          # metrics-server serves CPU/MEM numbers
+   ```
+
+   If only the last one fails, keep going — kutop offers to install Metrics
+   Server for you on first run. If the others fail, see
+   [Troubleshooting](#troubleshooting).
+
+2. Install kutop:
+
+   ```bash
+   python -m pip install kutop
+   ```
+
+3. Run it:
+
+   ```bash
+   kutop                # watch the 'default' namespace
+   kutop my-namespace   # or name a namespace
+   ```
+
+**What you should see:** a header with your cluster context and a `metrics 15s`
+freshness readout, a cluster summary row, and a pod table that fills within
+about 5 seconds. If Metrics Server is missing, kutop first asks
+`Install Metrics Server via the official components manifest now? [y/n]` —
+`y` applies the official manifest to your cluster, `n` leaves the cluster
+unchanged and continues without CPU/MEM numbers.
+
+**First keys:** press `q` twice to quit, `o` for options, `b` for the sidebar,
+`/` to search pods. Full list under [Keybindings](#keybindings).
+
+Something looks wrong? Jump to [Troubleshooting](#troubleshooting).
+
+### No cluster yet?
+
+Spin up a free local cluster:
+
+```bash
+# minikube
+minikube start
+minikube addons enable metrics-server
+
+# or kind (metrics-server needs --kubelet-insecure-tls on kind)
+kind create cluster
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl -n kube-system patch deployment metrics-server --type=json \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+```
+
+Or preview kutop with no cluster at all — both commands are kubectl-free and
+render a synthetic demo frame:
+
+```bash
+kutop --self-test          # headless smoke test, prints OK and exits 0
+kutop --snapshot demo.svg  # writes one demo dashboard frame to an SVG
+```
 
 ## Highlights
 
@@ -54,7 +117,51 @@ CPU OVERALL  ▁▂▃▅▆▇█  62%  5.1/16        MEM OVERALL  ▃▄▅▆
   ● worker-9 OOMKilled (0/1)  █████████░ 95%   Deploy
 ```
 
-## Requirements
+## Install
+
+One command:
+
+```bash
+python -m pip install kutop
+```
+
+Prefer isolated tool installs? `pipx install kutop` and `uvx kutop` work too.
+
+Upgrade later with:
+
+```bash
+python -m pip install -U kutop
+```
+
+This installs the `kutop` command and `python -m kutop`. The `kubetop` command
+and `python -m kubetop` ship alongside as compatibility aliases — see the
+[FAQ](#faq) for the naming story.
+
+Homebrew (the tap is updated automatically with each release):
+
+```bash
+brew install ken-jo/kutop/kutop   # one-shot tap + install
+```
+
+A signed apt repository is planned but not published yet; use pip or Homebrew
+on Debian/Ubuntu for now.
+
+### From source (development)
+
+```bash
+# latest master
+python -m pip install "kutop @ git+https://github.com/ken-jo/kutop.git"
+
+# a specific tag
+python -m pip install "kutop @ git+https://github.com/ken-jo/kutop.git@v0.4.0"
+
+# editable install from a clone
+git clone https://github.com/ken-jo/kutop.git
+cd kutop
+python -m pip install -e ".[test,profiles]"
+```
+
+## Requirements & permissions
 
 `kutop` is a local terminal app. It does not install an in-cluster agent; it
 uses your local `kubectl` and kubeconfig exactly as `kubectl` would.
@@ -106,55 +213,9 @@ RBAC needs depend on which panels/actions you use:
   that toggle on) AND accept the confirmation popup. The toggle is not persisted
   — it resets to off on each launch.
 
-## Install
-
-```bash
-python -m pip install kutop
-python -m pip install "kutop[profiles]"   # backward-compatible; YAML support is built in
-python -m pip install "kutop[profiles] @ git+https://github.com/ken-jo/kutop.git"
-python -m pip install "kutop @ git+https://github.com/ken-jo/kutop.git@v0.2.2"
-python -m pip install -e ".[profiles]"   # local development from this directory
-```
-
-The project name, PyPI distribution, and Python package namespace are `kutop`.
-The `kubetop` command and `python -m kubetop` remain available only as
-compatibility aliases:
-
-```bash
-kutop --version
-kubetop --version
-python -m kutop --version
-python -m kubetop --version
-```
-
-The PyPI name `kubetop` belongs to a different package. Pinned deps:
-`textual==8.2.7`, `rich==15.0.0`. Python 3.9+.
-
-`pip install @ken-jo/kutop` is not valid pip syntax; use `pip install kutop`
-for PyPI releases, or the `kutop @ git+https://...` form for a GitHub branch,
-commit, or tag.
-
-Other package managers after a tagged release:
-
-```bash
-brew tap ken-jo/kutop
-brew install kutop
-
-# One-shot install without a separate tap step:
-brew install ken-jo/kutop/kutop
-
-curl -fsSL https://ken-jo.github.io/kutop/apt/kutop.gpg \
-  | sudo gpg --dearmor -o /usr/share/keyrings/kutop-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/kutop-archive-keyring.gpg] https://ken-jo.github.io/kutop/apt stable main" \
-  | sudo tee /etc/apt/sources.list.d/kutop.list
-sudo apt update
-sudo apt install kutop
-```
-
-Release setup for PyPI, Homebrew, and apt is documented in
-[`docs/release.md`](docs/release.md).
-
 ## Run
+
+Start with plain `kutop`; everything else is optional:
 
 ```bash
 kutop                               # generic view, namespace 'default'
@@ -189,15 +250,32 @@ resolution is 15s, so the header shows a fixed `metrics 15s` freshness readout
 | `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster, Profile) |
 | `b` | toggle the control sidebar |
 | `/` | search / filter pods by name |
+| `Esc` | clear the search filter |
 | `s` / `S` | cycle sort column / flip sort direction (or click a column header) |
 | `g` | group pods under their node |
-| `l` | logs for the focused pod (`kubectl logs -f`); inside the viewer `p` shows the **previous (crashed) container's** logs and `c` cycles containers |
+| `l` | logs for the focused pod (`kubectl logs -f`) |
 | `d` | describe the focused pod |
-| `t` | shell into the focused pod (`kubectl exec -it`, bash with sh fallback) — the dashboard suspends and resumes when the shell exits |
+| `t` | shell into the focused pod (`kubectl exec -it`, bash with sh fallback) — the dashboard suspends and resumes when the shell exits *(unreleased)* |
 | `x` | delete the focused pod (needs the sidebar **Allow delete** toggle on, then confirm) |
 | `e` / `v` | toggle the Events / PVC panels |
 | `a` / `h` | toggle the Alerts / Health panels (profile-driven) |
 | `R` | reload `~/.config/kutop/config.yaml` live |
+| `Tab` / `Shift+Tab` | move focus between widgets (terminal-standard, built into Textual) |
+
+Inside the full-screen viewers (logs, describe, event details):
+
+| Key | Action |
+|-----|--------|
+| `q` / `Esc` | close the viewer |
+| `p` | log viewer: show the **previous (crashed) container's** logs *(unreleased)* |
+| `c` | log viewer: cycle containers on multi-container pods *(unreleased)* |
+
+Keys marked *(unreleased)* are on `master` but not yet in a tagged release —
+they ship in the next release after 0.4.0.
+
+In `o` → Thresholds, the sliders also work without a mouse: `←`/`h` and
+`→`/`l` move the active handle, and `[`, `]`, or `Space` switch between the
+warn and crit handles.
 
 The **NODE/POD column is resizable**: drag the `│` handle on its header to widen
 or narrow it (the width persists). Click any column header to sort by it.
@@ -207,80 +285,80 @@ example, a focused pod row surfaces `l` logs, `d` describe, and `x` delete, whil
 the search bar surfaces `/`, `Enter`, and `Esc`; global shortcut summaries stay
 in the footer and native help.
 
-## Screenshots
+## Configuration
 
-`kutop` can render a headless SVG frame for README images, reviews, and visual
-QA. It uses live cluster data when reachable and falls back to a generic
-synthetic frame when not. The representative dashboard (every panel enabled:
-Summary, Trends, Alerts, custom Health, Pods, Events, PVC) is shown at the top of
-this README; the per-tab Options views are below.
+All of kutop's saved state lives in one file:
 
-Options modal views, one per tab (full width so the controls stay readable):
-
-**View**
-
-![kutop options view tab](docs/kutop-options-view.svg)
-
-**Columns**
-
-![kutop options columns tab](docs/kutop-options-columns.svg)
-
-**Panels**
-
-![kutop options panels tab](docs/kutop-options-panels.svg)
-
-**Thresholds**
-
-![kutop options thresholds tab](docs/kutop-options-thresholds.svg)
-
-**Cluster**
-
-![kutop options cluster tab](docs/kutop-options-cluster.svg)
-
-**Profile**
-
-![kutop options profile tab](docs/kutop-options-profile.svg)
-
-```bash
-kutop --snapshot /tmp/kutop.svg
-kutop --snapshot /tmp/kutop-wide.svg --detail wide
-kutop --snapshot /tmp/kutop-full.svg --detail full
-kutop --snapshot /tmp/kutop-full.svg --detail full --size 220x54
-kutop --snapshot /tmp/kutop-options.svg --snapshot-view options-panels --size 96x30
+```text
+~/.config/kutop/config.yaml
 ```
 
-The detail presets are one-shot column layouts:
+Settings are layered; later layers win:
 
-| Detail | Default size | Use |
-|--------|--------------|-----|
-| `normal` | `140x40` | Same visible columns as the interactive default |
-| `wide` | `160x44` | Prioritises namespace, readiness, phase, reason, owner, node, and key resources |
-| `full` | `220x54` | Enables every table column and the PVC panel; increase `--size` for far-right columns |
+```text
+built-in defaults -> --profile -> ~/.config/kutop/config.yaml -> CLI flags
+```
 
-`--snapshot-view` accepts `main`, `options-view`, `options-columns`,
-`options-panels`, `options-thresholds`, `options-cluster`, and
-`options-profile`.
+You rarely need to edit the file by hand. Every change you make in the running
+app — the `o` Options modal, sidebar toggles, column resizes — is written back
+to it immediately (and atomically). If you do edit it by hand, press `R` in the
+app to reload it live.
+
+To see every available key with its default and an explanation, print the
+built-in annotated reference:
+
+```bash
+kutop --dump-config
+```
+
+```yaml
+# kutop configuration skeleton — every option, with defaults.
+# Location: ~/.config/kutop/config.yaml  (edit by hand or via the
+# Options modal, key 'o', in the running app). Layering order:
+#   built-in defaults -> --profile -> this file -> CLI flags.
+profile: "generic"        # active profile name (read-only)
+view:
+  timezone: ""          # IANA tz for timestamps; "" = host local
+  theme: "textual-dark"    # app theme; choose from the hamburger menu
+# ... every other option follows, each with an explanatory comment
+```
+
+Thresholds, alert sources, and health probes can also come from a profile (see
+[Profiles](#profiles)); the panels/probes YAML shape is shown in
+[Alerts & custom panels](#alerts--custom-panels-no-port-forward).
+
+To start over, delete the file — kutop recreates it with defaults on the next
+launch:
+
+```bash
+rm ~/.config/kutop/config.yaml
+```
 
 ## Profiles
 
-A profile externalises everything that would otherwise be hardcoded. See
-[`kutop/profiles/example.yaml`](kutop/profiles/example.yaml) for a fully
-commented template:
+A profile externalises everything that would otherwise be hardcoded. Every
+field is optional. See
+[`kutop/profiles/example.yaml`](kutop/profiles/example.yaml) for the fully
+commented template; a minimal profile looks like:
 
 ```yaml
 name: my-stack
-context: ""                   # optional kube context to switch to; "" -> keep current
 namespaces: [team-a, team-b]
-timezone: ""                  # "" -> host local tz; or an IANA name
-ordering:
+ordering:                     # pin important workloads to the top
   - { prefix: ingress-, weight: 10 }
   - { prefix: api-,     weight: 20 }
 thresholds:
   cpu_warn: 75
   cpu_crit: 90
-  mem_warn: 80
-  mem_crit: 92
-# alertmanager_url: "/api/v1/namespaces/monitoring/services/<svc>:9093/proxy/api/v2/alerts"
+```
+
+To create your own, copy the template and pass its name:
+
+```bash
+mkdir -p ~/.config/kutop/profiles
+curl -fsSL https://raw.githubusercontent.com/ken-jo/kutop/master/kutop/profiles/example.yaml \
+  -o ~/.config/kutop/profiles/my-stack.yaml
+kutop --profile my-stack
 ```
 
 Profiles resolve by name from `~/.config/kutop/profiles/<name>.yaml` and the
@@ -349,6 +427,163 @@ For a new code-backed custom panel, use the existing plugin seam:
 4. Keep plugin fetch/render best-effort: a custom panel must never crash the
    main Kubernetes dashboard.
 
+## Troubleshooting
+
+**CPU and MEM columns show `-` (or 0).**
+Cause: Metrics Server is missing or still warming up.
+Fix: run `kubectl top nodes` yourself — if it errors, install Metrics Server
+(`kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml`,
+or let kutop's startup prompt do it). If it was just installed, wait about a
+minute and press `r`.
+
+**`kubectl: command not found` or `current-context is not set`.**
+Cause: kubectl is not installed / no kubeconfig context is active.
+Fix: install kubectl and verify `kubectl get nodes` works. Point kutop at a
+specific cluster with `KUBECONFIG=...` or `kutop --context <name>`.
+
+**An error toast appears and the dashboard stops updating.**
+Cause: the cluster became unreachable. kutop intentionally keeps the last
+good frame instead of blanking the screen, and shows each distinct error once.
+Fix: check connectivity with `kubectl get nodes`; kutop recovers on the next
+5s refresh once the cluster is reachable again.
+
+**A `refresh degraded: ...` warning toast.**
+Cause: part of the fetch failed — typically one namespace is Forbidden for
+your user. Everything that could be fetched is still shown.
+Fix: deselect that namespace, or get RBAC `get/list` on pods, nodes, events,
+and PVCs in it (see
+[Requirements & permissions](#requirements--permissions)).
+
+**The PVC panel's USED column shows `-`.**
+Cause: PVC usage comes from the kubelet stats summary via the API-server
+proxy; a node whose proxy call is denied (or fails) is skipped.
+Fix: grant permission for `kubectl get --raw
+/api/v1/nodes/<node>/proxy/stats/summary` paths, or ignore — capacity still
+renders.
+
+**The Alerts panel says `set probes.alertmanager_url to enable`, or Health
+says `no probes configured`.**
+Cause: these panels are opt-in and have nothing to read yet.
+Fix: set `probes.alertmanager_url` / `probes.health_probes` in a profile or
+`~/.config/kutop/config.yaml` — see
+[Alerts & custom panels](#alerts--custom-panels-no-port-forward).
+
+**Pressing `x` says `delete disabled`.**
+Cause: by design. Pod deletion is gated behind the sidebar **Allow delete**
+toggle, which always starts off and is never persisted.
+Fix: press `b`, tick **Allow delete (x)** (or launch with
+`--allow-destructive`), then confirm the popup.
+
+**Summary tiles disappear on a narrow terminal.**
+Cause: intentional — whole tiles are dropped to fit rather than wrapping and
+corrupting the layout.
+Fix: widen the terminal window.
+
+**Start fresh.**
+Saved preferences live in `~/.config/kutop/config.yaml`; delete it and kutop
+recreates the defaults on the next launch.
+
+## FAQ
+
+**kutop or kubetop — which is it?**
+The project, PyPI distribution, and Python package are `kutop`. The `kubetop`
+command and `python -m kubetop` ship with kutop purely as compatibility
+aliases. The PyPI name `kubetop` belongs to a different, unrelated package —
+`pip install kubetop` will not give you this tool. Two related install notes:
+`pip install @ken-jo/kutop` is not valid pip syntax (use `pip install kutop`,
+or the `kutop @ git+https://...` form for a branch, commit, or tag), and
+`pip install "kutop[profiles]"` is accepted for backward compatibility but the
+extra is empty — YAML profile support is built in.
+
+**How is kutop different from k9s / ktop / btop?**
+kutop is a read-mostly, btop-style *dashboard*: one dense screen of pods,
+nodes, CPU/MEM trends, events, PVC usage, and alerts, refreshed on a fixed 5s
+cadence through your local `kubectl` with no in-cluster agent. Tools like k9s
+are full cluster *management* TUIs with resource navigation and editing. kutop
+deliberately keeps mutations to a single confirm-gated pod delete and
+optimizes the watch-the-cluster experience instead. btop inspires the look but
+knows nothing about Kubernetes.
+
+**Is it safe to point at a production cluster?**
+kutop is read-mostly. Normal operation only reads (`kubectl get/top`, plus
+logs/describe on demand). The one destructive action — pod delete — is
+double-gated: the sidebar **Allow delete** toggle must be on (it resets to off
+every launch and is never persisted) and a confirmation popup must be
+accepted. The only other write kutop ever offers is the optional Metrics
+Server install at startup, which always asks first and is skipped entirely
+with `--no-metrics-bootstrap`.
+
+**Does it work over SSH or in tmux?**
+Yes. kutop is a plain terminal app built on Textual; it runs wherever your
+terminal and `kubectl` do, including over SSH and inside tmux/screen. On
+narrow terminals the summary drops tiles to fit instead of wrapping.
+
+**Why did the "Latest release" badge once show "Unable to select next GitHub
+token from pool"?**
+That text is a shields.io server-side error, not a kutop problem: badges on
+the `img.shields.io/github/*` routes are rendered using shields.io's shared
+pool of GitHub API tokens, and when that pool is exhausted shields serves the
+error message as the badge image (GitHub's camo proxy can then cache the
+broken image for hours). This repo's version badge is now backed by PyPI
+(`img.shields.io/pypi/v`), which never touches the GitHub token pool, so it
+is immune; the release workflow publishes the same version to PyPI as the
+GitHub tag, and the remaining `github/*` badges ask for hourly caching
+(`cacheSeconds=3600`) to reduce pool pressure.
+
+## Screenshots
+
+`kutop` can render a headless SVG frame for README images, reviews, and visual
+QA. It uses live cluster data when reachable and falls back to a generic
+synthetic frame when not. The representative dashboard (every panel enabled:
+Summary, Trends, Alerts, custom Health, Pods, Events, PVC) is shown at the top of
+this README; the per-tab Options views are below.
+
+Options modal views, one per tab (full width so the controls stay readable):
+
+**View**
+
+![kutop options view tab](docs/kutop-options-view.svg)
+
+**Columns**
+
+![kutop options columns tab](docs/kutop-options-columns.svg)
+
+**Panels**
+
+![kutop options panels tab](docs/kutop-options-panels.svg)
+
+**Thresholds**
+
+![kutop options thresholds tab](docs/kutop-options-thresholds.svg)
+
+**Cluster**
+
+![kutop options cluster tab](docs/kutop-options-cluster.svg)
+
+**Profile**
+
+![kutop options profile tab](docs/kutop-options-profile.svg)
+
+```bash
+kutop --snapshot /tmp/kutop.svg
+kutop --snapshot /tmp/kutop-wide.svg --detail wide
+kutop --snapshot /tmp/kutop-full.svg --detail full
+kutop --snapshot /tmp/kutop-full.svg --detail full --size 220x54
+kutop --snapshot /tmp/kutop-options.svg --snapshot-view options-panels --size 96x30
+```
+
+The detail presets are one-shot column layouts:
+
+| Detail | Default size | Use |
+|--------|--------------|-----|
+| `normal` | `140x40` | Same visible columns as the interactive default |
+| `wide` | `160x44` | Prioritises namespace, readiness, phase, reason, owner, node, and key resources |
+| `full` | `220x54` | Enables every table column and the PVC panel; increase `--size` for far-right columns |
+
+`--snapshot-view` accepts `main`, `options-view`, `options-columns`,
+`options-panels`, `options-thresholds`, `options-cluster`, and
+`options-profile`.
+
 ## How it works
 
 * kubectl calls run in a background thread worker; the UI thread never blocks.
@@ -363,6 +598,22 @@ For a new code-backed custom panel, use the existing plugin seam:
   expose it — a node whose summary call fails is skipped, others still report.
 * OOMKilled / CrashLoopBackOff / Pending pods are highlighted distinctly; node
   rows lead with the nodegroup (EKS/GKE/AKS label), then the short instance name.
+
+## Contributing & development
+
+```bash
+git clone https://github.com/ken-jo/kutop.git
+cd kutop
+python -m pip install -e ".[test,profiles]"
+python -m pytest -q     # full suite, no cluster needed
+ruff check              # lint (CI enforces it)
+kutop --self-test       # headless smoke test
+```
+
+Architecture notes for contributors (and AI assistants) live in
+[`llms.txt`](llms.txt) and [`CLAUDE.md`](CLAUDE.md). Release-pipeline setup
+(PyPI trusted publishing, the Homebrew tap, apt signing) is maintainer
+documentation: [`docs/release.md`](docs/release.md).
 
 ## License
 
