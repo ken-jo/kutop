@@ -1628,10 +1628,8 @@ def test_first_fetch_failure_shows_persistent_guidance_until_snapshot() -> None:
     asyncio.run(drive())
 
 
-def test_header_hamburger_opens_kutop_menu() -> None:
+def test_header_hamburger_reveals_hidden_sidebar() -> None:
     from kutop.render.app import ThemeHeaderIcon, TopApp
-
-    from kutop.render.widgets import ThemeMenuModal
 
     async def drive() -> None:
         app = TopApp(
@@ -1642,20 +1640,22 @@ def test_header_hamburger_opens_kutop_menu() -> None:
         )
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
+            sidebar = app.query_one("#sidebar")
+            app.action_toggle_sidebar()
+            assert sidebar.has_class("-hidden")
+
             await pilot.click(ThemeHeaderIcon)
             await pilot.pause()
 
-            assert isinstance(app.screen, ThemeMenuModal)
+            assert not sidebar.has_class("-hidden")
 
             await pilot.exit(None)
 
     asyncio.run(drive())
 
 
-def test_theme_menu_has_native_actions_and_no_theme_rows(monkeypatch) -> None:
-    from kutop.render.app import TopApp
-
-    monkeypatch.setattr("kutop.render.app.save_config", lambda cfg, path=None, **kw: "/tmp/kutop-config.yaml")
+def test_header_hamburger_focuses_menu_when_sidebar_visible() -> None:
+    from kutop.render.app import ThemeHeaderIcon, TopApp
 
     async def drive() -> None:
         app = TopApp(
@@ -1666,26 +1666,23 @@ def test_theme_menu_has_native_actions_and_no_theme_rows(monkeypatch) -> None:
         )
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            app.action_open_theme_menu()
+            sidebar = app.query_one("#sidebar")
+            assert not sidebar.has_class("-hidden")
+
+            await pilot.click(ThemeHeaderIcon)
             await pilot.pause()
 
-            from textual.widgets import OptionList
-            menu = app.screen.query_one("#theme_menu_list", OptionList)
-            option_ids = [opt.id for opt in menu.options]
-            assert "action::keys" in option_ids
-            assert "action::screenshot" in option_ids
-            assert "action::quit" in option_ids
-            assert "action::options" in option_ids
-            assert not any(str(oid).startswith("theme::") for oid in option_ids)
+            assert not sidebar.has_class("-hidden")
+            assert app.focused is not None
+            assert app.focused.id == "side_menu_options"
 
             await pilot.exit(None)
 
     asyncio.run(drive())
 
 
-def test_theme_menu_dismisses_on_outside_click() -> None:
+def test_sidebar_menu_lists_native_actions() -> None:
     from kutop.render.app import TopApp
-    from kutop.render.widgets import ThemeMenuModal
 
     async def drive() -> None:
         app = TopApp(
@@ -1696,15 +1693,87 @@ def test_theme_menu_dismisses_on_outside_click() -> None:
         )
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
-            app.action_open_theme_menu()
+
+            from textual.widgets import Button
+            menu_ids = [
+                btn.id for btn in app.query_one("#sidebar").query(Button)
+                if btn.has_class("side_menu_btn")
+            ]
+            assert menu_ids == [
+                "side_menu_options",
+                "side_menu_keys",
+                "side_menu_screenshot",
+                "side_menu_quit",
+            ]
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_sidebar_menu_buttons_fire_app_actions(monkeypatch) -> None:
+    from kutop.render.app import TopApp
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        calls: list[str] = []
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "action_open_options",
+                                lambda: calls.append("options"))
+            monkeypatch.setattr(app, "action_quit", lambda: calls.append("quit"))
+            monkeypatch.setattr(app, "action_quit_hint",
+                                lambda: calls.append("quit_hint"))
+
+            async def fake_run_action(action, default_namespace=None):
+                calls.append(str(action))
+                return True
+
+            monkeypatch.setattr(app, "run_action", fake_run_action)
+
+            from textual.widgets import Button
+            for bid in ("side_menu_options", "side_menu_keys",
+                        "side_menu_screenshot", "side_menu_quit"):
+                app.query_one(f"#{bid}", Button).press()
+                await pilot.pause()
+
+            # the menu Quit is an explicit selection: it must take the direct
+            # quit path, never the two-step quit_hint flow
+            assert calls == ["options", "app.show_help_panel",
+                             "app.screenshot", "quit"]
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_sidebar_escape_returns_focus_to_main_table() -> None:
+    from kutop.render.app import TopApp
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.query_one("#side_menu_options").focus()
+            await pilot.pause()
+            assert app.focused is not None
+            assert app.focused.id == "side_menu_options"
+
+            await pilot.press("escape")
             await pilot.pause()
 
-            assert isinstance(app.screen, ThemeMenuModal)
-
-            await pilot.click(offset=(70, 20))
-            await pilot.pause()
-
-            assert not isinstance(app.screen, ThemeMenuModal)
+            assert app.focused is not None
+            assert app.focused.id == "main_table"
 
             await pilot.exit(None)
 

@@ -17,7 +17,7 @@ from ._compat import HeaderClock, HeaderClockSpace, HeaderTitle
 __all__ = ["ThemeHeaderIcon", "MetricsIndicator", "ThemeHeader"]
 
 class ThemeHeaderIcon(Widget):
-    """Header icon that opens kutop's menu instead of Textual's palette."""
+    """Header icon that opens the sidebar menu instead of Textual's palette."""
 
     DEFAULT_CSS = """
     ThemeHeaderIcon {
@@ -39,7 +39,7 @@ class ThemeHeaderIcon(Widget):
 
     async def on_click(self, event: events.Click) -> None:
         event.stop()
-        self.app.action_open_theme_menu()  # type: ignore[attr-defined]
+        self.app.action_open_menu()  # type: ignore[attr-defined]
 
     def render(self) -> str:
         return str(self.icon)
@@ -68,7 +68,7 @@ class MetricsIndicator(Static):
 
 
 class ThemeHeader(Header):
-    """Header whose hamburger icon opens kutop's theme menu."""
+    """Header whose hamburger icon opens the sidebar's MENU section."""
 
     def compose(self) -> ComposeResult:
         yield ThemeHeaderIcon().data_bind(Header.icon)
@@ -83,4 +83,4 @@ class ThemeHeader(Header):
         )
 
     def _on_click(self) -> None:
-        self.app.action_open_theme_menu()  # type: ignore[attr-defined]
+        self.app.action_open_menu()  # type: ignore[attr-defined]

@@ -61,7 +61,6 @@ from .table import ResizableDataTable
 from .widgets import (
     _severity_style,
     OptionsModal,
-    ThemeMenuModal,
     SearchBar,
     SummaryBar,
     TrendGraph,
@@ -1472,8 +1471,17 @@ class TopApp(App):
         except Exception:
             pass
 
-    def action_open_theme_menu(self) -> None:
-        self.push_screen(ThemeMenuModal())
+    def action_open_menu(self) -> None:
+        """Hamburger entry point: the sidebar IS the menu (issue #2 unification).
+
+        Hidden sidebar -> reveal it; visible sidebar -> land focus on its first
+        MENU control, so the click always reaches the unified command surface.
+        """
+        sb = self.query_one("#sidebar", SidebarPanel)
+        if sb.has_class("-hidden"):
+            self.action_toggle_sidebar()
+        else:
+            sb.focus_menu()
 
     def action_open_options(self) -> None:
         self._sync_cfg_from_app()
