@@ -54,10 +54,10 @@ Three checks, one install command, one run command.
 
 **What you should see:** a header with your cluster context and a `metrics 15s`
 freshness readout, a cluster summary row, and a pod table that fills within
-about 5 seconds. If Metrics Server is missing, kutop first asks
-`Install Metrics Server via the official components manifest now? [y/n]` —
-`y` applies the official manifest to your cluster, `n` leaves the cluster
-unchanged and continues without CPU/MEM numbers.
+about 5 seconds. Before the TUI appears, kutop prints a one-line stderr notice
+while it probes for Metrics Server. If Metrics Server is missing, kutop asks
+to install it, naming the kubectl context it would modify and defaulting to No
+— only an explicit `y` applies anything to your cluster.
 
 **First keys:** press `q` twice to quit, `o` for options, `b` for the sidebar,
 `/` to search pods. Full list under [Keybindings](#keybindings).
@@ -105,8 +105,8 @@ kutop --snapshot demo.svg  # writes one demo dashboard frame to an SVG
   sidebar for fast cluster triage.
 * Profile-driven thresholds, pod ordering, timezone, alert sources, and health
   probes so the core stays generic.
-* Confirm-gated pod deletion via an in-app **Allow delete** toggle — no global
-  launch flag required.
+* Confirm-gated pod deletion and workload rollout-restart via an in-app
+  **Allow delete** toggle — no global launch flag required.
 * Headless SVG screenshots for README assets, release notes, and visual QA.
 
 ```
@@ -174,27 +174,45 @@ uses your local `kubectl` and kubeconfig exactly as `kubectl` would.
 | kubeconfig | current context from `~/.kube/config`, `KUBECONFIG`, or `--context` | cluster auth and target selection |
 | Metrics Server | 0.6.x+ on Kubernetes 1.19+ recommended | `kubectl top` CPU/MEM metrics |
 
-Live dashboard mode requires `kubectl`. `kutop --self-test` and
-`kutop --dump-config` are cluster-free and do not require `kubectl`.
+Live dashboard mode requires `kubectl` on PATH. If `kubectl` is missing, kutop
+exits immediately with code 2 and prints step-by-step guidance (install
+kubectl, set KUBECONFIG, verify with `kubectl get nodes`). `KUBECONFIG` is
+honored exactly as `kubectl` honors it. `kutop --self-test`,
+`kutop --snapshot`, and `kutop --dump-config` are kubectl-free and work
+without a cluster.
 
 CPU and memory values use `kubectl top nodes` and
 `kubectl top pods --containers`, then sum container rows so multi-container pods
 show pod-level usage. If container-level `top` is unavailable, `kutop` falls
 back to pod-level `kubectl top pods`.
 
-On live startup, `kutop` checks `kubectl top nodes` plus the
-`metrics.k8s.io` discovery endpoint. If Metrics Server appears absent and the
-terminal is interactive, `kutop` asks before changing the cluster. Pressing `y`
-runs the official components manifest:
+On live startup, kutop prints to stderr:
+
+```
+[kutop] checking metrics-server (up to ~12s; skip with --no-metrics-bootstrap)…
+```
+
+then checks `kubectl top nodes` plus the `metrics.k8s.io` discovery endpoint.
+If Metrics Server appears absent and the terminal is interactive, kutop asks
+before changing the cluster. The prompt names the kubectl context it would
+modify and defaults to No:
+
+```
+[kutop] Install Metrics Server into context 'my-cluster' via the official
+components manifest now? [y/N]
+```
+
+An empty answer or anything other than `y`/`Y` leaves the cluster unchanged.
+Pressing `y` runs the official components manifest:
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 ```
 
-Pressing `N` leaves the cluster unchanged and prints both the components
+Answering `N` leaves the cluster unchanged and prints both the components
 manifest path and the official Helm route for review. Use
 `--no-metrics-bootstrap` or `KUTOP_NO_METRICS_BOOTSTRAP=1` to skip this startup
-prompt in scripted runs.
+check and prompt entirely.
 
 PVC storage usage is fetched through the Kubernetes API-server proxy with
 `kubectl get --raw /api/v1/nodes/<node>/proxy/stats/summary`; this reuses the
@@ -207,11 +225,12 @@ RBAC needs depend on which panels/actions you use:
 * CPU/MEM metrics: access to the Metrics API used by `kubectl top`.
 * PVC usage and profile proxy URLs: permission for `get --raw` API-server proxy
   paths.
-* Logs/describe/delete: the corresponding pod `logs`, `get`, or `delete`
-  permissions. Delete stays disabled until you turn on the **Allow delete**
-  toggle in the sidebar (or launch with `--allow-destructive`, which just seeds
-  that toggle on) AND accept the confirmation popup. The toggle is not persisted
-  — it resets to off on each launch.
+* Logs/describe/delete/restart: the corresponding pod `logs`, `get`, `delete`,
+  or `kubectl rollout restart` permissions. Both `x` (delete) and `X` (rollout
+  restart) stay disabled until you turn on the **Allow delete** toggle in the
+  sidebar (or launch with `--allow-destructive`, which just seeds that toggle
+  on) AND accept the confirmation popup. The toggle is not persisted — it
+  resets to off on each launch.
 
 ## Run
 
@@ -225,7 +244,8 @@ kutop --profile example             # load a profile (ordering / tz / thresholds
 python -m kutop demo-ns             # module form
 python -m kubetop demo-ns           # legacy module alias
 kutop --context demo-context demo-ns  # pick a kubeconfig context
-kutop --allow-destructive           # start with the 'Allow delete' toggle on (still confirm-gated)
+kutop --sort cpu                    # initial sort key: priority/name/cpu/mem/cpu_pct/mem_pct/restarts/phase/node/namespace/age/storage/owner (unknown values exit 2)
+kutop --allow-destructive           # start with the 'Allow delete' toggle on — enables both x delete and X restart (still confirm-gated)
 kutop --no-metrics-bootstrap        # skip startup Metrics Server prompt
 kutop --dump-config                 # print the full annotated config skeleton
 kutop --self-test                   # headless smoke test (no cluster), exits 0
@@ -236,10 +256,12 @@ kutop --snapshot out.svg --detail full  # wider diagnostic capture
 The positional `namespaces` only seeds the first run; your in-app choices are
 saved to `~/.config/kutop/config.yaml` and win on the next launch. The refresh
 cadence is fixed at 5s and is no longer configurable — a legacy second
-positional (`kutop demo-ns 3`) is still accepted but ignored, with a one-line
-notice. CPU/MEM metrics come from metrics-server, whose default scrape
-resolution is 15s, so the header shows a fixed `metrics 15s` freshness readout
-(polling faster than that would just re-show identical values).
+positional (`kutop demo-ns 3`) is still accepted but ignored. kutop reminds
+you both on stderr and via a one-time in-app toast after launch that the
+interval argument is deprecated and the refresh is fixed at 5s. CPU/MEM
+metrics come from metrics-server, whose default scrape resolution is 15s, so
+the header shows a fixed `metrics 15s` freshness readout (polling faster than
+that would just re-show identical values).
 
 ## Keybindings
 
@@ -248,7 +270,7 @@ resolution is 15s, so the header shows a fixed `metrics 15s` freshness readout
 | `q` `q` | quit (first press shows a confirmation toast) |
 | `r` | refresh now |
 | `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster, Profile) |
-| `b` | toggle the control sidebar |
+| `b` | toggle the control sidebar; the header ☰ button also reveals the sidebar or, if already visible, jumps focus to the sidebar MENU section (Options / Keys / Screenshot / Quit — menu Quit exits immediately, unlike the two-press `q` flow) |
 | `/` | search / filter pods by name |
 | `Esc` | clear the search filter |
 | `s` / `S` | cycle sort column / flip sort direction (or click a column header) |
@@ -257,6 +279,8 @@ resolution is 15s, so the header shows a fixed `metrics 15s` freshness readout
 | `d` | describe the focused pod |
 | `t` | shell into the focused pod (`kubectl exec -it`, bash with sh fallback) — the dashboard suspends and resumes when the shell exits *(unreleased)* |
 | `x` | delete the focused pod (needs the sidebar **Allow delete** toggle on, then confirm) |
+| `X` | restart the focused pod's workload via `kubectl rollout restart` (same **Allow delete** gate, then a confirm showing context / namespace / pod / target; the Deployment is derived from the ReplicaSet name) |
+| `Esc` (in sidebar) | return focus to the pod table |
 | `e` / `v` | toggle the Events / PVC panels |
 | `a` / `h` | toggle the Alerts / Health panels (profile-driven) |
 | `R` | reload `~/.config/kutop/config.yaml` live |
@@ -319,13 +343,27 @@ kutop --dump-config
 profile: "generic"        # active profile name (read-only)
 view:
   timezone: ""          # IANA tz for timestamps; "" = host local
-  theme: "textual-dark"    # app theme; choose from the hamburger menu
+  theme: "textual-dark"    # app theme; choose from the sidebar MENU (☰)
 # ... every other option follows, each with an explanatory comment
 ```
 
 Thresholds, alert sources, and health probes can also come from a profile (see
 [Profiles](#profiles)); the panels/probes YAML shape is shown in
 [Alerts & custom panels](#alerts--custom-panels-no-port-forward).
+
+**If your config file is broken:** if `~/.config/kutop/config.yaml` cannot be
+parsed, kutop launches with defaults, shows a warning toast, and saves a copy
+of the broken file to `config.yaml.invalid` so your hand edits are never lost.
+Fix the file (or restore from the `.invalid` backup) and press `R` in the app
+to hot-reload it.
+
+**Unknown theme:** if `--theme` names a theme that does not exist (or the
+config file contains a stale theme name), kutop still launches with the default
+theme and shows a warning toast instead of failing silently.
+
+**`--sort` and `--summary-style` validation:** passing an unknown value exits
+immediately with code 2 and lists the valid choices — the old silent fallback
+to defaults is gone.
 
 To start over, delete the file — kutop recreates it with defaults on the next
 launch:
@@ -429,6 +467,22 @@ For a new code-backed custom panel, use the existing plugin seam:
 
 ## Troubleshooting
 
+**kutop exits immediately with a message about kubectl not found (exit code 2).**
+Cause: `kubectl` is not on PATH. kutop requires a local kubectl for all live
+cluster reads and cannot start without one.
+Fix: install kubectl (`https://kubernetes.io/docs/tasks/tools/`), ensure it is
+on PATH, point it at your cluster (set `KUBECONFIG` or use `~/.kube/config`),
+then verify with `kubectl get nodes`. Note: `--self-test`, `--snapshot`, and
+`--dump-config` work without kubectl and always exit 0 / write output.
+
+**The pod table shows rows: `cluster unreachable: … / check: kubectl get nodes / retrying every 5s...`**
+Cause: kutop launched but the first cluster snapshot failed — bad kubeconfig,
+VPN down, or expired credentials. These rows replace the bare "Loading" row so
+you get an actionable hint right away.
+Fix: run `kubectl get nodes` from the same shell to diagnose. kutop retries
+every 5s and the full dashboard appears automatically once the cluster is
+reachable — no restart needed.
+
 **CPU and MEM columns show `-` (or 0).**
 Cause: Metrics Server is missing or still warming up.
 Fix: run `kubectl top nodes` yourself — if it errors, install Metrics Server
@@ -468,11 +522,13 @@ Fix: set `probes.alertmanager_url` / `probes.health_probes` in a profile or
 `~/.config/kutop/config.yaml` — see
 [Alerts & custom panels](#alerts--custom-panels-no-port-forward).
 
-**Pressing `x` says `delete disabled`.**
-Cause: by design. Pod deletion is gated behind the sidebar **Allow delete**
-toggle, which always starts off and is never persisted.
-Fix: press `b`, tick **Allow delete (x)** (or launch with
-`--allow-destructive`), then confirm the popup.
+**Pressing `x` says `delete disabled`, or `X` says `restart disabled`.**
+Cause: by design. Pod deletion and workload rollout-restart are both gated
+behind the sidebar **Allow delete** toggle, which always starts off and is
+never persisted.
+Fix: press `b`, tick **Allow delete** (or launch with `--allow-destructive`),
+then confirm the popup. The restart confirm (`X`) shows the exact workload
+target (`deployment/<name>`, `statefulset/<name>`, etc.) before anything runs.
 
 **Summary tiles disappear on a narrow terminal.**
 Cause: intentional — whole tiles are dropped to fit rather than wrapping and
@@ -500,18 +556,20 @@ kutop is a read-mostly, btop-style *dashboard*: one dense screen of pods,
 nodes, CPU/MEM trends, events, PVC usage, and alerts, refreshed on a fixed 5s
 cadence through your local `kubectl` with no in-cluster agent. Tools like k9s
 are full cluster *management* TUIs with resource navigation and editing. kutop
-deliberately keeps mutations to a single confirm-gated pod delete and
-optimizes the watch-the-cluster experience instead. btop inspires the look but
-knows nothing about Kubernetes.
+deliberately keeps mutations to confirm-gated pod delete (`x`) and workload
+rollout-restart (`X`) and optimizes the watch-the-cluster experience instead.
+btop inspires the look but knows nothing about Kubernetes.
 
 **Is it safe to point at a production cluster?**
 kutop is read-mostly. Normal operation only reads (`kubectl get/top`, plus
-logs/describe on demand). The one destructive action — pod delete — is
-double-gated: the sidebar **Allow delete** toggle must be on (it resets to off
-every launch and is never persisted) and a confirmation popup must be
-accepted. The only other write kutop ever offers is the optional Metrics
-Server install at startup, which always asks first and is skipped entirely
-with `--no-metrics-bootstrap`.
+logs/describe on demand). The two destructive actions — pod delete (`x`) and
+workload rollout-restart (`X`) — are double-gated: the sidebar **Allow delete**
+toggle must be on (it resets to off every launch and is never persisted) and a
+confirmation popup must be accepted; the restart confirm spells out the cluster
+context, namespace, pod, and the exact workload target before anything runs.
+The only other write kutop ever offers is the optional Metrics Server install
+at startup, which always asks first and is skipped entirely with
+`--no-metrics-bootstrap`.
 
 **Does it work over SSH or in tmux?**
 Yes. kutop is a plain terminal app built on Textual; it runs wherever your
