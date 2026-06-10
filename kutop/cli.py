@@ -285,7 +285,10 @@ def _recall_startup_profile(args, profile, cfg, base_over, cli_over):
 def main(argv: Optional[list[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
 
-    if args.interval is not None:
+    # The stderr note is covered by the fullscreen TUI almost immediately, so
+    # the fact that it fired also travels to TopApp for an in-app toast.
+    interval_deprecated = args.interval is not None
+    if interval_deprecated:
         sys.stderr.write(
             "note: the refresh interval is now fixed at 5s; the positional "
             "interval argument is ignored.\n"
@@ -332,6 +335,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         context=cfg.context or None,
         allow_destructive=args.allow_destructive,
         log_tail=args.log_tail,
+        interval_deprecated=interval_deprecated,
         # --self-test / --snapshot must stay kubectl-free for discovery: skip
         # live namespace discovery (the snapshot still fetches its one frame).
         discover_namespaces=not (args.self_test or args.snapshot),

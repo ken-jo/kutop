@@ -277,6 +277,7 @@ class TopApp(App):
         context: Optional[str] = None,
         allow_destructive: bool = False,
         log_tail: int = 150,
+        interval_deprecated: bool = False,
         discover_namespaces: bool = True,
         auto_refresh: bool = True,
         force_color: bool = False,
@@ -322,6 +323,9 @@ class TopApp(App):
         self._resolved_context = ""
         self.allow_destructive = allow_destructive
         self.log_tail = log_tail
+        # CLI saw the deprecated positional interval: its stderr note is hidden
+        # by the fullscreen TUI, so surface it once as a toast after mount.
+        self._interval_deprecated = interval_deprecated
         self.tz = _resolve_tz(self.cfg.timezone)
         self.render_ctx = RenderCtx(self)
         self.column_registry = build_column_registry()
@@ -620,6 +624,14 @@ class TopApp(App):
         if self._discover_namespaces:
             self.run_worker(
                 self._discover_ns_worker, thread=True, exclusive=False, group="ns"
+            )
+
+        if self._interval_deprecated:
+            self._interval_deprecated = False
+            self.notify(
+                "the positional interval argument is deprecated; refresh is fixed at 5s",
+                severity="warning",
+                timeout=6,
             )
 
     def _build_main_columns(self, mt: DataTable) -> None:
