@@ -38,6 +38,17 @@ from typing import Any, Callable, Optional
 
 import yaml
 
+__all__ = [
+    "Profile", "HealthProbe", "Config", "ColumnSpec",
+    "load_profile", "list_profiles", "load_config", "save_config",
+    "dump_config_yaml", "build_column_registry", "default_visible_columns",
+    "apply_detail_preset", "snapshot_detail_size", "clamp_name_width",
+    "CONFIG_DIR", "CONFIG_PATH", "REFRESH_INTERVAL_SECS",
+    "METRICS_RESOLUTION_SECS", "SNAPSHOT_DETAIL_LEVELS", "SORTABLE_KEYS",
+    "SORT_KEY_TO_COLUMN", "COLUMN_TO_SORT_KEY",
+    "NAME_WIDTH_MIN", "NAME_WIDTH_MAX", "NAME_WIDTH_DEFAULT",
+]
+
 _BUILTIN_PROFILE_DIR = os.path.join(os.path.dirname(__file__), "profiles")
 _USER_PROFILE_DIR = os.path.expanduser("~/.config/kutop/profiles")
 
@@ -114,7 +125,10 @@ def _profile_path(name_or_path: str) -> Optional[str]:
 def load_profile(name_or_path: Optional[str]) -> Profile:
     """Load a profile by name (user then built-in dir) or explicit path.
 
-    Returns the generic default Profile when name_or_path is falsy or unresolved.
+    Returns the generic default Profile when name_or_path is falsy or
+    unresolved. Raises ``FileNotFoundError`` for an unknown name and
+    ``ValueError`` (with the offending path) for a malformed file, so the CLI
+    can print a clean one-line error instead of a traceback.
     """
     if not name_or_path:
         return Profile()
@@ -122,13 +136,21 @@ def load_profile(name_or_path: Optional[str]) -> Profile:
     if not path:
         raise FileNotFoundError(f"profile not found: {name_or_path}")
     with open(path, encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
+        try:
+            raw = yaml.safe_load(fh) or {}
+        except yaml.YAMLError as exc:
+            raise ValueError(f"invalid profile YAML {path}: {exc}")
+    if not isinstance(raw, dict):
+        raise ValueError(f"invalid profile {path}: top level must be a mapping")
 
-    ordering = [(o["prefix"], int(o["weight"])) for o in raw.get("ordering", [])]
-    probes = [
-        HealthProbe(name=p["name"], url=p["url"], fields=p.get("fields", {}))
-        for p in raw.get("health_probes", [])
-    ]
+    try:
+        ordering = [(o["prefix"], int(o["weight"])) for o in raw.get("ordering", [])]
+        probes = [
+            HealthProbe(name=p["name"], url=p["url"], fields=p.get("fields", {}))
+            for p in raw.get("health_probes", [])
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"invalid profile {path}: {exc}")
     th = raw.get("thresholds", {})
     return Profile(
         name=raw.get("name", os.path.splitext(os.path.basename(path))[0]),
@@ -910,28 +932,64 @@ def _drop_transient_filter_state(layer: dict) -> dict:
     return out
 
 
-def _strip_profile_owned(layer: dict) -> dict:
-    """Drop profile-contributed keys from a user-file layer.
+# ── the profile-owned field contract ─────────────────────────────────────────
+# While a profile is active it OWNS a set of Config fields: _profile_layer()
+# emits them, _strip_profile_owned() removes them from the user-file layer so
+# the file can't shadow the profile, and _config_for_persist() resets them so
+# one context's profile never leaks into the shared file. The three functions
+# below all derive from _profile_owned_sections() so the key set can never
+# drift between them. Thresholds (and the profile name) are ALWAYS owned —
+# a Profile always carries threshold values; the other fields are owned only
+# when the profile actually supplies them, mirroring _profile_layer's
+# empty-values-are-dropped rule (a profile without a timezone must not erase
+# the user's saved timezone).
+
+
+def _profile_owned_sections(profile: "Optional[Profile]") -> "dict[str, tuple]":
+    """Map config section -> keys this profile actually supplies."""
+    owned: "dict[str, tuple]" = {"thresholds": ("*",)}
+    if profile is None:
+        return owned
+    if profile.timezone:
+        owned["view"] = ("timezone",)
+    cluster = tuple(
+        key for key, has in (("namespaces", profile.namespaces),
+                             ("context", profile.context)) if has
+    )
+    if cluster:
+        owned["cluster"] = cluster
+    probes = tuple(
+        key for key, has in (("alertmanager_url", profile.alertmanager_url),
+                             ("health_probes", profile.health_probes)) if has
+    )
+    if probes:
+        owned["probes"] = probes
+    return owned
+
+
+def _strip_profile_owned(layer: dict, profile: "Optional[Profile]" = None) -> dict:
+    """Drop the keys the active profile supplies from a user-file layer.
 
     When a profile is active (``--profile`` or per-context recall) it is
-    authoritative: its namespaces / thresholds / timezone / probes must NOT be
-    shadowed by the persisted user file. The genuine per-machine UI prefs (theme,
-    sort, columns, panel visibility, name_width, the recall map/flag, …) are kept.
-    Mirrors the key set that :func:`_profile_layer` emits.
+    authoritative for the fields it carries: those must NOT be shadowed by the
+    persisted user file. Everything else — per-machine UI prefs (theme, sort,
+    columns, panels, name_width, the recall map/flag) AND any owned-able field
+    the profile does NOT supply — is kept. See the contract note above.
     """
     if not isinstance(layer, dict):
         return {}
-    out = {k: v for k, v in layer.items()
-           if k not in ("profile", "thresholds", "probes")}
-    for section, owned_keys in (("view", ("timezone",)),
-                                ("cluster", ("namespaces", "context"))):
+    out = {k: v for k, v in layer.items() if k != "profile"}
+    for section, owned_keys in _profile_owned_sections(profile).items():
+        if owned_keys == ("*",):
+            out.pop(section, None)
+            continue
         sub = out.get(section)
         if isinstance(sub, dict):
             kept = {k: v for k, v in sub.items() if k not in owned_keys}
-            if kept != sub:
-                out[section] = kept if kept else None
-                if out[section] is None:
-                    out.pop(section, None)
+            if kept:
+                out[section] = kept
+            else:
+                out.pop(section, None)
     return out
 
 
@@ -963,24 +1021,30 @@ def load_config(
     path = user_path or CONFIG_PATH
     user_layer = _drop_transient_filter_state(_read_user_file(path))
     if profile_authoritative:
-        user_layer = _strip_profile_owned(user_layer)
+        user_layer = _strip_profile_owned(user_layer, profile)
     merged = _deep_merge(merged, user_layer)
     if cli_overrides:
         merged = _deep_merge(merged, cli_overrides)
     return _config_from_dict(merged)
 
 
-def _config_for_persist(cfg: Config) -> Config:
+def _config_for_persist(cfg: Config, profile: "Optional[Profile]" = None) -> Config:
     """The view of ``cfg`` that should be written to disk.
 
-    When a profile is active, the profile-owned VALUES (namespaces, thresholds,
-    timezone, alert/health probes) come from the profile layer on the next load —
-    persisting them would shadow the profile and leak one context's profile into
-    others, so they are reset to the generic baseline. The ``profile_name`` itself
-    IS retained, so a relaunch without ``--profile`` can reload the last active
-    profile (which re-supplies those VALUES via the profile layer). Only genuine
-    per-machine UI prefs + the recall map/flag carry their own real values. A
-    generic (no-profile) session persists everything as the user's own prefs.
+    When a profile is active, the profile-owned VALUES come from the profile
+    layer on the next load — persisting them would shadow the profile and leak
+    one context's profile into others, so they are reset to the generic
+    baseline. The ``profile_name`` itself IS retained, so a relaunch without
+    ``--profile`` can reload the last active profile (which re-supplies those
+    VALUES via the profile layer).
+
+    Which fields are owned follows :func:`_profile_owned_sections`: with the
+    live ``profile`` given, only the fields it actually supplies are reset (a
+    profile without namespaces must not erase the user's saved namespaces —
+    the matching load-side rule lives in :func:`_strip_profile_owned`). Without
+    a ``profile`` (legacy callers) every owned-able field is reset, the
+    conservative pre-0.4.1 behaviour. A generic (no-profile) session persists
+    everything as the user's own prefs.
     """
     if (cfg.profile_name or "generic") == "generic":
         return cfg
@@ -988,27 +1052,51 @@ def _config_for_persist(cfg: Config) -> Config:
 
     base = Config()
     out = copy.deepcopy(cfg)
-    out.namespaces = list(base.namespaces)
-    out.context = base.context
-    out.timezone = base.timezone
+    owned = (_profile_owned_sections(profile) if profile is not None
+             else {"thresholds": ("*",), "view": ("timezone",),
+                   "cluster": ("namespaces", "context"),
+                   "probes": ("alertmanager_url", "health_probes")})
     out.cpu_warn, out.cpu_crit = base.cpu_warn, base.cpu_crit
     out.mem_warn, out.mem_crit = base.mem_warn, base.mem_crit
     out.pvc_warn, out.pvc_crit = base.pvc_warn, base.pvc_crit
-    out.alertmanager_url = ""
-    out.health_probes = []
+    if "timezone" in owned.get("view", ()):
+        out.timezone = base.timezone
+    if "namespaces" in owned.get("cluster", ()):
+        out.namespaces = list(base.namespaces)
+    if "context" in owned.get("cluster", ()):
+        out.context = base.context
+    if "alertmanager_url" in owned.get("probes", ()):
+        out.alertmanager_url = ""
+    if "health_probes" in owned.get("probes", ()):
+        out.health_probes = []
     return out
 
 
-def save_config(cfg: Config, path: Optional[str] = None) -> str:
+def save_config(cfg: Config, path: Optional[str] = None,
+                profile: "Optional[Profile]" = None) -> str:
     """Persist a Config to ``~/.config/kutop/config.yaml`` (or ``path``).
 
-    Returns the path written. Creates the directory tree as needed. Profile-owned
-    fields are not persisted while a profile is active (see _config_for_persist).
+    Returns the path written. Creates the directory tree as needed. The write
+    is atomic (temp file + ``os.replace``) so a crash mid-write can never leave
+    a truncated config that silently resets every preference on the next load.
+    Profile-owned fields are not persisted while a profile is active — pass the
+    live ``profile`` so only the fields it really supplies are reset (see
+    :func:`_config_for_persist`).
     """
     target = path or CONFIG_PATH
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "w", encoding="utf-8") as fh:
-        fh.write(dump_config_yaml(_config_for_persist(cfg)))
+    text = dump_config_yaml(_config_for_persist(cfg, profile))
+    tmp = f"{target}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, target)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
     return target
 
 
@@ -1032,12 +1120,18 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     def b(v: bool) -> str:
         return "true" if v else "false"
 
+    def q(v) -> str:
+        # JSON string literals are valid YAML and escape ':', '#', quotes and
+        # backslashes — so a regex/URL/context value can never break the parse
+        # of the whole file (which would silently reset every preference).
+        return json.dumps(str(v))
+
     lines: list = []
     lines.append("# kutop configuration skeleton — every option, with defaults.")
     lines.append("# Location: ~/.config/kutop/config.yaml  (edit by hand or via the")
     lines.append("# Options modal, key 'o', in the running app). Layering order:")
     lines.append("#   built-in defaults -> --profile -> this file -> CLI flags.")
-    lines.append(f"profile: {cfg.profile_name}        # active profile name (read-only)")
+    lines.append(f"profile: {q(cfg.profile_name)}        # active profile name (read-only)")
     lines.append("")
     lines.append("# profiles remembered per kube context (managed by the sidebar")
     lines.append("# 'Remember for this context' toggle; auto-loaded on launch when")
@@ -1056,11 +1150,10 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
         f"  # refresh interval is fixed at {cfg.interval:g}s and metrics-server "
         f"freshness at {METRICS_RESOLUTION_SECS}s (not configurable)"
     )
-    tz = cfg.timezone or '""'
-    lines.append(f"  timezone: {tz}          # IANA tz for timestamps; \"\" = host local")
+    lines.append(f"  timezone: {q(cfg.timezone)}          # IANA tz for timestamps; \"\" = host local")
     lines.append(f"  sort_key: {cfg.sort_key}      # sort column: {' | '.join(SORTABLE_KEYS)}")
     lines.append(f"  sort_desc: {b(cfg.sort_desc)}        # reverse sort direction (▼)")
-    lines.append(f"  theme: {cfg.theme}    # app theme; choose from the hamburger menu")
+    lines.append(f"  theme: {q(cfg.theme)}    # app theme; choose from the hamburger menu")
     lines.append(f"  panel_backgrounds: {b(cfg.panel_backgrounds)} # fill panel/search backgrounds with the theme surface color")
     lines.append(f"  summary_style: {cfg.summary_style}    # {' | '.join(_VALID_SUMMARY_STYLES)} (top header layout)")
     lines.append(f"  group_by_node: {b(cfg.group_by_node)}   # group pods under their node header rows")
@@ -1068,10 +1161,9 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append(f"  remember_profile_per_context: {b(cfg.remember_profile_per_context)}  # persist the sidebar PROFILE pick, keyed by kube context")
     lines.append("")
     lines.append("cluster:")
-    ns = ", ".join(cfg.namespaces) if cfg.namespaces else ""
+    ns = ", ".join(q(n) for n in cfg.namespaces) if cfg.namespaces else ""
     lines.append(f"  namespaces: [{ns}]   # namespaces to watch (CSV / list)")
-    ctx = cfg.context or '""'
-    lines.append(f"  context: {ctx}             # kubeconfig context; \"\" = current")
+    lines.append(f"  context: {q(cfg.context)}             # kubeconfig context; \"\" = current")
     lines.append("")
     lines.append("filters:                  # adjust which pods the table shows")
     lines.append('  name_filter: ""        # transient live search is not persisted')
@@ -1097,18 +1189,19 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append(f"  keys: {b(cfg.show_keys)}            # context-sensitive key hints in the sidebar")
     lines.append("")
     lines.append("probes:                   # cluster-linked HTTP probes (opt-in; stdlib urllib)")
-    am = cfg.alertmanager_url or '""'
-    lines.append(f"  alertmanager_url: {am}   # AlertManager /api/v2/alerts URL; \"\" = alerts panel hidden")
+    lines.append(f"  alertmanager_url: {q(cfg.alertmanager_url)}   # AlertManager /api/v2/alerts URL; \"\" = alerts panel hidden")
     if cfg.health_probes:
         lines.append("  health_probes:          # each scrapes a URL, extracts fields via regex (group 1)")
         for hp in cfg.health_probes:
-            lines.append(f"    - name: {hp.get('name', '')}")
-            lines.append(f"      url: {hp.get('url', '')}")
+            lines.append(f"    - name: {q(hp.get('name', ''))}")
+            lines.append(f"      url: {q(hp.get('url', ''))}")
             flds = hp.get("fields", {}) or {}
             if flds:
                 lines.append("      fields:")
                 for label, pat in flds.items():
-                    lines.append(f"        {label}: '{pat}'")
+                    # q() escapes quotes/backslashes inside the regex — a
+                    # pattern containing a quote used to corrupt the whole file
+                    lines.append(f"        {q(label)}: {q(pat)}")
             else:
                 lines.append("      fields: {}")
     else:

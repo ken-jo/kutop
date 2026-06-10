@@ -8,49 +8,73 @@ be reused by both the fetcher and the renderer.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+
+__all__ = [
+    "to_mcpu", "to_mi", "fmt_cpu", "fmt_mem", "pct", "age_seconds", "fmt_age",
+    "Pod", "Node", "PVC", "Event", "Alert", "HealthResult", "Summary", "Snapshot",
+]
 
 # ─────────────────────────── unit conversion ────────────────────────────────
 
 
 def to_mcpu(v: str) -> int:
-    """Parse a Kubernetes CPU quantity into millicores. '1' -> 1000, '250m' -> 250."""
+    """Parse a Kubernetes CPU quantity into millicores. '1' -> 1000, '250m' -> 250.
+
+    Also accepts the rarer but valid 'n' (nano) / 'u' (micro) suffixes and
+    exponent forms ('1e3' cores). Garbage yields 0.
+    """
     if not v or v in ("-", "<none>"):
         return 0
     v = v.strip()
-    if v.endswith("m"):
-        try:
-            return int(float(v[:-1]))
-        except ValueError:
-            return 0
     try:
+        if v.endswith("n"):
+            return int(float(v[:-1]) / 1_000_000)
+        if v.endswith("u"):
+            return int(float(v[:-1]) / 1000)
+        if v.endswith("m"):
+            return int(float(v[:-1]))
         return int(float(v) * 1000)
     except ValueError:
         return 0
 
 
+_MI_BYTES = 1024 * 1024
+# Kubernetes memory-quantity suffixes -> bytes per unit. Binary (Ki..Ei) and
+# decimal (k..E) per the API quantity spec; longer suffixes listed before their
+# single-letter prefixes so "Ki" never matches as "i" after "K". Uppercase "K"
+# is tolerated as a human-typed alias for the SI "k".
+_MEM_SUFFIXES = (
+    ("Ki", 1024), ("Mi", 1024 ** 2), ("Gi", 1024 ** 3),
+    ("Ti", 1024 ** 4), ("Pi", 1024 ** 5), ("Ei", 1024 ** 6),
+    ("k", 1000), ("K", 1000), ("M", 1000 ** 2), ("G", 1000 ** 3),
+    ("T", 1000 ** 4), ("P", 1000 ** 5), ("E", 1000 ** 6),
+)
+
+
 def to_mi(v: str) -> int:
-    """Parse a Kubernetes memory quantity into MiB. Handles Ki/Mi/Gi/Ti and SI K/M/G/T."""
+    """Parse a Kubernetes memory quantity into MiB.
+
+    Handles binary (Ki/Mi/Gi/Ti/Pi/Ei) and decimal (k/M/G/T/P/E) suffixes plus
+    bare-byte values — including exponent forms like "1e9", which the API
+    preserves verbatim in ``kubectl get -o json``. Garbage yields 0.
+    """
     if not v or v in ("-", "<none>"):
         return 0
     v = v.strip()
-    units = {
-        "Ki": 1 / 1024, "Mi": 1, "Gi": 1024, "Ti": 1024 * 1024, "Pi": 1024 ** 3,
-        "K": 1000 / (1024 * 1024), "M": 1000 ** 2 / (1024 * 1024),
-        "G": 1000 ** 3 / (1024 * 1024), "T": 1000 ** 4 / (1024 * 1024),
-    }
-    m = re.match(r"^([0-9.]+)\s*([A-Za-z]+)?$", v)
-    if not m:
+    for suffix, scale in _MEM_SUFFIXES:
+        if v.endswith(suffix):
+            try:
+                num = float(v[: -len(suffix)].strip())
+            except ValueError:
+                return 0
+            return int(num * scale / _MI_BYTES)
+    try:
+        return int(float(v) / _MI_BYTES)
+    except ValueError:
         return 0
-    num = float(m.group(1))
-    unit = m.group(2) or ""
-    if unit in units:
-        return int(num * units[unit])
-    # bare bytes
-    return int(num / (1024 * 1024))
 
 
 def fmt_cpu(mc: int) -> str:

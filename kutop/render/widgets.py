@@ -29,8 +29,9 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
-from textual.widgets._select import SelectCurrent, SelectOverlay
 from textual.widgets.option_list import Option
+
+from ._compat import SelectCurrent, SelectOverlay
 
 from ..config import (
     Config,
@@ -243,10 +244,24 @@ class DualThresholdSlider(Static):
             pass
 
     # ── mouse drag ─────────────────────────────────────────────────────────
+    def _content_event_x(self, event) -> int:
+        """Mouse x in CONTENT coordinates.
+
+        ``event.offset`` is widget-relative and includes the left border +
+        padding gutter, while the track is rendered in the content area —
+        mapping the raw offset made every click/drag land a gutter-width to
+        the right of the cursor.
+        """
+        try:
+            gutter_left = int(self.content_region.x - self.region.x)
+        except Exception:
+            gutter_left = 0
+        return int(event.offset.x) - gutter_left
+
     def on_mouse_down(self, event: events.MouseDown) -> None:
         self.focus()
         width = self._track_width()
-        value = self.value_at_x(int(event.offset.x), width)
+        value = self.value_at_x(self._content_event_x(event), width)
         self._active = self._nearest_handle(value)
         self._dragging = True
         try:
@@ -260,7 +275,7 @@ class DualThresholdSlider(Static):
         if not self._dragging:
             return
         width = self._track_width()
-        value = self.value_at_x(int(event.offset.x), width)
+        value = self.value_at_x(self._content_event_x(event), width)
         self._set_handle(self._active, value)
         event.stop()
 
@@ -333,7 +348,11 @@ class DualThresholdSlider(Static):
         track = Text()
         for x in range(w):
             val = self.value_at_x(x, w)
-            if x == warn_x:
+            if x == warn_x and x == crit_x:
+                # both handles round to the same cell: show a combined marker
+                # instead of hiding crit under warn
+                track.append("▲", style="bold red reverse")
+            elif x == warn_x:
                 track.append("▲", style="bold yellow")
             elif x == crit_x:
                 track.append("▲", style="bold red")
@@ -464,10 +483,29 @@ class SummaryBar(Static):
         cpu_thresh: "tuple[int, int]" = (75, 90),
         mem_thresh: "tuple[int, int]" = (80, 92),
     ) -> None:
+        # remembered so on_resize can re-fit the tiles to the new width
+        self._last_update = (s, show_alerts, cpu_thresh, mem_thresh)
         if self.style_mode == "compact":
-            self.update(self._compact(s, show_alerts))
+            text = self._compact(s, show_alerts)
         else:
-            self.update(self._tiles(s, show_alerts, cpu_thresh, mem_thresh))
+            text = self._tiles(s, show_alerts, cpu_thresh, mem_thresh)
+        # never wrap: the widget is 2 rows high, so a wrapped line pushes the
+        # value row out of view — overflow truncates (tiles are also dropped
+        # whole to the available width in _tiles)
+        text.no_wrap = True
+        self.update(text)
+
+    def on_resize(self, event: events.Resize) -> None:
+        last = getattr(self, "_last_update", None)
+        if last:
+            self.update_summary(*last)
+
+    def _avail_width(self) -> int:
+        """Content width in cells, or 0 when not mounted yet (no fitting)."""
+        try:
+            return max(0, int(self.content_size.width))
+        except Exception:
+            return 0
 
     # ── tile layout ───────────────────────────────────────────────────────
     @staticmethod
@@ -533,16 +571,20 @@ class SummaryBar(Static):
             tiles.append(self._tile("ALERTS", Text(str(s.alerts_firing),
                          style=f"bold {al_accent}"), al_accent))
 
-        # Join the per-tile two-line blocks side by side with a separator.
-        return self._join_blocks(tiles, sep="  ")
+        # Join the per-tile two-line blocks side by side with a separator,
+        # dropping whole trailing tiles that don't fit the current width —
+        # a wrapped tile row would push the value line out of the 2-row widget.
+        return self._join_blocks(tiles, sep="  ", max_width=self._avail_width())
 
     @staticmethod
-    def _join_blocks(blocks: "list[Text]", sep: str = "  ") -> Text:
+    def _join_blocks(blocks: "list[Text]", sep: str = "  ",
+                     max_width: int = 0) -> Text:
         """Place multi-line Text blocks side by side, padding each to a tile.
 
         Each block is two lines (label / value); we widen each line to the
         block's max width so the columns stay aligned, then concatenate with a
-        separator between tiles.
+        separator between tiles. With ``max_width > 0`` trailing blocks that
+        would overflow it are dropped whole (at least one is always kept).
         """
         split = []
         for blk in blocks:
@@ -551,6 +593,17 @@ class SummaryBar(Static):
                 lines.append(Text(""))
             width = max(line.cell_len for line in lines) + 1
             split.append((lines, width))
+
+        if max_width > 0:
+            kept: list = []
+            used = 0
+            for lines, width in split:
+                add = width + (len(sep) if kept else 0)
+                if kept and used + add > max_width:
+                    break
+                kept.append((lines, width))
+                used += add
+            split = kept or split[:1]
 
         out = Text()
         for row in range(2):
@@ -703,8 +756,16 @@ class TrendGraph(Vertical):
     def update_trend(self, history: list[int], detail: str) -> None:
         clamped = [max(self._SCALE_MIN, min(self._SCALE_MAX, int(v))) for v in history]
         cur = clamped[-1] if clamped else 0
-        width = max(24, min(96, self.size.width - 4))
-        self.query_one(".trend-meter", Static).update(self._meter(clamped, cur, detail, width))
+        meter = self.query_one(".trend-meter", Static)
+        # Size the meter to the Static's CONTENT width: deriving it from the
+        # outer widget minus a hardcoded gutter subtracted the border/padding
+        # twice (meter 4 cells short), and the old 24-cell floor made very
+        # narrow panels wrap instead of truncate.
+        width = int(getattr(meter.content_size, "width", 0) or 0)
+        if width <= 0:
+            width = self.size.width - 4
+        width = max(10, min(96, width))
+        meter.update(self._meter(clamped, cur, detail, width))
 
     def _meter(self, history: list[int], cur: int, detail: str, width: int) -> Text:
         spark_width = max(10, width - 5)

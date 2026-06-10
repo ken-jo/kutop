@@ -16,9 +16,11 @@ only from the Profile — there is NO hardcoded workload knowledge in this modul
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import subprocess
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import monotonic
 from typing import Optional
@@ -41,8 +43,9 @@ from textual.widgets import (
     Static,
 )
 from textual.widget import Widget
-from textual.widgets._header import HeaderClock, HeaderClockSpace, HeaderTitle
 from textual.screen import ModalScreen
+
+from ._compat import HeaderClock, HeaderClockSpace, HeaderTitle
 
 from .. import __version__, model
 from ..config import (
@@ -83,7 +86,8 @@ _BINDING_SPECS = [
     ("o", "open_options", "Options"),
     ("slash", "search", "Search"),
     ("escape", "clear_search", "Clear"),
-    ("tab", "toggle_sidebar", "Sidebar"),
+    # NOTE: no "tab" binding — Screen's built-in tab->focus_next has priority,
+    # so a tab binding here would be dead weight that only misleads the footer.
     ("b", "toggle_sidebar", "Sidebar"),
     ("s", "cycle_sort", "Sort"),
     ("S", "toggle_sort_dir", "SortDir"),
@@ -357,6 +361,9 @@ class LogViewerModal(ModalScreen):
 
     async def on_key(self, event) -> None:
         if event.key in ("escape", "q"):
+            # stop the event so the close key never leaks into app bindings
+            # (q would arm the quit hint, escape would clear the search filter)
+            event.stop()
             await self._close()
 
     async def _close(self) -> None:
@@ -416,6 +423,7 @@ class DescribeModal(ModalScreen):
 
     def on_key(self, event) -> None:
         if event.key in ("escape", "q"):
+            event.stop()  # see LogViewerModal.on_key: never leak the close key
             self.dismiss()
 
 
@@ -441,10 +449,42 @@ class EventDetailModal(ModalScreen):
 
     def on_key(self, event) -> None:
         if event.key in ("escape", "q"):
+            event.stop()  # see LogViewerModal.on_key: never leak the close key
             self.dismiss()
 
 
 # ── sidebar ───────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class SidebarState:
+    """Everything the sidebar mirrors from the app, as one value object.
+
+    Replaces the 19-21 keyword arguments that were previously spelled out in
+    four hand-maintained copies (SidebarPanel ``__init__``/``on_mount``/
+    ``update_state`` and TopApp ``compose``/``_sync_sidebar_state``) — adding a
+    sidebar field now means touching this dataclass and the place that uses it.
+    """
+
+    selected: list = field(default_factory=list)
+    show_events: bool = True
+    show_pvc: bool = True
+    show_summary: bool = True
+    show_trends: bool = True
+    show_alerts: bool = True
+    show_health: bool = True
+    show_keys: bool = True
+    sort_key: str = "priority"
+    sort_desc: bool = False
+    group_by_node: bool = False
+    allow_delete: bool = False
+    profile_name: str = "generic"
+    remember_profile: bool = False
+    interval: float = REFRESH_INTERVAL_SECS
+    context: str = ""
+    name_filter: str = ""
+    key_context: str = "DASHBOARD"
+    key_rows: list = field(default_factory=list)
 
 
 class SidebarPanel(Vertical):
@@ -470,54 +510,23 @@ class SidebarPanel(Vertical):
     def __init__(
         self,
         ns_options: list[str],
-        selected: "Optional[list[str]]" = None,
-        show_events: bool = True,
-        show_pvc: bool = True,
-        show_summary: bool = True,
-        show_trends: bool = True,
-        show_alerts: bool = True,
-        show_health: bool = True,
-        show_keys: bool = True,
-        sort_key: str = "priority",
-        sort_desc: bool = False,
-        group_by_node: bool = False,
-        allow_delete: bool = False,
-        profile_name: str = "generic",
+        state: "Optional[SidebarState]" = None,
         profile_options: "Optional[list[str]]" = None,
-        remember_profile: bool = False,
-        interval: float = REFRESH_INTERVAL_SECS,
-        context: Optional[str] = None,
         context_options: "Optional[list[str]]" = None,
-        name_filter: str = "",
-        key_context: str = "DASHBOARD",
-        key_rows: "Optional[list[tuple[str, str]]]" = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self._ns_options = list(ns_options)
-        self._selected = set(selected if selected is not None else ns_options)
-        self._show_events = show_events
-        self._show_pvc = show_pvc
-        self._show_summary = show_summary
-        self._show_trends = show_trends
-        self._show_alerts = show_alerts
-        self._show_health = show_health
-        self._show_keys = show_keys
-        self._sort_key = sort_key if sort_key in SORTABLE_KEYS else "priority"
-        self._sort_desc = sort_desc
-        self._group_by_node = group_by_node
-        self._allow_delete = allow_delete
-        self._profile_name = profile_name or "generic"
         self._profile_options = list(profile_options or [])
-        self._remember_profile = remember_profile
-        self._interval = interval
-        self._context_name = context or ""
         self._context_options = list(context_options or [])
-        self._name_filter = name_filter
-        self._key_context = key_context
-        self._key_rows = list(key_rows or [])
+        self._ingest(state or SidebarState(selected=list(ns_options)))
         self._syncing = False
         self._ready_for_input = False
+        # last (options, value) actually written to the CONTEXT Select, so the
+        # every-refresh state sync can skip the rebuild when nothing changed —
+        # set_options() closes an open dropdown, which made the CONTEXT picker
+        # unusable while the 5s refresh was running.
+        self._ctx_select_applied: "Optional[tuple]" = None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="side_status")
@@ -580,29 +589,33 @@ class SidebarPanel(Vertical):
             )
             yield Static("", id="side_keys_body")
 
+    def _ingest(self, state: "SidebarState") -> None:
+        """Adopt a SidebarState into the panel's working attributes."""
+        self._state = state
+        self._selected = set(state.selected)
+        self._show_events = state.show_events
+        self._show_pvc = state.show_pvc
+        self._show_summary = state.show_summary
+        self._show_trends = state.show_trends
+        self._show_alerts = state.show_alerts
+        self._show_health = state.show_health
+        self._show_keys = state.show_keys
+        self._sort_key = (state.sort_key if state.sort_key in SORTABLE_KEYS
+                          else "priority")
+        self._sort_desc = state.sort_desc
+        self._group_by_node = state.group_by_node
+        self._allow_delete = state.allow_delete
+        self._profile_name = state.profile_name or "generic"
+        self._remember_profile = state.remember_profile
+        self._interval = state.interval
+        self._context_name = state.context or ""
+        self._name_filter = state.name_filter
+        self._key_context = state.key_context or "DASHBOARD"
+        self._key_rows = list(state.key_rows or [])
+
     def on_mount(self) -> None:
         self.border_title = "SIDEBAR"
-        self.update_state(
-            selected=list(self._selected),
-            show_events=self._show_events,
-            show_pvc=self._show_pvc,
-            show_summary=self._show_summary,
-            show_trends=self._show_trends,
-            show_alerts=self._show_alerts,
-            show_health=self._show_health,
-            show_keys=self._show_keys,
-            sort_key=self._sort_key,
-            sort_desc=self._sort_desc,
-            group_by_node=self._group_by_node,
-            allow_delete=self._allow_delete,
-            profile_name=self._profile_name,
-            remember_profile=self._remember_profile,
-            interval=self._interval,
-            context=self._context_name,
-            name_filter=self._name_filter,
-            key_context=self._key_context,
-            key_rows=self._key_rows,
-        )
+        self.update_state(self._state)
         try:
             self.call_after_refresh(self._enable_input_events)
         except Exception:
@@ -670,6 +683,9 @@ class SidebarPanel(Vertical):
         pairs = [(c or "(current)", c) for c in ctx_opts]
         desired = (self._context_name if self._context_name in ctx_opts
                    else ctx_opts[0])
+        state = (tuple(pairs), desired)
+        if self._ctx_select_applied == state and sel.value == desired:
+            return  # nothing changed: don't reset (and close) an open dropdown
         try:
             # prevent() suppresses the Select.Changed echo from the programmatic
             # set_options/value writes — the reactive posts Changed as a queued
@@ -684,6 +700,7 @@ class SidebarPanel(Vertical):
                 # when the desired value differs, so no extra Changed is generated.
                 if sel.value != desired:
                     sel.value = desired
+            self._ctx_select_applied = state
         except Exception:
             pass
 
@@ -713,51 +730,11 @@ class SidebarPanel(Vertical):
             pass
         return out
 
-    def update_state(
-        self,
-        *,
-        selected: list[str],
-        show_events: bool,
-        show_pvc: bool,
-        show_summary: bool,
-        show_trends: bool,
-        show_alerts: bool,
-        show_health: bool,
-        show_keys: bool,
-        sort_key: str,
-        sort_desc: bool,
-        group_by_node: bool,
-        allow_delete: bool,
-        profile_name: str,
-        remember_profile: bool,
-        interval: float,
-        context: str,
-        name_filter: str,
-        key_context: str,
-        key_rows: list[tuple[str, str]],
-    ) -> None:
+    def update_state(self, state: "SidebarState") -> None:
         """Refresh compact status text and control values from the app state."""
-        self._selected = set(selected)
-        self._show_events = show_events
-        self._show_pvc = show_pvc
-        self._show_summary = show_summary
-        self._show_trends = show_trends
-        self._show_alerts = show_alerts
-        self._show_health = show_health
-        self._show_keys = show_keys
-        self._sort_key = sort_key if sort_key in SORTABLE_KEYS else "priority"
-        self._sort_desc = sort_desc
-        self._group_by_node = group_by_node
-        self._allow_delete = allow_delete
-        self._profile_name = profile_name or "generic"
-        self._remember_profile = remember_profile
-        self._interval = interval
-        self._context_name = context or ""
-        self._name_filter = name_filter
-        self._key_context = key_context or "DASHBOARD"
-        self._key_rows = list(key_rows or [])
+        self._ingest(state)
         try:
-            ns_count = len([n for n in selected if n])
+            ns_count = len([n for n in state.selected if n])
             ctx = self._context_name or "current"
             # long contexts (e.g. EKS ARNs) hold the useful name at the end —
             # show the last path segment, then tail-truncate, not the prefix
@@ -787,17 +764,17 @@ class SidebarPanel(Vertical):
             pass
         self._syncing = True
         try:
-            self._set_checkbox("chk_summary", show_summary)
-            self._set_checkbox("chk_trends", show_trends)
-            self._set_checkbox("chk_events", show_events)
-            self._set_checkbox("chk_pvc", show_pvc)
-            self._set_checkbox("chk_alerts", show_alerts)
-            self._set_checkbox("chk_health", show_health)
-            self._set_checkbox("chk_keys", show_keys)
-            self._set_checkbox("chk_sort_desc", sort_desc)
-            self._set_checkbox("chk_group", group_by_node)
-            self._set_checkbox("chk_allow_delete", allow_delete)
-            self._set_checkbox("chk_remember_profile", remember_profile)
+            self._set_checkbox("chk_summary", self._show_summary)
+            self._set_checkbox("chk_trends", self._show_trends)
+            self._set_checkbox("chk_events", self._show_events)
+            self._set_checkbox("chk_pvc", self._show_pvc)
+            self._set_checkbox("chk_alerts", self._show_alerts)
+            self._set_checkbox("chk_health", self._show_health)
+            self._set_checkbox("chk_keys", self._show_keys)
+            self._set_checkbox("chk_sort_desc", self._sort_desc)
+            self._set_checkbox("chk_group", self._group_by_node)
+            self._set_checkbox("chk_allow_delete", self._allow_delete)
+            self._set_checkbox("chk_remember_profile", self._remember_profile)
             try:
                 self.query_one("#side_sort", Select).value = self._sort_key
             except Exception:
@@ -1143,6 +1120,15 @@ class TopApp(App):
         self._refresh_timer = None
         self._loaded = False
         self._quit_hint_deadline = 0.0
+        # Fetch lifecycle: _fetching gates one worker at a time; _fetch_gen is a
+        # scope token bumped on every namespace/context/profile change so a
+        # snapshot fetched under the OLD scope is dropped instead of being
+        # rendered as the NEW one; _refresh_pending queues an urgent refresh
+        # that arrived while a fetch was in flight.
+        self._fetching = False
+        self._fetch_gen = 0
+        self._refresh_pending = False
+        self._last_refresh_error = ""
 
     def _all_plugins(self) -> list:
         """Every registered plugin (for mounting/visibility/render).
@@ -1215,6 +1201,17 @@ class TopApp(App):
             names.insert(0, self.cfg.context)
         return names
 
+    def _cached_context_options(self) -> list[str]:
+        """Context names from the discovery cache only — never shells kubectl.
+
+        Used on the UI thread (opening the Options modal) so it can never block
+        on a subprocess; the cache is filled by the mount-time discovery worker.
+        """
+        names = list(self._discovered_contexts)
+        if self.cfg.context and self.cfg.context not in names:
+            names.insert(0, self.cfg.context)
+        return names
+
     def _sidebar_context_options(self) -> list[str]:
         """Cheap context list for the sidebar Select — cache only, no kubectl.
 
@@ -1238,27 +1235,9 @@ class TopApp(App):
         with Horizontal(id="main_horizontal"):
             yield SidebarPanel(
                 self._sidebar_ns_options(),
-                selected=list(self.namespaces),
-                show_events=self.show_events,
-                show_pvc=self.show_pvc,
-                show_summary=self.cfg.show_summary,
-                show_trends=self.cfg.show_trends,
-                show_alerts=self.show_alerts,
-                show_health=self.show_health,
-                show_keys=self.cfg.show_keys,
-                sort_key=self.cfg.sort_key,
-                sort_desc=self.cfg.sort_desc,
-                group_by_node=self.cfg.group_by_node,
-                allow_delete=self.allow_destructive,
-                profile_name=self.cfg.profile_name,
+                self._sidebar_state(),
                 profile_options=self._profile_opts,
-                remember_profile=self.cfg.remember_profile_per_context,
-                interval=self.interval,
-                context=self._display_context(),
                 context_options=self._sidebar_context_options(),
-                name_filter=self._effective_filter(),
-                key_context="DASHBOARD",
-                key_rows=[],
                 id="sidebar",
             )
             with Vertical(id="main_view"):
@@ -1322,7 +1301,7 @@ class TopApp(App):
         et.add_columns("TIME", "OBJECT", "REASON", "COUNT")
         pt = self.query_one("#pvc_table", DataTable)
         pt.cursor_type = "row"
-        pt.add_columns("PVC", "STORAGE (USE/CAP)", "GAUGE", "PHASE")
+        pt.add_columns("PVC", "STORAGE (USE/CAP)", "GAUGE", "CLASS")
 
         at = self.query_one("#alerts_panel", DataTable)
         at.cursor_type = "row"
@@ -1468,20 +1447,39 @@ class TopApp(App):
         health) complete — so those panels never populate. Skip the tick while a
         fetch is in flight: the running fetch completes and applies in full, and
         the effective cadence becomes ~fetch-duration instead of thrashing.
+        Scope changes must not be lost to that skip — they go through
+        :meth:`_request_refresh`, which queues the refresh to run as soon as the
+        in-flight fetch returns.
         """
-        if getattr(self, "_fetching", False):
+        if self._fetching:
             return
         self._fetching = True
+        self._refresh_pending = False
+        gen = self._fetch_gen
         self.run_worker(
-            self._fetch_worker, thread=True, exclusive=True, group="fetch"
+            lambda: self._fetch_worker(gen), thread=True, exclusive=True,
+            group="fetch",
         )
 
-    def _fetch_worker(self) -> None:
+    def _request_refresh(self) -> None:
+        """Urgent refresh (scope change / manual): now, or queued if in flight."""
+        self._refresh_pending = True
+        self.refresh_snapshot()
+
+    def _bump_fetch_gen(self) -> None:
+        """Invalidate in-flight fetches: their scope (ns/context/probes) is stale."""
+        self._fetch_gen += 1
+
+    def _fetch_worker(self, gen: int) -> None:
         try:
             if not self._loaded:
                 snap = self.fetcher.fetch_core()
                 try:
-                    self.call_from_thread(self._apply_snapshot, snap)
+                    # first paint gets a COPY: enrich_snapshot below keeps
+                    # mutating `snap` on this thread while the UI renders it
+                    self.call_from_thread(
+                        self._apply_snapshot, copy.deepcopy(snap), gen
+                    )
                 except Exception:
                     pass
                 snap = self.fetcher.enrich_snapshot(snap)
@@ -1490,11 +1488,17 @@ class TopApp(App):
             # marshal back to the UI thread; if the app is tearing down the call
             # may be rejected — swallow it so the worker thread returns cleanly.
             try:
-                self.call_from_thread(self._apply_snapshot, snap)
+                self.call_from_thread(self._apply_snapshot, snap, gen)
             except Exception:
                 pass
         finally:
             self._fetching = False
+            # a scope change or manual refresh arrived mid-fetch: serve it now
+            if self._refresh_pending or gen != self._fetch_gen:
+                try:
+                    self.call_from_thread(self.refresh_snapshot)
+                except Exception:
+                    pass
 
     # ── shutdown ───────────────────────────────────────────────────────────────
     def action_quit_hint(self) -> None:
@@ -1530,11 +1534,18 @@ class TopApp(App):
         except Exception:
             pass
 
-    def _apply_snapshot(self, snap: Snapshot) -> None:
+    def _apply_snapshot(self, snap: Snapshot, gen: Optional[int] = None) -> None:
+        if gen is not None and gen != self._fetch_gen:
+            return  # fetched under an old namespace/context scope: drop it
         if snap.error and not snap.nodes and not snap.pods:
             # full failure: keep previous frame, surface error
-            self.notify(f"refresh failed: {snap.error}", severity="error", timeout=4)
+            self._notify_refresh_error(snap.error, full=True)
             return
+        if snap.error:
+            # partial failure: apply what we have, but say what is missing
+            self._notify_refresh_error(snap.error, full=False)
+        else:
+            self._last_refresh_error = ""
         self.snapshot = snap
         self._loaded = True
         # Feed rolling history every refresh for the trend meters. A zero used
@@ -1544,6 +1555,16 @@ class TopApp(App):
         self._append_trend(self.cpu_hist, s.cpu_used_mcpu, s.cpu_cap_mcpu)
         self._append_trend(self.mem_hist, s.mem_used_mi, s.mem_cap_mi)
         self._render()
+
+    def _notify_refresh_error(self, error: str, *, full: bool) -> None:
+        """Toast a refresh error once — not on every 5s retry with the same text."""
+        if error == self._last_refresh_error:
+            return
+        self._last_refresh_error = error
+        if full:
+            self.notify(f"refresh failed: {error}", severity="error", timeout=4)
+        else:
+            self.notify(f"refresh degraded: {error}", severity="warning", timeout=4)
 
     @staticmethod
     def _append_trend(hist: deque[int], used: int, cap: int) -> None:
@@ -1930,7 +1951,7 @@ class TopApp(App):
         """
         self._sync_cfg_from_app()
         try:
-            save_config(self.cfg, self._config_path)
+            save_config(self.cfg, self._config_path, profile=self.profile)
         except Exception:
             pass  # unwritable path or other I/O error — don't disturb the UI
 
@@ -2010,7 +2031,14 @@ class TopApp(App):
         # Same transient-unmount guard as the summary bar above.
         try:
             mt = self.query_one("#main_table", DataTable)
-            want = [self._column_label(k) for k in cfg.visible_columns()]
+            # compare PLAIN header text on both sides: _column_label returns a
+            # rich Text for the name column, and Text != str is always True —
+            # which made every Options change rebuild the table (losing the
+            # cursor and scroll position) even when the columns were unchanged.
+            want = [
+                lbl.plain if isinstance(lbl, Text) else str(lbl)
+                for lbl in (self._column_label(k) for k in cfg.visible_columns())
+            ]
             have = [col.label.plain for col in mt.ordered_columns]
             if want != have:
                 self._build_main_columns(mt)
@@ -2039,12 +2067,13 @@ class TopApp(App):
         # sidebar (primary control) and the Options modal never contradict.
         if list(cfg.namespaces) != prev_ns or context_changed:
             self._reset_trend_history()
+            self._bump_fetch_gen()  # drop any in-flight old-scope fetch result
             self.fetcher.namespaces = list(cfg.namespaces)
             self.fetcher.context = cfg.context or None
             self.context = cfg.context or None
             if list(cfg.namespaces) != prev_ns:
                 self._sync_sidebar_ns()
-            self.refresh_snapshot()
+            self._request_refresh()
 
         if persist:
             try:
@@ -2060,7 +2089,7 @@ class TopApp(App):
         """Write the full config skeleton to the user file; return its path."""
         target = cfg or self.cfg
         try:
-            path = save_config(target, self._config_path)
+            path = save_config(target, self._config_path, profile=self.profile)
             self.notify(f"config exported -> {path}")
             return path
         except Exception as exc:
@@ -2076,7 +2105,7 @@ class TopApp(App):
         self.cfg.theme = self._coerce_theme(theme)
         self.theme = self.cfg.theme
         try:
-            save_config(self.cfg, self._config_path)
+            save_config(self.cfg, self._config_path, profile=self.profile)
         except Exception:
             pass
 
@@ -2085,15 +2114,21 @@ class TopApp(App):
 
     def action_open_options(self) -> None:
         self._sync_cfg_from_app()
+        # Context names come from the discovery cache only — _context_options()
+        # can shell out to kubectl (up to 2s) and this runs on the UI thread.
+        # When the cache is empty, kick the discovery worker so a reopened
+        # modal has the list.
+        if not self._discovered_contexts and self._discover_namespaces:
+            self.run_worker(self._discover_ns_worker, thread=True,
+                            exclusive=False, group="ns")
         # hand the modal a copy so a cancelled edit can't half-mutate live state;
         # apply_config() adopts the working copy on every change anyway. The
         # discovered namespace list powers the multi-select.
-        import copy
         self.push_screen(
             OptionsModal(
                 copy.deepcopy(self.cfg),
                 discovered_ns=list(self._discovered_ns),
-                context_names=self._context_options(),
+                context_names=self._cached_context_options(),
                 themes=self._theme_options(),
             )
         )
@@ -2190,14 +2225,11 @@ class TopApp(App):
 
         return ("DASHBOARD", [])
 
-    def _sync_sidebar_state(self) -> None:
-        """Mirror app state into the sidebar controls without rebuilding rows."""
-        try:
-            sidebar = self.query_one("#sidebar", SidebarPanel)
-        except Exception:
-            return
-        key_context, key_rows = self._sidebar_key_context()
-        sidebar.update_state(
+    def _sidebar_state(self, key_context: str = "DASHBOARD",
+                       key_rows: "Optional[list]" = None) -> SidebarState:
+        """The app state the sidebar mirrors, as one value object (the single
+        source for both the initial compose and every later sync)."""
+        return SidebarState(
             selected=list(self.namespaces),
             show_events=self.show_events,
             show_pvc=self.show_pvc,
@@ -2216,8 +2248,17 @@ class TopApp(App):
             context=self._display_context(),
             name_filter=self._effective_filter(),
             key_context=key_context,
-            key_rows=key_rows,
+            key_rows=list(key_rows or []),
         )
+
+    def _sync_sidebar_state(self) -> None:
+        """Mirror app state into the sidebar controls without rebuilding rows."""
+        try:
+            sidebar = self.query_one("#sidebar", SidebarPanel)
+        except Exception:
+            return
+        key_context, key_rows = self._sidebar_key_context()
+        sidebar.update_state(self._sidebar_state(key_context, key_rows))
 
     def _apply_plugin_panel_visibility(self) -> bool:
         """Show/hide each enabled plugin's panel; return True if any is visible.
@@ -2294,7 +2335,7 @@ class TopApp(App):
         sb.set_class(hidden, "-hidden")
 
     def action_refresh(self) -> None:
-        self.refresh_snapshot()
+        self._request_refresh()
         self.notify("refreshing...")
 
     # ── metrics-freshness readout (fixed; cadence is no longer adjustable) ────
@@ -2450,12 +2491,13 @@ class TopApp(App):
             return
         self.namespaces = ns_list
         self.cfg.namespaces = ns_list
+        self._bump_fetch_gen()  # drop any in-flight old-scope fetch result
         self.fetcher.namespaces = ns_list
         self._reset_trend_history()
         self.notify(f"namespaces: {', '.join(ns_list)}")
         self._persist_state()
         self._sync_sidebar_state()
-        self.refresh_snapshot()
+        self._request_refresh()
 
     # legacy shim: a CSV string still routes through the list-based selector
     def change_namespaces(self, ns_csv: str) -> None:
@@ -2547,8 +2589,6 @@ class TopApp(App):
             self._sync_sidebar_state()  # revert the dropdown to the live profile
             return
 
-        import copy
-
         # Reassign BEFORE adopting so the 'priority' sort uses the new weights on
         # the very first re-render.
         self.profile = new_profile
@@ -2577,9 +2617,11 @@ class TopApp(App):
         self._remember_current_profile()
         # A profile switch can change alert/health probes and thresholds even when
         # the namespace set is unchanged, so fetch immediately instead of waiting
-        # for the next poll. No-op if a refresh is already in flight (e.g. when
-        # _adopt_config already triggered one for a namespace change).
-        self.refresh_snapshot()
+        # for the next poll. Bump the scope token so an in-flight fetch made with
+        # the OLD probes/ordering can't land as this profile's data, and queue
+        # the refresh if one is already running.
+        self._bump_fetch_gen()
+        self._request_refresh()
         self.notify(f"profile: {new_profile.name}")
 
     def _context_key(self) -> str:
@@ -2604,8 +2646,6 @@ class TopApp(App):
         name = (name or "").strip()
         if name == (self.context or ""):
             return
-        import copy
-
         cfg = copy.deepcopy(self.cfg)
         cfg.context = name
         self._adopt_config(cfg, persist=True)
@@ -2725,7 +2765,7 @@ class TopApp(App):
                                 severity="error")
             except Exception as exc:
                 self.notify(f"delete error: {exc}", severity="error")
-            self.refresh_snapshot()
+            self._request_refresh()
 
         asyncio.create_task(runner())
 

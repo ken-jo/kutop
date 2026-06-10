@@ -80,6 +80,10 @@ class Fetcher:
         self._cancelled = threading.Event()
         self._procs: "set[subprocess.Popen]" = set()
         self._procs_lock = threading.Lock()
+        # Failures recorded by _run_safe during one refresh (cleared by
+        # fetch_core). Folded into Snapshot.error so an unreachable cluster
+        # surfaces instead of silently yielding an empty, error-free snapshot.
+        self._fetch_errors: "list[str]" = []
 
     def cancel(self) -> None:
         """Abort any in-flight (and future) kubectl calls. Idempotent, thread-safe.
@@ -119,11 +123,25 @@ class Fetcher:
         )
         with self._procs_lock:
             self._procs.add(proc)
+        # Re-check after registering: cancel() may have snapshotted _procs in
+        # the gap between the check above and the add, so its kill pass missed
+        # this process — kill it ourselves instead of blocking up to `timeout`.
+        if self._cancelled.is_set():
+            try:
+                proc.kill()
+            except Exception:
+                pass
         try:
             out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.communicate()
+            try:
+                # Bounded drain: kill() only signals kubectl itself, and an exec
+                # credential plugin grandchild can keep the stderr pipe open —
+                # an unbounded communicate() would then block indefinitely.
+                proc.communicate(timeout=1)
+            except Exception:
+                pass
             raise
         finally:
             with self._procs_lock:
@@ -137,11 +155,35 @@ class Fetcher:
         return out
 
     def _run_safe(self, *args: str, timeout: int = _KUBECTL_TIMEOUT) -> str:
-        """Run kubectl, returning stdout or '' on any failure (never raises)."""
+        """Run kubectl, returning stdout or '' on any failure (never raises).
+
+        Failures are recorded into ``self._fetch_errors`` (cleared per refresh
+        by :meth:`fetch_core`) so the snapshot can surface them as
+        ``Snapshot.error`` — without this, an unreachable cluster yields an
+        empty error-free snapshot that silently replaces the previous good
+        frame. Calls whose failure is EXPECTED (metrics-server absent, kubelet
+        stats, optional probes) go through :meth:`_run_optional` instead.
+        """
         try:
             return self._run(*args, timeout=timeout)
-        except Exception:
+        except Exception as exc:
+            label = " ".join(list(args)[:3]) or "kubectl"
+            self._fetch_errors.append(f"{label}: {exc}")
             return ""
+
+    def _run_optional(self, *args: str, timeout: int = _KUBECTL_TIMEOUT) -> str:
+        """Best-effort variant of :meth:`_run_safe` for expected failures.
+
+        Delegates to ``_run_safe`` (so tests overriding that single seam still
+        intercept every kubectl call) but drops anything it recorded: a missing
+        metrics-server or an unreachable kubelet must not flag the whole
+        refresh as failed.
+        """
+        before = len(self._fetch_errors)
+        out = self._run_safe(*args, timeout=timeout)
+        if not out:
+            del self._fetch_errors[before:]
+        return out
 
     def current_context_name(self) -> str:
         """Best-effort active kube context name for display ('' if unknown).
@@ -152,7 +194,7 @@ class Fetcher:
         """
         if self.context:
             return self.context
-        return self._run_safe("config", "current-context").strip()
+        return self._run_optional("config", "current-context").strip()
 
     def _probe_body(self, url: str, timeout: float):
         """Fetch an alert/health probe body.
@@ -164,7 +206,7 @@ class Fetcher:
           /api/v1/namespaces/monitoring/services/<svc>:9093/proxy/api/v2/alerts
         """
         if url.startswith("/"):
-            return self._run_safe("get", "--raw", url, timeout=_STATS_TIMEOUT) or None
+            return self._run_optional("get", "--raw", url, timeout=_STATS_TIMEOUT) or None
         from .probes import _http_get
         return _http_get(url, timeout)
 
@@ -197,6 +239,7 @@ class Fetcher:
     def fetch_core(self) -> Snapshot:
         """Acquire the first-paint snapshot: nodes, pods, and summary only."""
         snap = Snapshot()
+        self._fetch_errors = []  # fresh refresh: previous cycle's errors are stale
         nodes_by_name: dict[str, Node] = {}
         with ThreadPoolExecutor(max_workers=2) as pool:
             nodes_future = pool.submit(self._fetch_nodes)
@@ -218,6 +261,12 @@ class Fetcher:
         for pod in snap.pods:
             if pod.node and pod.node in nodes_by_name:
                 nodes_by_name[pod.node].pod_count += 1
+
+        # Surface kubectl failures swallowed by _run_safe: with no data AND a
+        # recorded error this is a full failure (caller keeps the previous
+        # frame); with partial data the snapshot still applies, error attached.
+        if not snap.error and self._fetch_errors:
+            snap.error = self._fetch_errors[0]
 
         snap.summary = self._build_summary(snap)
         return snap
@@ -302,6 +351,9 @@ class Fetcher:
         # the refresh — the core runs fully without any plugin present.
         self._run_plugins(snap)
 
+        if not snap.error and self._fetch_errors:
+            snap.error = self._fetch_errors[0]
+
         snap.summary = self._build_summary(snap)
         return snap
 
@@ -332,7 +384,11 @@ class Fetcher:
         # Capacity / roles / readiness from the API object.
         gj = self._run_safe("get", "nodes", "-o", "json")
         if gj:
-            data = json.loads(gj)
+            try:
+                data = json.loads(gj)
+            except Exception:
+                self._fetch_errors.append("get nodes: unparseable kubectl output")
+                data = {}
             for item in data.get("items", []):
                 meta = item.get("metadata", {})
                 name = meta.get("name", "")
@@ -347,8 +403,9 @@ class Fetcher:
                 node.ready = _node_ready(status.get("conditions", []))
                 nodes[name] = node
 
-        # Live usage from metrics-server.
-        tn = self._run_safe("top", "nodes", "--no-headers")
+        # Live usage from metrics-server (optional: its absence is expected
+        # and handled by the startup preflight — never a refresh error).
+        tn = self._run_optional("top", "nodes", "--no-headers")
         for line in tn.splitlines():
             parts = line.split()
             # NAME  CPU(cores)  CPU%  MEMORY(bytes)  MEMORY%
@@ -381,7 +438,7 @@ class Fetcher:
         pods: list[Pod] = []
         # usage map: pod name -> (cpu_mcpu, mem_mi) summed across containers
         usage: dict[str, tuple[int, int]] = {}
-        tp = self._run_safe("top", "pods", "-n", ns, "--no-headers", "--containers")
+        tp = self._run_optional("top", "pods", "-n", ns, "--no-headers", "--containers")
         if tp:
             for line in tp.splitlines():
                 parts = line.split()
@@ -395,7 +452,7 @@ class Fetcher:
                 usage[pod_name] = (pc + cpu, pm + mem)
         else:
             # fall back to pod-level top if --containers unsupported
-            tp = self._run_safe("top", "pods", "-n", ns, "--no-headers")
+            tp = self._run_optional("top", "pods", "-n", ns, "--no-headers")
             for line in tp.splitlines():
                 parts = line.split()
                 if len(parts) < 3:
@@ -540,7 +597,13 @@ class Fetcher:
             )
             if not gj:
                 continue
-            data = json.loads(gj)
+            try:
+                data = json.loads(gj)
+            except Exception:
+                # one namespace's garbage payload must not discard the events
+                # already collected from the namespaces before it
+                self._fetch_errors.append(f"events[{ns}]: unparseable kubectl output")
+                continue
             for item in data.get("items", []):
                 obj = item.get("involvedObject", {}) or {}
                 events.append(
@@ -567,7 +630,11 @@ class Fetcher:
             gj = self._run_safe("get", "pvc", "-n", ns, "-o", "json")
             if not gj:
                 continue
-            data = json.loads(gj)
+            try:
+                data = json.loads(gj)
+            except Exception:
+                self._fetch_errors.append(f"pvc[{ns}]: unparseable kubectl output")
+                continue
             for item in data.get("items", []):
                 meta = item.get("metadata", {})
                 name = meta.get("name", "")
@@ -598,7 +665,7 @@ class Fetcher:
         attribution (:meth:`_fill_pod_storage`), so no extra kubectl is spent.
         """
         def node_summary(node: str) -> "tuple[str, Optional[dict]]":
-            out = self._run_safe(
+            out = self._run_optional(
                 "get", "--raw", f"/api/v1/nodes/{node}/proxy/stats/summary",
                 timeout=_STATS_TIMEOUT,
             )
@@ -622,12 +689,17 @@ class Fetcher:
     def _fill_pvc_usage(self, pvcs: list[PVC], summaries: "dict[str, dict]") -> None:
         """Populate PVC.used_mi from the cached kubelet summaries.
 
-        Maps each ``.pods[].volume[]`` entry's ``pvcRef.name`` -> ``usedBytes``
-        across every node summary. A PVC with no matching volume keeps
-        ``used_mi=None`` (renderer shows '-').
+        Maps each ``.pods[].volume[]`` entry's ``pvcRef`` (namespace, name) ->
+        ``usedBytes`` across every node summary — keyed like
+        :meth:`_fill_pod_storage`, because PVC names are only unique per
+        namespace (the same chart in two namespaces yields identical claim
+        names). A PVC with no matching volume keeps ``used_mi=None``
+        (renderer shows '-').
         """
-        by_name: dict[str, PVC] = {p.name: p for p in pvcs}
-        if not by_name:
+        by_key: "dict[tuple[str, str], PVC]" = {
+            (p.namespace, p.name): p for p in pvcs
+        }
+        if not by_key:
             return
         for stats in summaries.values():
             for p in stats.get("pods", []) or []:
@@ -639,7 +711,7 @@ class Fetcher:
                     used = vol.get("usedBytes")
                     if used is None:
                         continue
-                    pvc = by_name.get(pname)
+                    pvc = by_key.get((ref.get("namespace", ""), pname))
                     if pvc is not None:
                         pvc.used_mi = int(used) // (1024 * 1024)  # bytes -> MiB
 

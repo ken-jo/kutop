@@ -92,7 +92,7 @@ def test_health_plugin_panel_keeps_common_chrome_class() -> None:
 
 def test_pod_resources_sum_all_containers() -> None:
     class FakeFetcher(Fetcher):
-        def _run_safe(self, *args: str) -> str:
+        def _run_safe(self, *args: str, timeout: int = 0) -> str:
             cmd = " ".join(args)
             if cmd == "top pods -n default --no-headers --containers":
                 return "\n".join(

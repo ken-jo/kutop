@@ -33,6 +33,8 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+__all__ = ["KutopPlugin", "iter_plugins", "iter_enabled", "reset_registry"]
+
 
 @runtime_checkable
 class KutopPlugin(Protocol):

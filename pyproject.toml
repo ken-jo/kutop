@@ -70,7 +70,7 @@ Issues = "https://github.com/ken-jo/kutop/issues"
 
 [project.optional-dependencies]
 profiles = []
-test = ["pytest>=8,<9"]
+test = ["pytest>=8,<9", "ruff>=0.5"]
 
 [project.scripts]
 kutop = "kutop.cli:main"
@@ -81,3 +81,9 @@ packages = ["kutop", "kutop.render", "kutop.plugins", "kutop.profiles", "kubetop
 
 [tool.setuptools.package-data]
 kutop = ["profiles/*.yaml", "render/*.tcss"]
+
+[tool.ruff]
+# Runtime code must stay 3.9-compatible (see CI matrix); this also makes ruff
+# flag 3.10+-only syntax instead of letting it slip through to release.
+target-version = "py39"
+line-length = 100
