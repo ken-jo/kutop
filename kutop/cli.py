@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from typing import Optional
 
@@ -295,6 +296,26 @@ def main(argv: Optional[list[str]] = None) -> int:
             "note: the refresh interval is now fixed at 5s; the positional "
             "interval argument is ignored.\n"
         )
+
+    # Fail fast on the LIVE path when kubectl is absent: every refresh would
+    # fail and the TUI could only show an empty loading frame. --self-test,
+    # --snapshot, and --dump-config render synthetic/offline output and must
+    # keep working without kubectl, so they skip this gate.
+    if not (args.self_test or args.snapshot or args.dump_config) \
+            and shutil.which("kubectl") is None:
+        sys.stderr.write(
+            "kutop: kubectl not found on PATH.\n"
+            "kutop has no in-cluster agent — every read goes through your "
+            "local kubectl and kubeconfig. To get started:\n"
+            "  1. install kubectl: "
+            "https://kubernetes.io/docs/tasks/tools/\n"
+            "  2. point it at your cluster (set KUBECONFIG or use "
+            "~/.kube/config)\n"
+            "  3. verify access with: kubectl get nodes\n"
+            "then run kutop again. (--self-test, --snapshot and --dump-config "
+            "work without kubectl.)\n"
+        )
+        sys.exit(2)
 
     profile = Profile()
     if args.profile:
