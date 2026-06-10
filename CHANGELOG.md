@@ -80,9 +80,34 @@
 - Changing sort or columns before the first snapshot no longer blanks the
   table: the loading row / startup-guidance rows are re-rendered after every
   column rebuild.
+- A partially failing refresh now reports every broken source instead of only
+  the first: the "refresh degraded" toast aggregates up to 3 distinct failures
+  (e.g. `refresh degraded: 2 failures: get pods -n team-a: forbidden; get pvc
+  -n team-b: timeout`) with `+N more` beyond, making multi-namespace RBAC
+  problems diagnosable at a glance. Namespace-scoped kubectl failure labels
+  include the namespace so identical errors in different namespaces no longer
+  collapse into one message. `Snapshot.errors` now carries every distinct
+  failure of the cycle; `Snapshot.error` retains its existing
+  single-primary-failure contract for backward compatibility.
+- Delete/restart failure toasts no longer truncate kubectl stderr to 80 chars —
+  the reason is shown whitespace-collapsed up to 200 chars, and the complete
+  stderr is written to the Textual devtools log.
+
+### Tests
+
+- Exhaustive Config persistence round-trip that walks every dataclass field, so
+  a new option missing from the dump/load mapping can never ship silently;
+  CLI-flag coverage for every previously untested flag and positional; `kubetop`
+  compatibility alias regression-tested (import, version parity, legacy
+  submodule imports, `python -m kubetop --version`).
 
 ### Changed
 
+- Options modal: `Esc` and a new **Cancel (esc)** footer button now revert
+  every edit made while the modal was open, restoring (and persisting) the
+  configuration captured when it opened — including a committed or merely
+  previewed theme. The **Close** button and the `o` key keep changes, as
+  before.
 - The two-step `q` quit flow is now keyboard-complete: `Enter` confirms a
   pending quit and `Esc` cancels it without also clearing an active search in
   the same keypress. The confirm only fires on the base dashboard — opening a
@@ -137,6 +162,12 @@
   strip only happens when the suffix actually looks like a pod-template-hash,
   and `X` refuses such pods instead of restarting an unrelated same-prefix
   Deployment.
+- Docs: synced `llms.txt` and `CLAUDE.md` with the wave-1 feature set (render/
+  module split, gated rollout-restart `X`, sidebar MENU, two-step quit,
+  kubectl fail-fast, persistent unreachable-cluster guidance, config.yaml.invalid
+  backup, CLI validation, and the metrics prompt); `docs/release.md` now names
+  both version locations (`pyproject.toml` and `kutop/__init__.py`) so
+  `kutop --version` cannot drift from the published release.
 
 ## 0.4.0 - 2026-06-09
 
