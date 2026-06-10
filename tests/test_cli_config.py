@@ -4,6 +4,7 @@ import asyncio
 import re
 from pathlib import Path
 
+import pytest
 from textual.binding import Binding
 
 import kutop
@@ -13,6 +14,7 @@ from kutop.config import (
     METRICS_RESOLUTION_SECS,
     Profile,
     REFRESH_INTERVAL_SECS,
+    SORTABLE_KEYS,
     apply_detail_preset,
     load_config,
 )
@@ -53,6 +55,21 @@ def test_cli_accepts_metrics_bootstrap_opt_out() -> None:
     args = _build_parser().parse_args(["--no-metrics-bootstrap"])
 
     assert args.no_metrics_bootstrap is True
+
+
+def test_cli_rejects_unknown_sort_key() -> None:
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["--sort", "bogus"])
+    # every canonical sort key stays accepted
+    for key in SORTABLE_KEYS:
+        assert _build_parser().parse_args(["--sort", key]).sort == key
+
+
+def test_cli_rejects_unknown_summary_style() -> None:
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["--summary-style", "bogus"])
+
+    assert _build_parser().parse_args(["--summary-style", "tiles"]).summary_style == "tiles"
 
 
 def test_detail_presets_adjust_columns_and_panels() -> None:
@@ -2000,6 +2017,37 @@ def test_app_falls_back_from_unknown_theme() -> None:
 
     assert app.theme == "textual-dark"
     assert app.cfg.theme == "textual-dark"
+    # the fallback is not silent: a load warning records the unknown theme
+    assert any("does-not-exist" in w for w in app.cfg.load_warnings)
+
+
+def test_load_warnings_surface_as_toasts_on_mount(monkeypatch) -> None:
+    from kutop.render.app import TopApp
+
+    seen: list[tuple[str, str]] = []
+
+    async def drive() -> None:
+        cfg = Config(theme="does-not-exist")
+        cfg.load_warnings.append("config.yaml could not be parsed (boom); using defaults")
+        app = TopApp(
+            ["default"],
+            config=cfg,
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        monkeypatch.setattr(
+            app, "notify",
+            lambda message, severity="information", **kw: seen.append((str(message), severity)),
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    warnings = [msg for msg, severity in seen if severity == "warning"]
+    assert any("could not be parsed" in msg for msg in warnings)
+    assert any("does-not-exist" in msg for msg in warnings)
 
 
 def test_app_falls_back_from_hidden_ansi_theme() -> None:

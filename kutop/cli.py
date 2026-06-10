@@ -17,6 +17,8 @@ from . import __version__
 from .config import (
     Profile,
     SNAPSHOT_DETAIL_LEVELS,
+    SORTABLE_KEYS,
+    _VALID_SUMMARY_STYLES,
     apply_detail_preset,
     dump_config_yaml,
     load_config,
@@ -62,13 +64,13 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--context", default=None, help="kubeconfig context to use")
     ap.add_argument("--theme", default=None,
                     help="Textual app theme name (also selectable from the hamburger menu)")
-    ap.add_argument("--sort", default=None,
-                    help="initial sort key (priority/name/cpu/mem/cpu_pct/mem_pct/"
-                         "restarts/phase/node/namespace/age)")
+    ap.add_argument("--sort", default=None, choices=SORTABLE_KEYS, metavar="KEY",
+                    help="initial sort key (" + "/".join(SORTABLE_KEYS) + ")")
     ap.add_argument("--sort-desc", action="store_true",
                     help="reverse the initial sort direction")
-    ap.add_argument("--summary-style", default=None, choices=("tiles", "compact"),
-                    help="top summary header layout (tiles | compact)")
+    ap.add_argument("--summary-style", default=None, choices=_VALID_SUMMARY_STYLES,
+                    help="top summary header layout ("
+                         + " | ".join(_VALID_SUMMARY_STYLES) + ")")
     ap.add_argument("--group-by-node", action="store_true",
                     help="group pods under their node (cluster topology view)")
     ap.add_argument("--filter", default=None,
