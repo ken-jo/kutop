@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- An unreachable cluster now keeps the previous frame and shows an error toast
+  (once per distinct error) instead of silently replacing the dashboard with an
+  empty, error-free snapshot; partial failures (e.g. one forbidden namespace)
+  apply what was fetched and surface a "refresh degraded" warning.
+- PVC usage from the kubelet summary is keyed by **(namespace, name)** — two
+  same-named claims in different namespaces no longer steal each other's
+  usedBytes.
+- Switching namespace/context/profile now queues an immediate refetch and
+  discards any in-flight result fetched under the old scope, so the old
+  cluster's data can no longer render under the new cluster's name.
+- Modal close keys no longer leak into app bindings: closing logs/describe/event
+  popups with `q` no longer arms the quit hint, and `Esc` no longer clears the
+  active search filter.
+- The saved `~/.config/kutop/config.yaml` can no longer be corrupted by values
+  containing quotes/colons (e.g. a health-probe regex) — all user values are
+  emitted as escaped YAML scalars, and the file is written atomically.
+- A profile no longer erases user settings it does not supply: timezone,
+  namespaces, context, and probes are only stripped/reset when the active
+  profile actually carries them (thresholds remain always profile-owned).
+- `kutop --profile <typo-or-broken-yaml>` prints one clean error line instead
+  of a traceback.
+- Memory/CPU quantity parsing handles exponent forms (`1e9`), the SI `k`
+  suffix, and nano/micro CPU suffixes instead of silently reading them as 0.
+- SummaryBar tiles no longer wrap (and lose the value row) on narrow
+  terminals — whole tiles are dropped to fit; threshold sliders map clicks to
+  the exact cell under the cursor and show a combined marker when warn/crit
+  overlap; trend meters use the real content width.
+- The sidebar CONTEXT dropdown is only rebuilt when its options/value actually
+  change, so it no longer snaps shut on every 5s refresh; Options-modal edits
+  no longer rebuild the pod table (losing cursor/scroll) when columns are
+  unchanged.
+- Opening Options no longer shells kubectl on the UI thread; a timed-out
+  kubectl is drained with a bounded wait so a credential-plugin child can no
+  longer hang the fetch worker; a process spawned during `cancel()` is now
+  killed too.
+- The PVC panel's last column is now labelled **CLASS** (it shows the storage
+  class); the dead `Tab` sidebar binding was removed (`b` toggles the sidebar).
+
+### Changed
+
+- CI now enforces `ruff check` and runs a non-blocking latest-textual/rich
+  canary job; Textual private-API imports are confined to
+  `kutop/render/_compat.py`.
+- README options screenshots are shown one per tab at full width; `llms.txt`
+  added for LLM-assisted tooling.
+
 ## 0.4.0 - 2026-06-09
 
 ### Added

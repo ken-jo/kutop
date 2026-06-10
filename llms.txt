@@ -1,0 +1,53 @@
+# kutop
+
+> kutop is a btop-like Kubernetes TUI dashboard built on Textual/Rich (Python 3.9+). It is a local terminal app with NO in-cluster agent: every live read shells out to the user's `kubectl` + kubeconfig, exactly as `kubectl` would. PyPI/package/import name is `kutop`; `kubetop` is a compatibility alias only.
+
+One refresh cycle flows `fetch.py` → `model.Snapshot` → `render/app.py`. The data layer is deliberately UI-free and workload-free; the renderer applies Profile-driven presentation (pod ordering, timezone, thresholds). Workload-specific knowledge (namespace names, pod prefixes, priorities) lives ONLY in Profile YAML files — never in core code.
+
+## Architecture (module map)
+
+- [model.py](kutop/model.py): domain dataclasses (Pod, Node, PVC, Event, Alert, HealthResult, Summary, Snapshot) and unit helpers (to_mcpu, to_mi, fmt_*, age_seconds). Single source of truth for shape. `storage_used_mi`/`used_mi` use None to mean "unknown" (rendered `-`), distinct from a known 0.
+- [config.py](kutop/config.py): `Profile` (the only home for workload literals) and `Config` (runtime-editable: panels, columns, thresholds, namespaces, theme). Resolution order, later wins: defaults → profile file → `~/.config/kutop/config.yaml` → CLI flags. While a profile is active it is authoritative for the fields it supplies (see the `_profile_owned_sections` contract); `save_config` writes atomically and never persists profile-owned values.
+- [fetch.py](kutop/fetch.py): `Fetcher` runs blocking kubectl subprocesses — MUST run off the UI thread (the app drives it via a `@work(thread=True)` worker + `call_from_thread`). Contract: any failure sets `Snapshot.error` and returns a partial snapshot; callers keep the previous frame. `_run_safe` records failures for `Snapshot.error`; `_run_optional` is for expected failures (missing metrics-server, kubelet stats) that must stay silent. PVC usage comes from the kubelet summary API per node, keyed by (namespace, name). `cancel()` kills in-flight processes for immediate quit.
+- [render/app.py](kutop/render/app.py): `TopApp` (Textual App) — keybindings, modals (logs/describe/delete/event), sorting/filtering/grouping, sidebar (`SidebarPanel` fed by the `SidebarState` dataclass), Options modal wiring, config persistence. Fetch lifecycle: `_fetch_gen` scope token drops in-flight results after a namespace/context/profile switch; `_request_refresh()` queues an urgent refetch if one is in flight.
+- [render/widgets.py](kutop/render/widgets.py): presentation widgets (SummaryBar, TrendGraph, DualThresholdSlider, Panel, SearchBar, OptionsModal, theme modals). No fetching, no workload knowledge.
+- [render/_compat.py](kutop/render/_compat.py): the ONLY place Textual private modules are imported — why textual/rich are pinned exactly.
+- [plugins/](kutop/plugins/__init__.py): optional domain features behind a tiny duck-typed seam (`KutopPlugin`: panel_id, is_enabled, fetch, make_panel, render). A plugin must never raise into the core; broken/missing plugins are silently skipped. [plugins/health.py](kutop/plugins/health.py) is the reference plugin. Add one by appending its module path to `_BUILTIN_PLUGIN_MODULES`.
+- [probes.py](kutop/probes.py): opt-in HTTP probes (Alertmanager, health). `/`-prefixed URLs go through `kubectl get --raw` (API-server proxy, kubeconfig auth, no port-forward). Empty config ⇒ zero network.
+- [snapshot.py](kutop/snapshot.py): headless one-frame SVG renderer behind `--snapshot`; falls back to a synthetic, workload-agnostic frame with no cluster. `tools/snapshot.py` is a thin wrapper (single render path).
+- [metrics.py](kutop/metrics.py): interactive Metrics Server preflight/bootstrap at live startup (skip: `--no-metrics-bootstrap` / `KUTOP_NO_METRICS_BOOTSTRAP=1`). Only mutates the cluster on an explicit `y`.
+- [cli.py](kutop/cli.py): argparse entrypoint. Textual is imported lazily so `--version/--help/--dump-config/--self-test` stay cheap and cluster-free.
+
+## Invariants (violations are bugs)
+
+- Workload-agnostic core: model/config/fetch/render carry no namespace names, pod prefixes, or priorities; those enter only via Profile YAML or live cluster reads.
+- No module-level textual import in model.py / config.py / cli.py / fetch.py.
+- Empty alertmanager/health-probe config means those paths never touch the network (`--self-test` is kubectl- and network-free).
+- Pinned deps `textual==8.2.7`, `rich==15.0.0`; runtime code stays Python 3.9-compatible (no match/case, no `X | Y` runtime unions). CI runs 3.9 and 3.12 plus a non-blocking latest-deps canary.
+- None-vs-0: unknown storage stays None and renders `-`.
+
+## Commands
+
+```bash
+python -m pip install -e ".[profiles,test]"   # dev install
+pytest -q                                     # full test suite
+ruff check                                    # lint (CI-enforced)
+python -m compileall -q kutop kubetop tools   # byte-compile gate
+kutop --self-test                             # headless synthetic frame, no cluster
+kutop --dump-config                           # annotated config skeleton (YAML)
+kutop --snapshot out.svg --detail wide        # one frame to SVG (synthetic fallback)
+```
+
+## Docs
+
+- [README.md](README.md): install, run, keybindings, profiles, screenshots
+- [CLAUDE.md](CLAUDE.md): contributor/agent guide — architecture and invariants in depth
+- [CHANGELOG.md](CHANGELOG.md): release history
+- [docs/release.md](docs/release.md): PyPI/Homebrew/apt release process
+- [kutop/profiles/example.yaml](kutop/profiles/example.yaml): fully commented Profile template
+
+## Optional
+
+- [tests/](tests/): pytest suite — config layering/persistence, app behavior via Textual `run_test()`, fetch robustness, unit parsers, metrics bootstrap, probes/plugins/snapshot
+- [packaging/](packaging/): Homebrew formula renderer and Debian packaging
+- [.github/workflows/ci.yml](.github/workflows/ci.yml): compile + ruff + pytest + CLI/snapshot smoke + latest-deps canary

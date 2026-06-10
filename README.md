@@ -187,7 +187,7 @@ resolution is 15s, so the header shows a fixed `metrics 15s` freshness readout
 | `q` `q` | quit (first press shows a confirmation toast) |
 | `r` | refresh now |
 | `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster, Profile) |
-| `Tab` / `b` | toggle the control sidebar |
+| `b` | toggle the control sidebar |
 | `/` | search / filter pods by name |
 | `s` / `S` | cycle sort column / flip sort direction (or click a column header) |
 | `g` | group pods under their node |
@@ -214,15 +214,31 @@ synthetic frame when not. The representative dashboard (every panel enabled:
 Summary, Trends, Alerts, custom Health, Pods, Events, PVC) is shown at the top of
 this README; the per-tab Options views are below.
 
-Options modal views (View, Columns, Panels, Thresholds, Cluster, Profile):
+Options modal views, one per tab (full width so the controls stay readable):
 
-| View | Columns | Panels |
-|------|---------|--------|
-| ![kutop options view tab](docs/kutop-options-view.svg) | ![kutop options columns tab](docs/kutop-options-columns.svg) | ![kutop options panels tab](docs/kutop-options-panels.svg) |
+**View**
 
-| Thresholds | Cluster | Profile |
-|------------|---------|---------|
-| ![kutop options thresholds tab](docs/kutop-options-thresholds.svg) | ![kutop options cluster tab](docs/kutop-options-cluster.svg) | ![kutop options profile tab](docs/kutop-options-profile.svg) |
+![kutop options view tab](docs/kutop-options-view.svg)
+
+**Columns**
+
+![kutop options columns tab](docs/kutop-options-columns.svg)
+
+**Panels**
+
+![kutop options panels tab](docs/kutop-options-panels.svg)
+
+**Thresholds**
+
+![kutop options thresholds tab](docs/kutop-options-thresholds.svg)
+
+**Cluster**
+
+![kutop options cluster tab](docs/kutop-options-cluster.svg)
+
+**Profile**
+
+![kutop options profile tab](docs/kutop-options-profile.svg)
 
 ```bash
 kutop --snapshot /tmp/kutop.svg
@@ -271,7 +287,7 @@ packaged `kutop/profiles/` directory, or by explicit path. Without a profile
 the core runs fully (alphabetical ordering, local timezone, generic thresholds).
 
 The active profile can also be **switched live** from the **PROFILE** dropdown
-at the top of the sidebar (`Tab`/`b`). The list is discovered from your profile
+at the top of the sidebar (`b`). The list is discovered from your profile
 directories (plus `generic` for the no-profile default); selecting one re-applies
 that profile's ordering, namespaces, timezone, thresholds, alert source, and
 health probes immediately, and refetches at once. If the profile sets a
@@ -334,8 +350,12 @@ For a new code-backed custom panel, use the existing plugin seam:
 
 ## How it works
 
-* kubectl calls run in a background thread worker; the UI thread never blocks,
-  and a refresh is skipped while one is in flight (no thrashing on slow clusters).
+* kubectl calls run in a background thread worker; the UI thread never blocks.
+  A timer tick is skipped while a fetch is in flight (no thrashing on slow
+  clusters), while a namespace/context/profile switch queues an immediate
+  refetch and discards any in-flight result from the old scope.
+* If the cluster becomes unreachable, the previous frame is kept and the error
+  is surfaced as a toast (once per distinct error, not every 5s).
 * Node/pod CPU & memory come from `kubectl top` + `kubectl get -o json`.
 * PVC usage comes from the kubelet summary API
   (`/api/v1/nodes/<node>/proxy/stats/summary`) because metrics-server does not

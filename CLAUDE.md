@@ -49,16 +49,26 @@ presentation (ordering, timezone, thresholds).
   True)` lets the profile's namespaces/thresholds/probes win over the persisted file, and
   `save_config` does not persist those profile-owned fields — so a per-context profile (the
   `profiles_by_context` recall map) is not shadowed by, nor leaks into, the shared config file.
+  Which fields count as "profile-owned" is defined once in `_profile_owned_sections()`
+  (thresholds always; timezone/namespaces/context/probes only when the profile supplies them) —
+  `_profile_layer`, `_strip_profile_owned`, and `_config_for_persist` all derive from it.
 - **`fetch.py`** — `Fetcher` runs blocking `subprocess.run` kubectl calls. MUST run off the UI
   thread (the app drives it via a `@work(thread=True)` worker, pushes results with
   `call_from_thread`). Robustness contract: any failure sets `Snapshot.error` and returns a
-  partial snapshot; callers keep the previous frame. PVC usage comes from the kubelet summary
+  partial snapshot; callers keep the previous frame. Essential kubectl calls go through
+  `_run_safe` (failure recorded → `Snapshot.error`); calls whose failure is EXPECTED
+  (metrics-server absent, kubelet stats, optional probes) use `_run_optional` instead so they
+  never flag the refresh. PVC usage comes from the kubelet summary
   API (`/api/v1/nodes/<node>/proxy/stats/summary`) per node because metrics-server does not
   expose it — one node failing never aborts the refresh. `cancel()` kills in-flight processes
   for immediate quit.
 - **`render/app.py`** (`TopApp`) — the Textual app; `render/widgets.py` holds custom widgets;
   `render/theme.tcss` + `theme.tcss` hold styles. Owns keybindings, the Options modal, sorting,
-  filtering, grouping, log/describe/delete actions.
+  filtering, grouping, log/describe/delete actions. Fetch lifecycle: `_fetch_gen` is a scope
+  token bumped on every namespace/context/profile switch so an in-flight old-scope result is
+  dropped; scope changes/manual refresh go through `_request_refresh()` (queued if a fetch is
+  in flight), timer ticks through `refresh_snapshot()` (skipped if in flight). Textual PRIVATE
+  imports live only in `render/_compat.py` — never import `textual.widgets._*` elsewhere.
 - **`plugins/`** — optional, domain-specific features behind a tiny duck-typed seam
   (`KutopPlugin` Protocol: `panel_id`, `is_enabled(config)`, `fetch(fetcher, snapshot)`,
   `make_panel()`, `render(panel, snapshot)`). Registry is import-guarded; a missing/broken
