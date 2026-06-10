@@ -671,6 +671,16 @@ def test_sidebar_keys_panel_shows_contextual_hints() -> None:
             assert "l" in pod_keys and "Logs" in pod_keys
             assert "d" in pod_keys and "Describe" in pod_keys
             assert "x" in pod_keys and "Delete disabled" in pod_keys
+            assert "X" in pod_keys and "Restart disabled" in pod_keys
+
+            # the destructive gate flips both rows to their enabled labels
+            app.set_allow_destructive(True)
+            await pilot.pause()
+            pod_keys = plain(body)
+            assert "Delete" in pod_keys and "Delete disabled" not in pod_keys
+            assert "Restart" in pod_keys and "Restart disabled" not in pod_keys
+            app.set_allow_destructive(False)
+            await pilot.pause()
 
             app.action_search()
             await pilot.pause()

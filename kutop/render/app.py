@@ -99,6 +99,7 @@ _BINDING_SPECS = [
     ("d", "describe_pod", "Describe"),
     ("t", "shell_pod", "Shell"),
     ("x", "delete_pod", "Delete"),
+    ("X", "restart_pod", "Restart"),
     ("e", "toggle_events", "Events"),
     ("v", "toggle_pvc", "PVC"),
     ("a", "toggle_alerts", "Alerts"),
@@ -1588,6 +1589,9 @@ class TopApp(App):
             ]
             delete_label = "Delete" if self.allow_destructive else "Delete disabled"
             rows.append((_binding_key("delete_pod"), delete_label))
+            restart_label = ("Restart" if self.allow_destructive
+                             else "Restart disabled")
+            rows.append((_binding_key("restart_pod"), restart_label))
             return ("POD ROW", rows)
 
         return (
@@ -2204,6 +2208,101 @@ class TopApp(App):
                                 severity="error")
             except Exception as exc:
                 self.notify(f"delete error: {exc}", severity="error")
+            self._request_refresh()
+
+        asyncio.create_task(runner())
+
+    def _rollout_target(self, pod: Pod) -> "tuple[Optional[str], str]":
+        """Map a pod's controlling owner to a ``kubectl rollout restart`` target.
+
+        Returns ``(target, reason)``: ``target`` is e.g. ``deployment/web``
+        (with an empty reason), or ``None`` with a human-readable reason when
+        the pod cannot be rolled (bare pod, Job/unknown controller, or an
+        underivable Deployment name).
+
+        Deployment-owned pods may surface either as the fetch layer's resolved
+        ``Deployment`` owner or as a raw ``ReplicaSet`` ownerReference. A
+        ReplicaSet created by a Deployment is named ``<deploy>-<podTemplateHash>``
+        (standard, dependency-free naming), so the Deployment is derived by
+        stripping the trailing ``-<hash>`` segment — no extra API call. A
+        ReplicaSet name with no ``-`` segment cannot be derived that way and is
+        reported as un-rollable rather than guessed.
+        """
+        kind, name = pod.owner_kind, pod.owner_name
+        if not kind or not name:
+            return None, "pod has no controller to roll"
+        if kind == "ReplicaSet":
+            deploy = name.rsplit("-", 1)[0] if "-" in name else ""
+            if not deploy:
+                return None, f"cannot derive a Deployment from ReplicaSet '{name}'"
+            return f"deployment/{deploy}", ""
+        if kind in ("Deployment", "StatefulSet", "DaemonSet"):
+            return f"{kind.lower()}/{name}", ""
+        return None, f"{kind} pods don't support rollout restart"
+
+    def action_restart_pod(self) -> None:
+        # Same live gate as delete: a rollout restart reschedules every pod
+        # under the controller, so it must never fire from one stray keypress.
+        if not self.allow_destructive:
+            self.notify(
+                "restart disabled — enable 'Allow delete' in the sidebar "
+                "(or launch with --allow-destructive)",
+                severity="warning", timeout=4,
+            )
+            return
+        pod = self._focused_pod()
+        if not pod:
+            self.notify("focus a pod row first", severity="warning")
+            return
+        target, reason = self._rollout_target(pod)
+        if not target:
+            self.notify(f"restart unavailable: {reason} — use delete (x) instead",
+                        severity="warning", timeout=4)
+            return
+
+        def on_confirm(confirmed: Optional[bool]) -> None:
+            if confirmed:
+                self._do_restart_rollout(target, pod.namespace)
+
+        # Full target identity in the confirm body: cluster context, namespace,
+        # the focused pod, and exactly which workload the rollout will restart.
+        body = (
+            f"context: {self._display_context() or 'current'}\n"
+            f"namespace: {pod.namespace}\n"
+            f"pod: {pod.name}\n"
+            f"restarts: {target}"
+        )
+        self.push_screen(
+            ConfirmModal("RESTART ROLLOUT", body, confirm_label="Restart"),
+            on_confirm,
+        )
+
+    def _restart_cmd(self, target: str, ns: str) -> "list[str]":
+        """argv for ``kubectl rollout restart`` (same --context plumbing as delete)."""
+        cmd = ["kubectl"]
+        if self.context:
+            cmd += ["--context", self.context]
+        cmd += ["rollout", "restart", target, "-n", ns]
+        return cmd
+
+    def _do_restart_rollout(self, target: str, ns: str) -> None:
+        async def runner() -> None:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *self._restart_cmd(target, ns),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, err = await proc.communicate()
+                if proc.returncode == 0:
+                    self.notify(f"restarted {target}")
+                else:
+                    self.notify(
+                        f"restart failed: {err.decode(errors='ignore')[:80]}",
+                        severity="error",
+                    )
+            except Exception as exc:
+                self.notify(f"restart error: {exc}", severity="error")
             self._request_refresh()
 
         asyncio.create_task(runner())
