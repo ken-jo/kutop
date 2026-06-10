@@ -536,6 +536,12 @@ class Fetcher:
             or ""
         )
 
+        # container names in spec order (first = kubectl's default target)
+        pod.container_names = [
+            str(c.get("name", "")) for c in spec.get("containers", []) or []
+            if c.get("name")
+        ]
+
         # requests/limits summed across all containers
         for c in spec.get("containers", []) or []:
             res = c.get("resources", {}) or {}
@@ -554,6 +560,7 @@ class Fetcher:
         oomkilled = False
         crashloop = False
         last_reason = ""
+        last_exit: Optional[int] = None
         for cs in cstatuses:
             if cs.get("ready"):
                 ready_n += 1
@@ -577,11 +584,23 @@ class Fetcher:
                 or wreason
                 or last.get("reason", "")
             )
+            # exit code paired with the reason above: current termination wins,
+            # else the previous one (crashloop forensics in the log viewer)
+            if last_exit is None:
+                code = cur.get("exitCode")
+                if code is None:
+                    code = last.get("exitCode")
+                if code is not None:
+                    try:
+                        last_exit = int(code)
+                    except (TypeError, ValueError):
+                        last_exit = None
         pod.ready = f"{ready_n}/{total_n}" if total_n else "0/0"
         pod.restarts = restarts
         pod.oomkilled = oomkilled
         pod.crashloop = crashloop
         pod.last_terminated_reason = last_reason
+        pod.last_exit_code = last_exit
 
         c_usage = usage.get(name, (0, 0))
         pod.cpu_mcpu = c_usage[0]

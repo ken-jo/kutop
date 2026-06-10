@@ -157,6 +157,10 @@ class Pod:
     oomkilled: bool = False
     crashloop: bool = False
     last_terminated_reason: str = ""   # latest container terminated/waiting reason
+    last_exit_code: Optional[int] = None  # latest terminated exitCode; None = none seen
+    # container names in spec order (the first is kubectl's default log/exec
+    # target); drives the log viewer's container picker on multi-container pods
+    container_names: list = field(default_factory=list)
     start_time: str = ""               # ISO creationTimestamp; "" = unknown
     owner_kind: str = ""               # controller kind (StatefulSet/Deployment/…); "" = bare pod
     owner_name: str = ""               # controller name; "" = bare pod

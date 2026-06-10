@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- **Shell into the focused pod** (`t`): the dashboard suspends, hands the real
+  terminal to `kubectl exec -it` (bash with sh fallback), and resumes with an
+  immediate refetch when the shell exits.
+- **Crashloop forensics in the log viewer**: `p` toggles `--previous` (the
+  crashed container's logs — where the actual crash is, since a
+  CrashLoopBackOff pod's live stream is empty or seconds-young), `c` cycles
+  the target container on multi-container pods, and the header shows the last
+  termination reason + exit code. The opt-in LAST REASON column now appends
+  the exit code, e.g. `OOMKilled(137)`.
+
 ### Fixed
 
 - An unreachable cluster now keeps the previous frame and shows an error toast

@@ -19,20 +19,64 @@ from textual.widgets import Label, RichLog
 __all__ = ["LogViewerModal", "DescribeModal", "EventDetailModal"]
 
 class LogViewerModal(ModalScreen):
-    """Asynchronous live log streaming (`kubectl logs -f`)."""
+    """Asynchronous log streaming (`kubectl logs`) with crashloop forensics.
 
-    def __init__(self, pod_name: str, ns: str, tail: int, context: Optional[str]) -> None:
+    Beyond the live ``-f`` stream: ``p`` toggles ``--previous`` (the CRASHED
+    container's logs — for a CrashLoopBackOff pod the live stream is empty or
+    seconds-young, the previous one holds the actual crash), and ``c`` cycles
+    the target container on multi-container pods. The header shows the active
+    container/mode plus the pod's last termination reason and exit code.
+    """
+
+    def __init__(self, pod_name: str, ns: str, tail: int, context: Optional[str],
+                 containers: "Optional[list[str]]" = None,
+                 status_line: str = "") -> None:
         super().__init__()
         self.pod_name = pod_name
         self.ns = ns
         self.tail = tail
         self.context = context
+        # spec-order container names; empty -> let kubectl pick its default
+        self.containers = [c for c in (containers or []) if c]
+        self.status_line = status_line
+        self._container_idx = 0
+        self._previous = False
         self.proc: Optional[asyncio.subprocess.Process] = None
         self.log_task: Optional[asyncio.Task] = None
 
+    @property
+    def container(self) -> Optional[str]:
+        """The targeted container name, or None for kubectl's default."""
+        if not self.containers:
+            return None
+        return self.containers[self._container_idx % len(self.containers)]
+
+    def _logs_cmd(self) -> "list[str]":
+        """argv for the current mode. --previous logs are static, so no -f."""
+        cmd = ["kubectl"]
+        if self.context:
+            cmd += ["--context", self.context]
+        cmd += ["logs", "-n", self.ns, self.pod_name, f"--tail={self.tail}"]
+        if self.container is not None:
+            cmd += ["-c", self.container]
+        if self._previous:
+            cmd.append("--previous")
+        else:
+            cmd.append("-f")
+        return cmd
+
+    def _header_text(self) -> str:
+        mode = "PREVIOUS (crashed)" if self._previous else "live"
+        ctr = f" · ctr {self.container}" if self.container else ""
+        status = f" · {self.status_line}" if self.status_line else ""
+        keys = "q close · p previous"
+        if len(self.containers) > 1:
+            keys += " · c container"
+        return f"Logs: {self.pod_name} [{self.ns}]{ctr} · {mode}{status} — {keys}"
+
     def compose(self) -> ComposeResult:
         with Vertical(id="log_box"):
-            yield Label(f"Live Logs: {self.pod_name} [{self.ns}] — ESC/q to close", id="log_hdr")
+            yield Label(self._header_text(), id="log_hdr")
             yield RichLog(id="log_content", highlight=True, max_lines=2000)
 
     async def on_mount(self) -> None:
@@ -40,13 +84,9 @@ class LogViewerModal(ModalScreen):
 
     async def _stream(self) -> None:
         log = self.query_one("#log_content", RichLog)
-        cmd = ["kubectl"]
-        if self.context:
-            cmd += ["--context", self.context]
-        cmd += ["logs", "-n", self.ns, self.pod_name, "-f", f"--tail={self.tail}"]
         try:
             self.proc = await asyncio.create_subprocess_exec(
-                *cmd,
+                *self._logs_cmd(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
@@ -56,10 +96,28 @@ class LogViewerModal(ModalScreen):
                 if not line:
                     break
                 log.write(line.decode("utf-8", errors="ignore").rstrip())
+            if self._previous:
+                log.write("[end of previous container log]")
         except asyncio.CancelledError:
             pass
         except Exception as exc:
             log.write(f"[error] {exc}")
+
+    async def _restart_stream(self) -> None:
+        """Stop the running kubectl and stream again with the new mode/target."""
+        if self.log_task:
+            self.log_task.cancel()
+        if self.proc:
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
+        try:
+            self.query_one("#log_hdr", Label).update(self._header_text())
+            self.query_one("#log_content", RichLog).clear()
+        except Exception:
+            pass
+        self.log_task = asyncio.create_task(self._stream())
 
     async def on_key(self, event) -> None:
         if event.key in ("escape", "q"):
@@ -67,6 +125,14 @@ class LogViewerModal(ModalScreen):
             # (q would arm the quit hint, escape would clear the search filter)
             event.stop()
             await self._close()
+        elif event.key == "p":
+            event.stop()
+            self._previous = not self._previous
+            await self._restart_stream()
+        elif event.key == "c" and len(self.containers) > 1:
+            event.stop()
+            self._container_idx += 1
+            await self._restart_stream()
 
     async def _close(self) -> None:
         if self.log_task:

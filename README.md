@@ -191,8 +191,9 @@ resolution is 15s, so the header shows a fixed `metrics 15s` freshness readout
 | `/` | search / filter pods by name |
 | `s` / `S` | cycle sort column / flip sort direction (or click a column header) |
 | `g` | group pods under their node |
-| `l` | live logs for the focused pod (`kubectl logs -f`) |
+| `l` | logs for the focused pod (`kubectl logs -f`); inside the viewer `p` shows the **previous (crashed) container's** logs and `c` cycles containers |
 | `d` | describe the focused pod |
+| `t` | shell into the focused pod (`kubectl exec -it`, bash with sh fallback) — the dashboard suspends and resumes when the shell exits |
 | `x` | delete the focused pod (needs the sidebar **Allow delete** toggle on, then confirm) |
 | `e` / `v` | toggle the Events / PVC panels |
 | `a` / `h` | toggle the Alerts / Health panels (profile-driven) |

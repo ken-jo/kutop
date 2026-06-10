@@ -406,6 +406,9 @@ def build_column_registry() -> "dict[str, ColumnSpec]":
             r = "OOMKilled"
         if pod.crashloop and not r:
             r = "CrashLoop"
+        if r and pod.last_exit_code is not None:
+            # OOMKilled(137) — the exit code disambiguates crash causes
+            r = f"{r}({pod.last_exit_code})"
         return Text(r, style="bold red") if r else _dim_dash()
 
     # owner / controller -----------------------------------------------------

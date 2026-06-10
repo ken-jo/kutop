@@ -96,6 +96,7 @@ _BINDING_SPECS = [
     ("g", "toggle_group", "Group"),
     ("l", "show_logs", "Logs"),
     ("d", "describe_pod", "Describe"),
+    ("t", "shell_pod", "Shell"),
     ("x", "delete_pod", "Delete"),
     ("e", "toggle_events", "Events"),
     ("v", "toggle_pvc", "PVC"),
@@ -1489,6 +1490,7 @@ class TopApp(App):
             rows = [
                 (_binding_key("show_logs"), "Logs"),
                 (_binding_key("describe_pod"), "Describe"),
+                (_binding_key("shell_pod"), "Shell"),
             ]
             delete_label = "Delete" if self.allow_destructive else "Delete disabled"
             rows.append((_binding_key("delete_pod"), delete_label))
@@ -1809,9 +1811,46 @@ class TopApp(App):
     def action_show_logs(self) -> None:
         pod = self._focused_pod()
         if pod:
-            self.push_screen(LogViewerModal(pod.name, pod.namespace, self.log_tail, self.context))
+            status = pod.last_terminated_reason or ""
+            if status and pod.last_exit_code is not None:
+                status += f" exit={pod.last_exit_code}"
+            self.push_screen(LogViewerModal(
+                pod.name, pod.namespace, self.log_tail, self.context,
+                containers=list(pod.container_names), status_line=status,
+            ))
         else:
             self.notify("focus a pod row first", severity="warning")
+
+    def _shell_cmd(self, pod: Pod) -> "list[str]":
+        """argv for an interactive shell in the focused pod (bash, else sh)."""
+        cmd = ["kubectl"]
+        if self.context:
+            cmd += ["--context", self.context]
+        cmd += [
+            "exec", "-it", "-n", pod.namespace, pod.name, "--",
+            "sh", "-c", "command -v bash >/dev/null 2>&1 && exec bash || exec sh",
+        ]
+        return cmd
+
+    def action_shell_pod(self) -> None:
+        """Hand the real terminal to ``kubectl exec -it`` for the focused pod.
+
+        The app suspends (terminal modes restored), the shell runs in the
+        foreground, and the dashboard resumes with an immediate refetch when
+        the shell exits. Headless contexts (tests/snapshots) reject suspend —
+        surfaced as a notify, never a crash.
+        """
+        pod = self._focused_pod()
+        if not pod:
+            self.notify("focus a pod row first", severity="warning")
+            return
+        try:
+            with self.suspend():
+                subprocess.call(self._shell_cmd(pod))
+        except Exception as exc:
+            self.notify(f"shell failed: {exc}", severity="error")
+            return
+        self._request_refresh()
 
     def action_describe_pod(self) -> None:
         pod = self._focused_pod()
