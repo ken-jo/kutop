@@ -2274,6 +2274,219 @@ def test_options_modal_theme_hover_previews(monkeypatch) -> None:
     asyncio.run(drive())
 
 
+def test_options_modal_escape_reverts_edits_and_persists_snapshot(monkeypatch) -> None:
+    from textual.widgets import Checkbox, Select
+
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg, path=None, **kw: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(panel_backgrounds=True, summary_style="tiles"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+            before = app.cfg.to_dict()
+            saved.clear()
+
+            checkbox = app.screen.query_one("#opt_panel_backgrounds", Checkbox)
+            checkbox.value = False
+            await pilot.pause()
+            style = app.screen.query_one("#opt_summary_style", Select)
+            style.value = "compact"
+            await pilot.pause()
+            # live preview applied + persisted while the modal is open
+            assert app.cfg.panel_backgrounds is False
+            assert app.cfg.summary_style == "compact"
+            assert saved
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert len(app.screen_stack) == 1
+            assert app.cfg.panel_backgrounds is True
+            assert app.cfg.summary_style == "tiles"
+            assert app.cfg.to_dict() == before
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    # the restored snapshot was persisted, not just re-rendered
+    assert saved[-1]["view"]["panel_backgrounds"] is True
+    assert saved[-1]["view"]["summary_style"] == "tiles"
+
+
+def test_options_modal_cancel_button_reverts_edits(monkeypatch) -> None:
+    from textual.widgets import Checkbox, Select
+
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg, path=None, **kw: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(panel_backgrounds=True, summary_style="tiles"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+            before = app.cfg.to_dict()
+            saved.clear()
+
+            checkbox = app.screen.query_one("#opt_panel_backgrounds", Checkbox)
+            checkbox.value = False
+            await pilot.pause()
+            style = app.screen.query_one("#opt_summary_style", Select)
+            style.value = "compact"
+            await pilot.pause()
+            assert app.cfg.panel_backgrounds is False
+
+            await pilot.click("#opt_cancel")
+            await pilot.pause()
+
+            assert len(app.screen_stack) == 1
+            assert app.cfg.panel_backgrounds is True
+            assert app.cfg.summary_style == "tiles"
+            assert app.cfg.to_dict() == before
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    assert saved[-1]["view"]["panel_backgrounds"] is True
+    assert saved[-1]["view"]["summary_style"] == "tiles"
+
+
+def test_options_modal_close_keeps_edits(monkeypatch) -> None:
+    from textual.widgets import Checkbox
+
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg, path=None, **kw: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(panel_backgrounds=True),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+            saved.clear()
+
+            checkbox = app.screen.query_one("#opt_panel_backgrounds", Checkbox)
+            checkbox.value = False
+            await pilot.pause()
+
+            await pilot.click("#opt_close")
+            await pilot.pause()
+
+            assert len(app.screen_stack) == 1
+            assert app.cfg.panel_backgrounds is False
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    assert saved[-1]["view"]["panel_backgrounds"] is False
+
+
+def test_options_modal_cancel_reverts_previewed_and_committed_theme(monkeypatch) -> None:
+    from textual.widgets import Button, Select
+
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg, path=None, **kw: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+
+            # previewed-but-uncommitted theme: Cancel restores it, no persist
+            app.action_open_options()
+            await pilot.pause()
+            saved.clear()
+
+            select = app.screen.query_one("#opt_theme", Select)
+            select.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.theme == "textual-light"
+            assert app.cfg.theme == "textual-dark"
+
+            app.screen.query_one("#opt_cancel", Button).press()
+            await pilot.pause()
+
+            assert len(app.screen_stack) == 1
+            assert app.theme == "textual-dark"
+            assert app.cfg.theme == "textual-dark"
+            assert saved == []
+
+            # committed theme: Esc re-adopts the snapshot and persists it
+            app.action_open_options()
+            await pilot.pause()
+            select = app.screen.query_one("#opt_theme", Select)
+            select.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.cfg.theme == "textual-light"
+            saved.clear()
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert len(app.screen_stack) == 1
+            assert app.theme == "textual-dark"
+            assert app.cfg.theme == "textual-dark"
+            assert saved[-1]["view"]["theme"] == "textual-dark"
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
 def test_hidden_ansi_themes_are_not_offered() -> None:
     from kutop.render.app import TopApp
 
