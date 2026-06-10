@@ -31,12 +31,14 @@ def test_preflight_reports_available_when_kubectl_top_works(monkeypatch) -> None
     assert calls == [["kubectl", "--context", "dev", "top", "nodes", "--no-headers"]]
 
 
-def test_prompt_answer_accepts_case_insensitive_yes_prefix() -> None:
-    for answer in ("y", "Y", "yes", "YES", "Yes", " yep"):
-        assert _answer_is_yes(answer)
+def test_prompt_answer_accepts_only_exact_yes() -> None:
+    # Only exact y/yes (case-insensitive, leading/trailing whitespace stripped)
+    # are accepted; anything longer is rejected (cluster-mutating kubectl apply gate).
+    for answer in ("y", "Y", "yes", " YES ", "yes"):
+        assert _answer_is_yes(answer), f"expected True for {answer!r}"
 
-    for answer in ("n", "N", "no", "NO", "No", "", " maybe"):
-        assert not _answer_is_yes(answer)
+    for answer in ("yep", "yessir", "y but actually no", "n", ""):
+        assert not _answer_is_yes(answer), f"expected False for {answer!r}"
 
 
 def test_missing_metrics_api_declined_logs_install_options(monkeypatch) -> None:
@@ -273,3 +275,39 @@ def test_no_interval_deprecation_toast_by_default(monkeypatch) -> None:
     asyncio.run(drive())
 
     assert not any("positional interval argument" in t for t in toasts)
+
+
+def test_mount_surfaces_interval_and_config_warnings_together(monkeypatch) -> None:
+    """Both the interval-deprecation toast AND a config parse warning must be
+    notified on mount when interval_deprecated=True and cfg.load_warnings is
+    non-empty — neither suppresses the other."""
+    from kutop.config import Config
+    from kutop.render.app import TopApp
+
+    seen: list[tuple[str, str]] = []
+
+    async def drive() -> None:
+        cfg = Config()
+        cfg.load_warnings.append("config.yaml could not be parsed (boom); using defaults")
+        app = TopApp(
+            ["default"],
+            interval_deprecated=True,
+            config=cfg,
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        monkeypatch.setattr(
+            app, "notify",
+            lambda message, severity="information", **kw: seen.append((str(message), severity)),
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    messages = [msg for msg, _sev in seen]
+    # interval deprecation warning must be present
+    assert any("positional interval argument is deprecated" in m for m in messages)
+    # config parse warning must also be present
+    assert any("could not be parsed" in m for m in messages)

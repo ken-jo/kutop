@@ -296,3 +296,21 @@ class Snapshot:
     health: list[HealthResult] = field(default_factory=list)  # M3 (health probes)
     summary: Summary = field(default_factory=Summary)
     error: str = ""        # non-empty if the refresh failed; renderer keeps prior frame
+
+
+# kube-controller-manager names Deployment-created ReplicaSets
+# "<deploy>-<podTemplateHash>" with the hash drawn from rand.String's reduced
+# alphabet (no vowels, no 0/1/3 — so it can never spell a word like "canary").
+_POD_TEMPLATE_HASH_ALPHABET = frozenset("bcdfghjklmnpqrstvwxz2456789")
+
+
+def pod_template_hash_like(segment: str) -> bool:
+    """True when ``segment`` plausibly is a pod-template-hash suffix.
+
+    Used to decide whether a ReplicaSet name can be reduced to its owning
+    Deployment by stripping the last ``-`` segment; a standalone or
+    CRD-managed ReplicaSet fails this test and must keep its own identity.
+    """
+    return 5 <= len(segment) <= 12 and all(
+        ch in _POD_TEMPLATE_HASH_ALPHABET for ch in segment
+    )

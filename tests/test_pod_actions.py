@@ -188,6 +188,60 @@ def test_rollout_target_accepts_fetch_resolved_deployment_owner() -> None:
     assert app._rollout_target(pod) == ("deployment/web", "")
 
 
+def test_fetch_rs_non_hash_suffix_keeps_replicaset_identity() -> None:
+    """A ReplicaSet whose name suffix does NOT look like a pod-template-hash
+    (e.g. 'web-canary') must be retained as owner_kind='ReplicaSet' with its
+    full name — it must not be mistaken for a Deployment named 'web'."""
+    from kutop.render.app import TopApp
+
+    class CanaryFetcher(Fetcher):
+        def _run_safe(self, *args: str, timeout: int = 0) -> str:
+            if " ".join(args) == "get pods -n default -o json":
+                return json.dumps({"items": [{
+                    "metadata": {
+                        "name": "web-canary-xyzzy",
+                        "ownerReferences": [{"kind": "ReplicaSet",
+                                             "name": "web-canary",
+                                             "controller": True}],
+                    },
+                    "spec": {},
+                    "status": {"phase": "Running"},
+                }]})
+            return ""
+
+    pod = CanaryFetcher(["default"])._fetch_pods()[0]
+    # non-hash suffix: owner stays ReplicaSet, NOT Deployment "web"
+    assert pod.owner_kind == "ReplicaSet"
+    assert pod.owner_name == "web-canary"
+
+    # and _rollout_target correctly reports it as un-rollable
+    app = TopApp(namespaces=["default"],
+                 discover_namespaces=False, auto_refresh=False)
+    target, reason = app._rollout_target(pod)
+    assert target is None
+    assert "web-canary" in reason
+
+    # hash-like suffixes still resolve to Deployment (regression guard)
+    class HashFetcher(Fetcher):
+        def _run_safe(self, *args: str, timeout: int = 0) -> str:
+            if " ".join(args) == "get pods -n default -o json":
+                return json.dumps({"items": [{
+                    "metadata": {
+                        "name": "web-7d4b9c6f9d-abcde",
+                        "ownerReferences": [{"kind": "ReplicaSet",
+                                             "name": "web-7d4b9c6f9d",
+                                             "controller": True}],
+                    },
+                    "spec": {},
+                    "status": {"phase": "Running"},
+                }]})
+            return ""
+
+    hash_pod = HashFetcher(["default"])._fetch_pods()[0]
+    assert hash_pod.owner_kind == "Deployment"
+    assert hash_pod.owner_name == "web"
+
+
 def test_rollout_target_rejects_unrollable_pods() -> None:
     from kutop.model import Pod
     from kutop.render.app import TopApp
@@ -208,6 +262,13 @@ def test_rollout_target_rejects_unrollable_pods() -> None:
         Pod(name="raw-x", namespace="default",
             owner_kind="ReplicaSet", owner_name="raw"))
     assert target is None and "raw" in reason
+
+    # a non-hash suffix (canary RS, Argo Rollouts, etc.) must NOT be mistaken
+    # for a Deployment-managed RS — the ReplicaSet keeps its own identity
+    target, reason = app._rollout_target(
+        Pod(name="web-canary-xyzzy", namespace="default",
+            owner_kind="ReplicaSet", owner_name="web-canary"))
+    assert target is None and "web-canary" in reason
 
 
 def _pod_snapshot(pod):
@@ -363,3 +424,138 @@ def test_restart_confirm_body_falls_back_to_current_context() -> None:
             await pilot.exit(None)
 
     asyncio.run(drive())
+
+
+def test_x_keypress_opens_restart_confirm() -> None:
+    """End-to-end: pressing 'X' on a focused Deployment-owned pod (via RS)
+    must push a ConfirmModal whose body mentions the rollout target."""
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import ConfirmModal
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="ctx-b", allow_destructive=True,
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._apply_snapshot(_pod_snapshot(
+                Pod(name="web-7d4b9c6f9d-abcde", namespace="default",
+                    node="node-a", phase="Running", ready="1/1",
+                    owner_kind="ReplicaSet", owner_name="web-7d4b9c6f9d")))
+            await pilot.pause()
+
+            # stub out the actual kubectl runner so no subprocess fires
+            calls: list = []
+            app._do_restart_rollout = (  # type: ignore[assignment]
+                lambda target, ns: calls.append((target, ns)))
+
+            await pilot.press("X")
+            await pilot.pause()
+
+            assert isinstance(app.screen, ConfirmModal)
+            body = app.screen._body
+            assert "deployment/web" in body
+
+            # cancel — no kubectl should have run
+            await pilot.press("n")
+            await pilot.pause()
+            assert calls == []
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_restart_runner_invokes_kubectl_and_refreshes(monkeypatch) -> None:
+    """_do_restart_rollout uses asyncio.create_subprocess_exec; exercise it
+    with a fake subprocess that records the argv.  Two scenarios: returncode 0
+    (success + refresh) and returncode 1 (failure notification)."""
+    import asyncio as _asyncio
+
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+
+    # ── success scenario ──────────────────────────────────────────────────────
+    captured_argv: list[list[str]] = []
+    refresh_calls: list[int] = []
+    notify_calls: list[tuple[str, str]] = []
+
+    class FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec_ok(*argv, stdout=None, stderr=None):
+        captured_argv.append(list(argv))
+        return FakeProc()
+
+    async def drive_ok() -> None:
+        app = TopApp(["default"], context="ctx-b", allow_destructive=True,
+                     discover_namespaces=False, auto_refresh=False)
+        app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(_asyncio, "create_subprocess_exec", fake_exec_ok)
+            app.notify = (  # type: ignore[assignment]
+                lambda msg, **kw: notify_calls.append((str(msg), kw.get("severity", ""))))
+            app._request_refresh = lambda: refresh_calls.append(1)  # type: ignore[assignment]
+
+            pod = Pod(name="web-7d4b9c6f9d-abcde", namespace="default",
+                      node="node-a", phase="Running", ready="1/1",
+                      owner_kind="ReplicaSet", owner_name="web-7d4b9c6f9d")
+            target, _ = app._rollout_target(pod)
+            assert target == "deployment/web"
+            app._do_restart_rollout(target, "default")
+            # let the fire-and-forget task settle
+            for _ in range(20):
+                await pilot.pause(0.05)
+                if captured_argv:
+                    break
+            await pilot.pause()
+
+            assert captured_argv, "create_subprocess_exec was not called"
+            expected = app._restart_cmd(target, "default")
+            assert captured_argv[0] == expected
+            assert refresh_calls, "_request_refresh was not called after success"
+            assert any("restarted" in m for m, _sev in notify_calls)
+            await pilot.exit(None)
+
+    asyncio.run(drive_ok())
+
+    # ── failure scenario ──────────────────────────────────────────────────────
+    fail_notify: list[tuple[str, str]] = []
+    fail_refresh: list[int] = []
+
+    class FailProc:
+        returncode = 1
+
+        async def communicate(self):
+            return b"", b"boom"
+
+    async def fake_exec_fail(*argv, stdout=None, stderr=None):
+        return FailProc()
+
+    async def drive_fail() -> None:
+        app = TopApp(["default"], context="ctx-b", allow_destructive=True,
+                     discover_namespaces=False, auto_refresh=False)
+        app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(_asyncio, "create_subprocess_exec", fake_exec_fail)
+            app.notify = (  # type: ignore[assignment]
+                lambda msg, **kw: fail_notify.append((str(msg), kw.get("severity", ""))))
+            app._request_refresh = lambda: fail_refresh.append(1)  # type: ignore[assignment]
+
+            app._do_restart_rollout("deployment/web", "default")
+            for _ in range(20):
+                await pilot.pause(0.05)
+                if fail_notify:
+                    break
+            await pilot.pause()
+
+            assert fail_notify, "notify was not called on failure"
+            assert any("restart failed" in m for m, _sev in fail_notify)
+            assert fail_refresh, "_request_refresh was not called after failure"
+            await pilot.exit(None)
+
+    asyncio.run(drive_fail())

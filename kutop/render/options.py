@@ -32,7 +32,7 @@ from ..config import (
     Config,
     SORTABLE_KEYS,
     _DEFAULT_COLUMN_ORDER,
-    _VALID_SUMMARY_STYLES,
+    SUMMARY_STYLES,
     build_column_registry,
 )
 from ._compat import SelectCurrent, SelectOverlay
@@ -169,7 +169,7 @@ class OptionsModal(ModalScreen):
                         with Vertical(classes="opt_field"):
                             yield Label("summary_style", classes="opt_label")
                             yield Select(
-                                [(s, s) for s in _VALID_SUMMARY_STYLES],
+                                [(s, s) for s in SUMMARY_STYLES],
                                 value=c.summary_style, id="opt_summary_style",
                                 allow_blank=False, compact=True,
                             )

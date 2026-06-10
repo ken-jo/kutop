@@ -147,7 +147,7 @@ class SidebarPanel(Vertical):
             yield Checkbox("Keys", value=self._show_keys, id="chk_keys",
                            compact=True)
             yield Label("ACTIONS", classes="side_section side_section_spaced")
-            yield Checkbox("Allow delete (x)", value=self._allow_delete,
+            yield Checkbox("Allow delete/restart (x/X)", value=self._allow_delete,
                            id="chk_allow_delete", compact=True)
             # MENU absorbs the old hamburger popup (issue #2): the header icon
             # routes here, so the global actions share the sidebar surface.
@@ -215,6 +215,14 @@ class SidebarPanel(Vertical):
             pass
 
     def action_focus_main(self) -> None:
+        """Esc hands focus back to the pod table. Settle a pending quit hint
+        first: this Esc replaces the app-level clear_search Esc (which is the
+        base quit-cancel path), so without this the cancel would be swallowed
+        and the next Enter on the table would exit the app."""
+        try:
+            self.app._cancel_pending_quit()
+        except Exception:
+            pass
         try:
             self.app.query_one("#main_table").focus()
         except Exception:

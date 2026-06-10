@@ -503,9 +503,17 @@ class Fetcher:
                 # Heuristic (standard, dependency-free): a ReplicaSet created by a
                 # Deployment is named "<deploy>-<podTemplateHash>". Stripping the
                 # trailing "-<hash>" segment surfaces the owning Deployment without
-                # an extra API call. We report kind as Deployment + the deploy name.
-                owner_kind = "Deployment"
-                owner_name = ref_name.rsplit("-", 1)[0] if "-" in ref_name else ref_name
+                # an extra API call — but only when the suffix actually looks like
+                # a pod-template-hash; a standalone/CRD-managed ReplicaSet (e.g.
+                # "web-canary") keeps its own kind+name so downstream actions
+                # (rollout restart) can't target an unrelated Deployment "web".
+                base, _, suffix = ref_name.rpartition("-")
+                if base and model.pod_template_hash_like(suffix):
+                    owner_kind = "Deployment"
+                    owner_name = base
+                else:
+                    owner_kind = "ReplicaSet"
+                    owner_name = ref_name
             else:
                 # StatefulSet / DaemonSet / Job(handled above) / CRD controllers / …
                 owner_kind = ref_kind

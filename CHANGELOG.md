@@ -24,7 +24,7 @@
   modal showing context, namespace, pod, and the exact `restarts:` target; bare
   pods and Job/unknown-owned pods get a warning toast suggesting delete (`x`)
   instead. The sidebar KEYS · POD ROW panel shows a Restart row that flips
-  between "Restart" and "Restart disabled" with the destructive gate.
+  between "Restart" and "Restart disabled" with the destructive gate (sidebar toggle labelled "Allow delete/restart (x/X)").
 - **Sidebar MENU section** hosting the former hamburger actions: Options, Keys,
   Screenshot, and Quit; menu Quit exits directly without the two-press `q`
   confirmation.
@@ -77,6 +77,9 @@
   killed too.
 - The PVC panel's last column is now labelled **CLASS** (it shows the storage
   class); the dead `Tab` sidebar binding was removed (`b` toggles the sidebar).
+- Changing sort or columns before the first snapshot no longer blanks the
+  table: the loading row / startup-guidance rows are re-rendered after every
+  column rebuild.
 
 ### Changed
 
@@ -109,14 +112,14 @@
 - The interactive Metrics Server install prompt now names the `kubectl` context
   the apply would target (e.g. `[kutop] Install Metrics Server into context
   'dev' via the official components manifest now? [y/N]`) and advertises No as
-  the default; an empty answer still declines and only an explicit `y`/`Y`
+  the default; an empty answer still declines and only an explicit `y` or `yes`
   applies the manifest.
 - Passing the deprecated positional interval argument (e.g. `kutop ns 5`) now
   also shows a one-time in-app toast after the TUI mounts in addition to the
   stderr notice, which the fullscreen TUI previously covered immediately.
 - Removed the ThemeMenuModal popup and `TopApp.action_open_theme_menu`
-  (replaced by the sidebar MENU; `kutop.render.widgets.options` no longer
-  exports `ThemeMenuModal`).
+  (replaced by the sidebar MENU; `kutop.render.options` no longer defines
+  `ThemeMenuModal` and `kutop.render.widgets` no longer re-exports it).
 - `kutop --help` now ends with a short orientation epilog: prerequisites,
   the config-file path with a `--dump-config` pointer, the profiles
   directory, and the docs URL.
@@ -129,6 +132,11 @@
   `kutop/render/_compat.py`.
 - README options screenshots are shown one per tab at full width; `llms.txt`
   added for LLM-assisted tooling.
+- Standalone or CRD-managed ReplicaSets (e.g. `web-canary`, Argo Rollouts) are
+  no longer misreported as a Deployment owner: the `<deploy>-<podTemplateHash>`
+  strip only happens when the suffix actually looks like a pod-template-hash,
+  and `X` refuses such pods instead of restarting an unrelated same-prefix
+  Deployment.
 
 ## 0.4.0 - 2026-06-09
 
