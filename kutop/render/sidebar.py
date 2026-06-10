@@ -371,7 +371,8 @@ class SidebarPanel(Vertical):
             return
         title.update(f"KEYS · {self._key_context}")
         if not self._key_rows:
-            body.update("focus pod for keys")
+            # every context ships rows; keep a quiet fallback for safety
+            body.update("no keys for this context")
             return
         text = Text()
         for index, (key, label) in enumerate(self._key_rows):

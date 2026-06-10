@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from kutop.fetch import Fetcher
@@ -83,3 +84,33 @@ def test_shell_cmd_targets_focused_pod() -> None:
     # bash is preferred, sh is the fallback — via argv, never shell=True
     assert cmd[9:] == ["sh", "-c",
                        "command -v bash >/dev/null 2>&1 && exec bash || exec sh"]
+
+
+def test_delete_confirm_shows_context_namespace_and_pod() -> None:
+    """Issue #4 slice A: the delete confirm must spell out the full target
+    identity — cluster context, namespace, and pod name — before executing."""
+    from kutop.model import Pod, Snapshot
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import ConfirmModal
+
+    async def drive() -> None:
+        app = TopApp(["payments"], context="ctx-b", allow_destructive=True,
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            snap = Snapshot()
+            snap.pods = [Pod(name="web-0", namespace="payments", node="node-a",
+                             phase="Running", ready="1/1")]
+            app._apply_snapshot(snap)
+            await pilot.pause()
+
+            app.action_delete_pod()
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmModal)
+            body = app.screen._body
+            assert "context: ctx-b" in body
+            assert "namespace: payments" in body
+            assert "pod: web-0" in body
+            await pilot.exit(None)
+
+    asyncio.run(drive())

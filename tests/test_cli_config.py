@@ -603,7 +603,9 @@ def test_sidebar_keys_panel_shows_contextual_hints() -> None:
             title = app.query_one("#side_keys_title", Static)
             body = app.query_one("#side_keys_body", Static)
             assert "KEYS · DASHBOARD" in plain(title)
-            assert "focus pod for keys" in plain(body)
+            dash_keys = plain(body)
+            assert "s" in dash_keys and "Sort" in dash_keys
+            assert "/" in dash_keys and "Search" in dash_keys
 
             snap = Snapshot()
             snap.pods = [
@@ -631,6 +633,69 @@ def test_sidebar_keys_panel_shows_contextual_hints() -> None:
             assert "/" in search_keys and "Edit search" in search_keys
             assert "enter" in search_keys and "Keep filter" in search_keys
             assert "esc" in search_keys and "Clear" in search_keys
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_sidebar_key_context_resolution() -> None:
+    """_sidebar_key_context picks DASHBOARD/POD ROW/EVENTS/SEARCH from the
+    live focus + search state, with rows sourced from the binding SOT."""
+    from textual.widgets import DataTable, Static
+
+    from kutop.model import Pod, Snapshot
+    from kutop.render.app import TopApp
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(show_keys=True),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            # empty dashboard: a curated core set, not a placeholder
+            context, rows = app._sidebar_key_context()
+            assert context == "DASHBOARD"
+            assert ("s", "Sort") in rows
+            assert ("g", "Group") in rows
+            assert ("/", "Search") in rows
+            assert ("b", "Sidebar") in rows
+
+            # a focused pod row exposes the pod verbs; Delete mirrors the gate
+            snap = Snapshot()
+            snap.pods = [Pod(name="api-0", namespace="default", node="node-a",
+                             phase="Running", ready="1/1")]
+            app._apply_snapshot(snap)
+            await pilot.pause()
+            context, rows = app._sidebar_key_context()
+            assert context == "POD ROW"
+            assert ("x", "Delete disabled") in rows
+            app.set_allow_destructive(True)
+            context, rows = app._sidebar_key_context()
+            assert ("x", "Delete") in rows
+
+            # focusing the warning-events table flips to EVENTS immediately,
+            # even though the pod cursor is unchanged
+            app.query_one("#events_table", DataTable).focus()
+            await pilot.pause()
+            context, rows = app._sidebar_key_context()
+            assert context == "EVENTS"
+            assert ("enter", "Details") in rows
+            assert ("e", "Hide events") in rows
+            title = app.query_one("#side_keys_title", Static)
+            rendered = title.render()
+            shown = rendered.plain if hasattr(rendered, "plain") else str(rendered)
+            assert "KEYS · EVENTS" in shown  # synced on focus, no cursor move
+
+            # a visible search bar outranks every other context
+            app.action_search()
+            await pilot.pause()
+            context, _rows = app._sidebar_key_context()
+            assert context == "SEARCH"
 
             await pilot.exit(None)
 
@@ -1538,6 +1603,156 @@ def test_q_quits_only_after_second_press(monkeypatch) -> None:
 
     app.action_quit_hint()
     assert exits == [True]
+
+
+def test_esc_cancels_pending_quit_without_clearing_search(monkeypatch) -> None:
+    """Issue #1 regression: Esc during the quit-hint window must cancel only
+    the pending quit — the search-clearing tail of action_clear_search (which
+    would also hit query_one on this unmounted app) must not run."""
+    from kutop.render.app import TopApp
+
+    notices: list[str] = []
+    exits: list[bool] = []
+    monkeypatch.setattr(TopApp, "notify",
+                        lambda self, message, **kwargs: notices.append(message))
+    monkeypatch.setattr(TopApp, "exit", lambda self: exits.append(True))
+
+    app = TopApp(
+        ["default"],
+        config=Config(theme="textual-dark"),
+        discover_namespaces=False,
+        auto_refresh=False,
+    )
+
+    app.action_quit_hint()  # arm the hint
+    app.action_clear_search()  # Esc: consumes the pending quit only
+    assert "quit cancelled" in notices
+    assert exits == []
+
+    app.action_quit_hint()  # re-arms instead of quitting
+    assert exits == []
+    assert notices.count("Press q again to quit") == 2
+
+
+def test_quit_hint_timeout_lapse_rearms(monkeypatch) -> None:
+    """Issue #1 regression: q after the 4s window expired must re-arm the
+    hint, never quit."""
+    from time import monotonic
+
+    from kutop.render.app import TopApp
+
+    notices: list[str] = []
+    exits: list[bool] = []
+    monkeypatch.setattr(TopApp, "notify",
+                        lambda self, message, **kwargs: notices.append(message))
+    monkeypatch.setattr(TopApp, "exit", lambda self: exits.append(True))
+
+    app = TopApp(
+        ["default"],
+        config=Config(theme="textual-dark"),
+        discover_namespaces=False,
+        auto_refresh=False,
+    )
+
+    app.action_quit_hint()
+    app._quit_hint_deadline = monotonic() - 0.1  # window lapsed
+    app.action_quit_hint()
+    assert exits == []
+    assert notices.count("Press q again to quit") == 2
+
+
+def test_enter_confirms_only_a_pending_quit(monkeypatch) -> None:
+    """Issue #1 regression: the priority Enter binding is gated by
+    check_action, so it only exists while the quit hint is pending and falls
+    through to focused widgets otherwise."""
+    from kutop.render.app import TopApp
+
+    enter = next(b for b in TopApp.BINDINGS
+                 if isinstance(b, Binding) and b.action == "confirm_quit")
+    assert enter.key == "enter"
+    assert enter.priority is True
+    assert enter.show is False
+
+    exits: list[bool] = []
+    monkeypatch.setattr(TopApp, "notify", lambda self, message, **kwargs: None)
+    monkeypatch.setattr(TopApp, "exit", lambda self: exits.append(True))
+
+    app = TopApp(
+        ["default"],
+        config=Config(theme="textual-dark"),
+        discover_namespaces=False,
+        auto_refresh=False,
+    )
+
+    # idle: the binding is inactive, Enter reaches the focused widget
+    assert app.check_action("confirm_quit", ()) is False
+
+    app.action_quit_hint()
+    assert app.check_action("confirm_quit", ()) is True
+    app.action_confirm_quit()
+    assert exits == [True]
+    # confirming consumed the window: Enter is inert again
+    assert app.check_action("confirm_quit", ()) is False
+
+
+def test_pending_quit_never_pierces_modals_or_search(monkeypatch) -> None:
+    """Review regression: with a quit hint pending, Enter must act on a pushed
+    modal or the search input — never fall through the priority app binding
+    and quit. Opening either surface abandons the pending quit outright."""
+    from time import monotonic
+
+    from textual.widgets import Button
+
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import ConfirmModal
+
+    quits: list[bool] = []
+    monkeypatch.setattr(TopApp, "action_quit", lambda self: quits.append(True))
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(theme="textual-dark"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+
+            # q then x: the modal abandons the pending quit and owns Enter
+            app.action_quit_hint()
+            assert monotonic() <= app._quit_hint_deadline
+            app.push_screen(ConfirmModal("Delete pod?", "pod: demo", "Delete"))
+            await pilot.pause()
+            assert app._quit_hint_deadline == 0.0
+            assert app.check_action("confirm_quit", ()) is False
+            # the gate alone must hold even with a live window: a modal on
+            # the screen stack disables the confirm regardless of deadline
+            app._quit_hint_deadline = monotonic() + 4
+            assert app.check_action("confirm_quit", ()) is False
+            app._quit_hint_deadline = 0.0
+            app.screen.query_one("#confirm_yes", Button).focus()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert quits == []
+            assert len(app.screen_stack) == 1  # Enter pressed the modal button
+
+            # q then /: starting a search abandons the pending quit; Enter
+            # submits the filter and refocuses the table without quitting
+            app.action_quit_hint()
+            app.action_search()
+            await pilot.pause()
+            assert app._quit_hint_deadline == 0.0
+            await pilot.press("enter")
+            await pilot.pause()
+            assert quits == []
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+    assert quits == []
 
 
 def test_options_modal_theme_preview_enter_persists(monkeypatch) -> None:

@@ -26,6 +26,7 @@ from typing import Optional
 
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import (
@@ -260,6 +261,11 @@ class TopApp(App):
 
     BINDINGS = [
         *_BINDING_SPECS,
+        # Enter confirms a pending quit. priority=True beats the focused
+        # widget, but check_action() disables the binding whenever no quit is
+        # pending, so Enter falls through to tables/inputs/modals unchanged in
+        # normal use.
+        Binding("enter", "confirm_quit", "Quit", show=False, priority=True),
     ]
 
     def __init__(
@@ -801,6 +807,34 @@ class TopApp(App):
         timeout = 4
         self._quit_hint_deadline = now + timeout
         self.notify("Press q again to quit", title="Quit?", timeout=timeout)
+
+    def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
+        """Disable the Enter quit-confirm binding unless a quit is genuinely
+        pending on the base dashboard. While no hint window is active, while a
+        modal owns the screen, or while a text input has focus, Enter must
+        reach the focused widget (row select, modal button, search submit) —
+        a priority app binding would otherwise consume it first."""
+        if action == "confirm_quit":
+            if monotonic() > self._quit_hint_deadline:
+                return False
+            try:
+                if len(self.screen_stack) > 1 or isinstance(self.focused, Input):
+                    return False
+            except Exception:
+                pass  # not running yet: no screen stack to consult
+        return super().check_action(action, parameters)
+
+    def action_confirm_quit(self) -> None:
+        """Enter while the quit hint is pending takes the real quit path."""
+        self._quit_hint_deadline = 0.0
+        self.action_quit()
+
+    def push_screen(self, screen, *args, **kwargs):
+        """Opening any modal abandons a pending quit confirmation: the user
+        has moved on to another interaction, so Enter inside (or right after)
+        the modal must never fall through to quit."""
+        self._quit_hint_deadline = 0.0
+        return super().push_screen(screen, *args, **kwargs)
 
     def action_quit(self) -> None:
         """Quit promptly: kill any in-flight kubectl before exiting so the worker
@@ -1485,6 +1519,15 @@ class TopApp(App):
                 ],
             )
 
+        if getattr(self.focused, "id", "") == "events_table":
+            return (
+                "EVENTS",
+                [
+                    ("enter", "Details"),
+                    (_binding_key("toggle_events"), "Hide events"),
+                ],
+            )
+
         pod = self._focused_pod()
         if pod:
             rows = [
@@ -1496,7 +1539,15 @@ class TopApp(App):
             rows.append((_binding_key("delete_pod"), delete_label))
             return ("POD ROW", rows)
 
-        return ("DASHBOARD", [])
+        return (
+            "DASHBOARD",
+            [
+                (_binding_key("cycle_sort"), "Sort"),
+                (_binding_key("toggle_group"), "Group"),
+                (_binding_key("search"), "Search"),
+                (_binding_key("toggle_sidebar"), "Sidebar"),
+            ],
+        )
 
     def _sidebar_state(self, key_context: str = "DASHBOARD",
                        key_rows: "Optional[list]" = None) -> SidebarState:
@@ -1700,7 +1751,11 @@ class TopApp(App):
 
     # ── search / filter (key '/') ───────────────────────────────────────────────
     def action_search(self) -> None:
-        """Reveal the search bar and focus its input."""
+        """Reveal the search bar and focus its input.
+
+        Starting a search abandons a pending quit confirmation, so Enter that
+        submits the filter can never double as a quit confirm."""
+        self._quit_hint_deadline = 0.0
         bar = self.query_one("#search_bar", SearchBar)
         bar.set_class(False, "-hidden")
         bar.set_value(self._search_term)
@@ -1708,7 +1763,19 @@ class TopApp(App):
         self._sync_sidebar_state()
 
     def action_clear_search(self) -> None:
-        """Clear the live search term and hide the bar."""
+        """Clear the live search term and hide the bar.
+
+        A pending quit hint is settled first: that Esc only cancels the quit,
+        so a search filter never disappears in the same keypress.
+        """
+        if monotonic() <= self._quit_hint_deadline:
+            self._quit_hint_deadline = 0.0
+            try:
+                self.clear_notifications()
+            except Exception:
+                pass
+            self.notify("quit cancelled", timeout=2)
+            return
         if not self._search_term and self.query_one("#search_bar", SearchBar).has_class("-hidden"):
             return
         self._search_term = ""
@@ -1741,7 +1808,14 @@ class TopApp(App):
             self._sync_sidebar_state()
 
     def on_data_table_row_highlighted(self, event) -> None:
-        if getattr(event.data_table, "id", "") == "main_table":
+        if getattr(event.data_table, "id", "") in ("main_table", "events_table"):
+            self._sync_sidebar_state()
+
+    def on_descendant_focus(self, event) -> None:
+        """Re-resolve the sidebar KEYS context the moment focus moves (e.g.
+        into the events table), not only when a table cursor changes. Focus
+        shifts inside modals never change the context, so skip the rebuild."""
+        if len(self.screen_stack) == 1:
             self._sync_sidebar_state()
 
     def set_namespaces(self, ns_list: list[str]) -> None:
@@ -2046,10 +2120,14 @@ class TopApp(App):
             if confirmed:
                 self._do_delete_pod(pod.name, pod.namespace)
 
+        # Full target identity before a destructive action: the cluster context
+        # matters as much as the pod when several clusters look alike.
         self.push_screen(
             ConfirmModal(
                 "DELETE POD",
-                f"Delete pod {pod.name} in {pod.namespace}?",
+                f"context: {self._display_context() or 'current'}\n"
+                f"namespace: {pod.namespace}\n"
+                f"pod: {pod.name}",
                 confirm_label="Delete",
             ),
             on_confirm,
