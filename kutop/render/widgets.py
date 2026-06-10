@@ -31,7 +31,7 @@ __all__ = [
     "level_color", "bar_gauge", "DualThresholdSlider", "Panel", "SummaryBar",
     "SearchBar", "TrendGraph", "ConfirmModal", "_severity_style",
     # re-exported from render/options.py for backward compatibility
-    "OptionsModal", "ThemeMenuModal", "ThemePreviewOverlay", "ThemePreviewSelect",
+    "OptionsModal", "ThemePreviewOverlay", "ThemePreviewSelect",
 ]
 
 # ── threshold color helper ───────────────────────────────────────────────────
@@ -886,7 +886,6 @@ class ConfirmModal(ModalScreen[bool]):
 # primitives defined above without a circular-import failure.
 from .options import (  # noqa: E402
     OptionsModal,
-    ThemeMenuModal,
     ThemePreviewOverlay,
     ThemePreviewSelect,
 )

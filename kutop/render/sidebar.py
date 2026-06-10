@@ -13,7 +13,7 @@ from typing import Optional
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Checkbox, Label, Select, Static
+from textual.widgets import Button, Checkbox, Label, Select, Static
 
 from ..config import REFRESH_INTERVAL_SECS, SORTABLE_KEYS
 
@@ -69,6 +69,11 @@ class SidebarPanel(Vertical):
     #: each namespace checkbox carries this class so the change handler can tell
     #: them apart from the panel-toggle checkboxes (which have stable ids).
     NS_CLASS = "ns-checkbox"
+
+    # Esc inside the sidebar hands focus back to the pod table (issue #2): the
+    # sidebar is a pinned layout panel, not a popup, so escape restores focus
+    # instead of dismissing anything.
+    BINDINGS = [("escape", "focus_main", "Table")]
 
     def __init__(
         self,
@@ -144,6 +149,21 @@ class SidebarPanel(Vertical):
             yield Label("ACTIONS", classes="side_section side_section_spaced")
             yield Checkbox("Allow delete (x)", value=self._allow_delete,
                            id="chk_allow_delete", compact=True)
+            # MENU absorbs the old hamburger popup (issue #2): the header icon
+            # routes here, so the global actions share the sidebar surface.
+            # It sits with the other scroll-reachable lower sections so the
+            # leading PROFILE/CONTEXT/NAMESPACES stay in the default viewport;
+            # focus_menu() scrolls it into view. Order matters — the hamburger
+            # lands on the FIRST menu button.
+            yield Label("MENU", classes="side_section side_section_spaced")
+            yield Button("Options", id="side_menu_options",
+                         classes="side_menu_btn", compact=True)
+            yield Button("Keys", id="side_menu_keys",
+                         classes="side_menu_btn", compact=True)
+            yield Button("Screenshot", id="side_menu_screenshot",
+                         classes="side_menu_btn", compact=True)
+            yield Button("Quit", id="side_menu_quit",
+                         classes="side_menu_btn", compact=True)
         with Vertical(id="side_keys_box"):
             yield Label(
                 "KEYS",
@@ -186,6 +206,19 @@ class SidebarPanel(Vertical):
 
     def _enable_input_events(self) -> None:
         self._ready_for_input = True
+
+    def focus_menu(self) -> None:
+        """Land focus on the first MENU control (hamburger on a visible sidebar)."""
+        try:
+            self.query_one("#side_menu_options", Button).focus()
+        except Exception:
+            pass
+
+    def action_focus_main(self) -> None:
+        try:
+            self.app.query_one("#main_table").focus()
+        except Exception:
+            pass
 
     def _ns_checkboxes(self):
         """One Checkbox per known namespace; the namespace is stored in ``name``."""
@@ -389,6 +422,20 @@ class SidebarPanel(Vertical):
                 cb.value = value
         except Exception:
             pass
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Route the MENU buttons through the app (the old hamburger actions)."""
+        bid = event.button.id or ""
+        if bid == "side_menu_options":
+            self.app.action_open_options()  # type: ignore[attr-defined]
+        elif bid == "side_menu_keys":
+            await self.app.run_action("app.show_help_panel")
+        elif bid == "side_menu_screenshot":
+            await self.app.run_action("app.screenshot")
+        elif bid == "side_menu_quit":
+            # issue #2 decision: an explicit menu selection needs no two-step
+            # confirmation — take the direct quit path, not action_quit_hint.
+            self.app.action_quit()  # type: ignore[attr-defined]
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         if self._syncing or not self._ready_for_input:

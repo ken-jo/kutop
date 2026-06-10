@@ -1,17 +1,17 @@
-"""The Options modal and the theme-menu/preview modals.
+"""The Options modal and the theme-preview widgets.
 
 Split out of render/widgets.py: widgets.py keeps reusable presentation
 primitives (gauges, sliders, panels, search, trends); these are full settings
 screens. All edits flow through a working copy of Config and are applied live
-via ``app.apply_config()``.
+via ``app.apply_config()``. The old hamburger ThemeMenuModal is gone — its
+actions (Options / Keys / Screenshot / Quit) live in the sidebar MENU section
+(issue #2 unification).
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
-from textual import events
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
@@ -38,68 +38,7 @@ from ..config import (
 from ._compat import SelectCurrent, SelectOverlay
 from .widgets import DualThresholdSlider
 
-__all__ = ["ThemeMenuModal", "ThemePreviewOverlay", "ThemePreviewSelect", "OptionsModal"]
-
-class ThemeMenuModal(ModalScreen):
-    """Hamburger menu with native actions and Options entry."""
-
-    BINDINGS = [
-        ("escape", "cancel", "Cancel"),
-        ("enter", "commit", "Apply"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="theme_menu"):
-            yield Label("MENU", id="theme_menu_title")
-            yield Label("Keys · Screenshot · Quit · Options", id="theme_menu_hint")
-            yield OptionList(id="theme_menu_list")
-
-    def on_mount(self) -> None:
-        ol = self.query_one("#theme_menu_list", OptionList)
-        ol.add_option(Option("Keys", id="action::keys"))
-        ol.add_option(Option("Screenshot", id="action::screenshot"))
-        ol.add_option(Option("Quit", id="action::quit"))
-        ol.add_option(Option("Options / Settings", id="action::options"))
-        ol.highlighted = 0
-
-    def on_option_list_option_selected(
-        self, event: OptionList.OptionSelected
-    ) -> None:
-        oid = event.option.id or ""
-        if oid.startswith("action::"):
-            self._run_action(oid)
-
-    def on_mouse_down(self, event: events.MouseDown) -> None:
-        menu = self.query_one("#theme_menu")
-        if menu.region.contains_point((event.screen_x, event.screen_y)):
-            return
-        event.stop()
-        event.prevent_default()
-        self.dismiss(None)
-
-    def action_commit(self) -> None:
-        ol = self.query_one("#theme_menu_list", OptionList)
-        if ol.highlighted is not None:
-            opt = ol.get_option_at_index(ol.highlighted)
-            oid = opt.id or ""
-            if oid.startswith("action::"):
-                self._run_action(oid)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def _run_action(self, oid: str) -> None:
-        action = oid.split("::", 1)[1]
-        self.dismiss(action)
-        if action == "keys":
-            asyncio.create_task(self.app.run_action("app.show_help_panel"))
-        elif action == "screenshot":
-            asyncio.create_task(self.app.run_action("app.screenshot"))
-        elif action == "quit":
-            asyncio.create_task(self.app.run_action("app.quit"))
-        elif action == "options":
-            self.app.action_open_options()  # type: ignore[attr-defined]
-
+__all__ = ["ThemePreviewOverlay", "ThemePreviewSelect", "OptionsModal"]
 
 class ThemePreviewOverlay(SelectOverlay):
     """Select overlay that exposes highlight/escape as theme preview events."""

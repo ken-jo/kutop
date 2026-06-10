@@ -314,6 +314,28 @@ Screen.-panel-backgrounds-on TrendGraph {
     padding: 0;
 }
 
+/* MENU rows (the old hamburger actions folded into the sidebar): full-width
+ * single-line buttons styled like the other compact sidebar controls rather
+ * than the boxed default Button chrome. */
+#sidebar .side_menu_btn {
+    height: 1;
+    width: 100%;
+    margin: 0;
+    border: none;
+    background: transparent;
+    content-align: left middle;
+    text-align: left;
+}
+
+#sidebar .side_menu_btn:hover {
+    background: $foreground 10%;
+}
+
+#sidebar .side_menu_btn:focus {
+    background: $boost;
+    text-style: bold;
+}
+
 #side_keys_box {
     height: 6;
     width: 100%;
@@ -659,39 +681,6 @@ OptionsModal {
     height: 1;
     content-align: center middle;
     color: $success;
-}
-
-/* ── hamburger theme menu ───────────────────────────────────────────────── */
-ThemeMenuModal {
-    align: left top;
-    background: $background 65%;
-}
-
-#theme_menu {
-    offset: 1 1;
-    width: 44;
-    height: 9;
-    border: none;
-    background: $background;
-    padding: 1 2;
-}
-
-#theme_menu_title {
-    height: 1;
-    color: $accent;
-    text-style: bold;
-}
-
-#theme_menu_hint {
-    height: 1;
-    color: $text-muted;
-    margin-bottom: 1;
-}
-
-#theme_menu_list {
-    height: 5;
-    border: none;
-    background: transparent;
 }
 
 /* ── dual-handle threshold sliders (Thresholds tab) ─────────────────────── */
