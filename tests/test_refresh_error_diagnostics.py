@@ -142,3 +142,109 @@ def test_delete_failure_shows_150_char_stderr_untruncated(monkeypatch) -> None:
             await pilot.exit(None)
 
     asyncio.run(drive())
+
+
+def test_per_failure_60_char_truncation() -> None:
+    """Each failure message longer than 60 chars is cut at 59 chars + '…';
+    the full string must NOT appear in the aggregated detail."""
+    long_a = "get pods -n team-a: " + "a" * 100   # total ~120 chars
+    long_b = "get pods -n team-b: " + "b" * 100   # total ~120 chars
+    assert len(long_a) > 60 and len(long_b) > 60
+
+    app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+    notices: list = []
+    app.notify = (  # type: ignore[assignment]
+        lambda msg, **kw: notices.append(str(msg)))
+
+    app._notify_refresh_error(long_a, full=False, errors=[long_a, long_b])
+
+    assert notices, "notify was not called"
+    msg = notices[0]
+
+    # each shown segment is cut at 59 chars + ellipsis
+    expected_a = long_a[:59] + "…"
+    expected_b = long_b[:59] + "…"
+    assert expected_a in msg, f"truncated segment for team-a not found in: {msg!r}"
+    assert expected_b in msg, f"truncated segment for team-b not found in: {msg!r}"
+
+    # full strings must not appear verbatim
+    assert long_a not in msg, "full team-a string leaked into toast"
+    assert long_b not in msg, "full team-b string leaked into toast"
+
+
+def test_dedup_reset_after_clean_refresh() -> None:
+    """Failed cycle toasts once; same failure again stays silent; a clean
+    _apply_snapshot resets dedup; the same failure after that toasts again."""
+    async def drive() -> None:
+        app = TopApp(["team-a"], discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            notices: list = []
+            app.notify = (  # type: ignore[assignment]
+                lambda msg, **kw: notices.append(str(msg)))
+
+            err = "get pods -n team-a: forbidden"
+            errs = [err]
+
+            # first failed cycle -> toast
+            app._apply_snapshot(_degraded_snapshot(err, errs))
+            await pilot.pause()
+            assert len(notices) == 1
+
+            # identical failure next cycle -> silent
+            app._apply_snapshot(_degraded_snapshot(err, errs))
+            await pilot.pause()
+            assert len(notices) == 1
+
+            # clean snapshot with nodes+pods resets dedup
+            clean = Snapshot()
+            clean.pods = [Pod(name="web-0", namespace="team-a", node="node-a",
+                              phase="Running", ready="1/1")]
+            clean.nodes = []
+            app._apply_snapshot(clean)
+            await pilot.pause()
+            assert len(notices) == 1  # clean snap: no extra toast
+
+            # same failure again after clean refresh -> toasts once more
+            app._apply_snapshot(_degraded_snapshot(err, errs))
+            await pilot.pause()
+            assert len(notices) == 2
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_severity_escalation_same_detail() -> None:
+    """A degraded toast for detail X, then a FULL failure with the same detail
+    X, must STILL toast (key is severity-prefixed, so they are distinct)."""
+    async def drive() -> None:
+        app = TopApp(["team-a"], discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            notices: list = []
+            app.notify = (  # type: ignore[assignment]
+                lambda msg, **kw: notices.append((str(msg), kw.get("severity"))))
+
+            detail = "get pods -n team-a: dial tcp: i/o timeout"
+
+            # degraded (partial failure: has some pods)
+            app._apply_snapshot(_degraded_snapshot(detail, [detail]))
+            await pilot.pause()
+            assert len(notices) == 1
+            assert notices[0][1] == "warning"
+
+            # full failure with IDENTICAL detail text -> must still toast
+            full_snap = Snapshot()
+            full_snap.error = detail
+            full_snap.errors = [detail]
+            app._apply_snapshot(full_snap)
+            await pilot.pause()
+            assert len(notices) == 2, (
+                "severity escalation with same detail must produce a second toast"
+            )
+            assert notices[1][1] == "error"
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())

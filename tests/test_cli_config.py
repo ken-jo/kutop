@@ -2818,3 +2818,100 @@ def test_app_falls_back_from_hidden_ansi_theme() -> None:
 
     assert app.theme == "textual-dark"
     assert app.cfg.theme == "textual-dark"
+
+
+def test_options_cancel_with_profile_preserves_user_fields(tmp_path: Path) -> None:
+    """Options Cancel under an active profile with the REAL save path (no
+    save_config monkeypatch): namespaces/context/timezone survive because
+    _adopt_config now passes profile=self.profile to save_config, so the
+    profile's own section never strips user-saved cluster fields.
+
+    Steps:
+    - build TopApp with a Profile that owns thresholds only and a Config
+      carrying namespaces=['team-a','team-b'], context='user-ctx', timezone='Europe/Berlin'
+    - config_path redirected to tmp_path so we write a real file
+    - open Options, toggle #opt_p_pvc (Panels tab), then Cancel (Esc)
+    - load_config from the written file: namespaces/context/timezone must
+      SURVIVE (profile= persist fix) and show_pvc must be back to pre-open value
+    """
+    from textual.widgets import Checkbox
+
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import OptionsModal
+
+    cfg_file = tmp_path / "config.yaml"
+
+    # Profile owns only thresholds — no namespaces/context/timezone
+    profile = Profile(
+        name="test-profile",
+        cpu_warn=60, cpu_crit=85,
+        mem_warn=70, mem_crit=88,
+    )
+
+    # User config carries the cluster-level fields the profile doesn't own
+    user_cfg = Config(
+        namespaces=["team-a", "team-b"],
+        context="user-ctx",
+        timezone="Europe/Berlin",
+        profile_name="test-profile",
+        show_pvc=False,   # pre-open value we'll try to change then revert
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["team-a", "team-b"],
+            profile=profile,
+            config=user_cfg,
+            context="user-ctx",
+            config_path=str(cfg_file),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            # Force an initial persist so the file exists before the modal
+            app.export_config()
+            await pilot.pause()
+
+            pre_open_pvc = app.cfg.show_pvc  # False
+
+            # Open Options modal
+            app.action_open_options()
+            await pilot.pause()
+
+            assert isinstance(app.screen, OptionsModal)
+            pvc_cb = app.screen.query_one("#opt_p_pvc", Checkbox)
+            pvc_cb.value = True
+            await pilot.pause()
+            # live preview: field changed in running app
+            assert app.cfg.show_pvc is True
+
+            # Cancel (Esc) — reverts the edit and re-persists the snapshot
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert len(app.screen_stack) == 1
+            # reverted in-memory
+            assert app.cfg.show_pvc is pre_open_pvc
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    # Load from the real written file and verify all three user-owned fields survived
+    saved_cfg = load_config(user_path=str(cfg_file))
+
+    assert saved_cfg.namespaces == ["team-a", "team-b"], (
+        f"namespaces lost after Cancel: {saved_cfg.namespaces}"
+    )
+    assert saved_cfg.context == "user-ctx", (
+        f"context lost after Cancel: {saved_cfg.context!r}"
+    )
+    assert saved_cfg.timezone == "Europe/Berlin", (
+        f"timezone lost after Cancel: {saved_cfg.timezone!r}"
+    )
+    # the cancelled edit is NOT in the file
+    assert saved_cfg.show_pvc is False, (
+        f"show_pvc should be False (pre-open) but got {saved_cfg.show_pvc}"
+    )

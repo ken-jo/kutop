@@ -60,12 +60,16 @@ presentation (ordering, timezone, thresholds).
   thread (the app drives it via a `@work(thread=True)` worker, pushes results with
   `call_from_thread`). Robustness contract: any failure sets `Snapshot.error` and returns a
   partial snapshot; callers keep the previous frame. Essential kubectl calls go through
-  `_run_safe` (failure recorded → `Snapshot.error`); calls whose failure is EXPECTED
-  (metrics-server absent, kubelet stats, optional probes) use `_run_optional` instead so they
-  never flag the refresh. PVC usage comes from the kubelet summary
-  API (`/api/v1/nodes/<node>/proxy/stats/summary`) per node because metrics-server does not
-  expose it — one node failing never aborts the refresh. `cancel()` kills in-flight processes
-  for immediate quit.
+  `_run_safe`, which records failures via `_record_fetch_error` (thread-safe, guarded by
+  `_errors_lock`); `_fold_fetch_errors` merges those into `Snapshot.errors` as a **sorted**,
+  deduplicated list — `Snapshot.error` is always `errors[0]` when fetcher-set, preserving the
+  single-primary-failure contract. Calls whose failure is EXPECTED (metrics-server absent,
+  kubelet stats, optional probes) use `_run_optional` instead: it diverts its failures into a
+  **thread-local** scratch sink (never touches the shared list) that is simply discarded, so
+  parallel workers' real failures are untouched and the refresh is not flagged. PVC usage comes
+  from the kubelet summary API (`/api/v1/nodes/<node>/proxy/stats/summary`) per node because
+  metrics-server does not expose it — one node failing never aborts the refresh. `cancel()`
+  kills in-flight processes for immediate quit.
 - **`render/`** — split along class seams. **`app.py`** (`TopApp`) owns keybindings
   (`_BINDING_SPECS` is the single source of truth for keys), sorting, filtering, grouping,
   Options-modal wiring, and the pod actions (logs `l`, describe `d`, shell `t`, delete `x`,
@@ -86,7 +90,14 @@ presentation (ordering, timezone, thresholds).
   (`model.pod_template_hash_like`); other ReplicaSets are reported un-rollable. While the
   cluster is unreachable before the first snapshot, the main table shows persistent guidance
   rows (error + `kubectl get nodes` hint + retry cadence) instead of a bare loading row.
-  Fetch lifecycle: `_fetch_gen` is a scope
+  Refresh errors are surfaced via `_notify_refresh_error` (deduped per severity+text);
+  `_refresh_error_detail` aggregates `Snapshot.errors` into one toast line: up to 3 sources
+  shown, each capped at 60 chars (`…`), with `+N more` beyond. `OptionsModal`
+  (`render/options.py`): Esc / Cancel re-adopts the opening config snapshot via `apply_config`
+  — persisting only when at least one edit was committed (config equality check short-circuits
+  to a no-op dismiss otherwise); Close / `o` keeps changes. `apply_config` calls
+  `_adopt_config(persist=True)` which saves via `save_config(profile=self.profile)` so
+  profile-owned fields are correctly stripped. Fetch lifecycle: `_fetch_gen` is a scope
   token bumped on every namespace/context/profile switch so an in-flight old-scope result is
   dropped; scope changes/manual refresh go through `_request_refresh()` (queued if a fetch is
   in flight), timer ticks through `refresh_snapshot()` (skipped if in flight). Textual PRIVATE

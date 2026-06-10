@@ -83,7 +83,12 @@ class Fetcher:
         # Failures recorded by _run_safe during one refresh (cleared by
         # fetch_core). Folded into Snapshot.error so an unreachable cluster
         # surfaces instead of silently yielding an empty, error-free snapshot.
+        # Appends happen from parallel namespace/node worker threads, so every
+        # access goes through _record_fetch_error / the lock; _run_optional
+        # diverts its expected failures to a thread-local scratch sink.
         self._fetch_errors: "list[str]" = []
+        self._errors_lock = threading.Lock()
+        self._tl = threading.local()
 
     def cancel(self) -> None:
         """Abort any in-flight (and future) kubectl calls. Idempotent, thread-safe.
@@ -173,22 +178,39 @@ class Fetcher:
             # Snapshot.errors instead of collapsing into one "get pods -n".
             if label.endswith(" -n") and len(args) > 3:
                 label += f" {args[3]}"
-            self._fetch_errors.append(f"{label}: {exc}")
+            self._record_fetch_error(f"{label}: {exc}")
             return ""
+
+    def _record_fetch_error(self, msg: str) -> None:
+        """Record one failure, thread-safely.
+
+        While a ``_run_optional`` call is active on this thread its failures
+        land in a thread-local scratch list that is simply discarded — the old
+        positional ``del`` from the shared list raced with the parallel
+        namespace/node workers and destroyed (or leaked) their entries.
+        """
+        sink = getattr(self._tl, "sink", None)
+        if sink is not None:
+            sink.append(msg)
+            return
+        with self._errors_lock:
+            self._fetch_errors.append(msg)
 
     def _run_optional(self, *args: str, timeout: int = _KUBECTL_TIMEOUT) -> str:
         """Best-effort variant of :meth:`_run_safe` for expected failures.
 
         Delegates to ``_run_safe`` (so tests overriding that single seam still
-        intercept every kubectl call) but drops anything it recorded: a missing
+        intercept every kubectl call) but its failures stay silent: a missing
         metrics-server or an unreachable kubelet must not flag the whole
-        refresh as failed.
+        refresh as failed. The diversion is a thread-local sink, never shared
+        state, so parallel workers' real failures are untouched.
         """
-        before = len(self._fetch_errors)
-        out = self._run_safe(*args, timeout=timeout)
-        if not out:
-            del self._fetch_errors[before:]
-        return out
+        prev = getattr(self._tl, "sink", None)
+        self._tl.sink = []
+        try:
+            return self._run_safe(*args, timeout=timeout)
+        finally:
+            self._tl.sink = prev
 
     def current_context_name(self) -> str:
         """Best-effort active kube context name for display ('' if unknown).
@@ -244,7 +266,8 @@ class Fetcher:
     def fetch_core(self) -> Snapshot:
         """Acquire the first-paint snapshot: nodes, pods, and summary only."""
         snap = Snapshot()
-        self._fetch_errors = []  # fresh refresh: previous cycle's errors are stale
+        with self._errors_lock:
+            self._fetch_errors = []  # fresh refresh: previous cycle's errors are stale
         nodes_by_name: dict[str, Node] = {}
         with ThreadPoolExecutor(max_workers=2) as pool:
             nodes_future = pool.submit(self._fetch_nodes)
@@ -280,16 +303,21 @@ class Fetcher:
     def _fold_fetch_errors(self, snap: Snapshot) -> None:
         """Fold ``self._fetch_errors`` into ``snap``. Idempotent.
 
-        ``Snapshot.errors`` collects EVERY distinct failure of the cycle so a
-        multi-namespace refresh can report each broken source; ``Snapshot.error``
-        keeps its historical contract as the single primary failure (first
-        recorded), so existing callers/tests are unaffected.
+        ``Snapshot.errors`` collects EVERY distinct failure of the cycle,
+        SORTED so one persistent outage folds to the same list (and the same
+        aggregated toast, which dedups on text) on every retry regardless of
+        which worker thread happened to fail first. ``Snapshot.error`` stays
+        the single primary failure (``errors[0]``) for backward compatibility,
+        now deterministic for the same reason.
         """
-        for msg in self._fetch_errors:
-            if msg not in snap.errors:
-                snap.errors.append(msg)
-        if not snap.error and snap.errors:
-            snap.error = snap.errors[0]
+        with self._errors_lock:
+            msgs = list(self._fetch_errors)
+        merged = sorted(set(snap.errors) | set(msgs))
+        if not merged:
+            return
+        snap.errors = merged
+        if not snap.error or snap.error in merged:
+            snap.error = merged[0]
 
     def enrich_snapshot(self, snap: Snapshot) -> Snapshot:
         """Fill slower auxiliary panels and storage details into ``snap``."""
@@ -408,7 +436,7 @@ class Fetcher:
             try:
                 data = json.loads(gj)
             except Exception:
-                self._fetch_errors.append("get nodes: unparseable kubectl output")
+                self._record_fetch_error("get nodes: unparseable kubectl output")
                 data = {}
             for item in data.get("items", []):
                 meta = item.get("metadata", {})
@@ -650,7 +678,7 @@ class Fetcher:
             except Exception:
                 # one namespace's garbage payload must not discard the events
                 # already collected from the namespaces before it
-                self._fetch_errors.append(f"events[{ns}]: unparseable kubectl output")
+                self._record_fetch_error(f"events[{ns}]: unparseable kubectl output")
                 continue
             for item in data.get("items", []):
                 obj = item.get("involvedObject", {}) or {}
@@ -681,7 +709,7 @@ class Fetcher:
             try:
                 data = json.loads(gj)
             except Exception:
-                self._fetch_errors.append(f"pvc[{ns}]: unparseable kubectl output")
+                self._record_fetch_error(f"pvc[{ns}]: unparseable kubectl output")
                 continue
             for item in data.get("items", []):
                 meta = item.get("metadata", {})
