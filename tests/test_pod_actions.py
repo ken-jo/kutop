@@ -114,3 +114,252 @@ def test_delete_confirm_shows_context_namespace_and_pod() -> None:
             await pilot.exit(None)
 
     asyncio.run(drive())
+
+
+# ── rollout-restart (X) ───────────────────────────────────────────────────────
+
+
+def test_restart_cmd_for_each_rollable_owner() -> None:
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+
+    app = TopApp(namespaces=["default"], context="ctx-b",
+                 discover_namespaces=False, auto_refresh=False)
+
+    # Deployment via raw ReplicaSet owner: the pod-template-hash is stripped
+    rs_pod = Pod(name="web-7d4b9c6f9d-abcde", namespace="default",
+                 owner_kind="ReplicaSet", owner_name="web-7d4b9c6f9d")
+    target, reason = app._rollout_target(rs_pod)
+    assert (target, reason) == ("deployment/web", "")
+    assert app._restart_cmd(target, "default") == [
+        "kubectl", "--context", "ctx-b",
+        "rollout", "restart", "deployment/web", "-n", "default",
+    ]
+
+    sts_pod = Pod(name="db-0", namespace="data",
+                  owner_kind="StatefulSet", owner_name="db")
+    target, reason = app._rollout_target(sts_pod)
+    assert (target, reason) == ("statefulset/db", "")
+    assert app._restart_cmd(target, "data") == [
+        "kubectl", "--context", "ctx-b",
+        "rollout", "restart", "statefulset/db", "-n", "data",
+    ]
+
+    ds_pod = Pod(name="fluentd-x1z2", namespace="logging",
+                 owner_kind="DaemonSet", owner_name="fluentd")
+    target, reason = app._rollout_target(ds_pod)
+    assert (target, reason) == ("daemonset/fluentd", "")
+    assert app._restart_cmd(target, "logging") == [
+        "kubectl", "--context", "ctx-b",
+        "rollout", "restart", "daemonset/fluentd", "-n", "logging",
+    ]
+
+    # without an explicit context the --context plumbing disappears (like delete)
+    bare = TopApp(namespaces=["default"],
+                  discover_namespaces=False, auto_refresh=False)
+    assert bare._restart_cmd("deployment/web", "default") == [
+        "kubectl", "rollout", "restart", "deployment/web", "-n", "default",
+    ]
+
+
+def test_rollout_target_accepts_fetch_resolved_deployment_owner() -> None:
+    """fetch.py already maps a controller ReplicaSet to its Deployment name."""
+    from kutop.render.app import TopApp
+
+    class OwnedFetcher(Fetcher):
+        def _run_safe(self, *args: str, timeout: int = 0) -> str:
+            if " ".join(args) == "get pods -n default -o json":
+                return json.dumps({"items": [{
+                    "metadata": {
+                        "name": "web-7d4b9c6f9d-abcde",
+                        "ownerReferences": [{"kind": "ReplicaSet",
+                                             "name": "web-7d4b9c6f9d",
+                                             "controller": True}],
+                    },
+                    "spec": {},
+                    "status": {"phase": "Running"},
+                }]})
+            return ""
+
+    pod = OwnedFetcher(["default"])._fetch_pods()[0]
+    assert (pod.owner_kind, pod.owner_name) == ("Deployment", "web")
+    app = TopApp(namespaces=["default"],
+                 discover_namespaces=False, auto_refresh=False)
+    assert app._rollout_target(pod) == ("deployment/web", "")
+
+
+def test_rollout_target_rejects_unrollable_pods() -> None:
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+
+    app = TopApp(namespaces=["default"],
+                 discover_namespaces=False, auto_refresh=False)
+
+    target, reason = app._rollout_target(Pod(name="solo", namespace="default"))
+    assert target is None and "no controller" in reason
+
+    target, reason = app._rollout_target(
+        Pod(name="migrate-abc", namespace="default",
+            owner_kind="Job", owner_name="migrate"))
+    assert target is None and "Job" in reason
+
+    # a ReplicaSet name without a '-<hash>' segment cannot name a Deployment
+    target, reason = app._rollout_target(
+        Pod(name="raw-x", namespace="default",
+            owner_kind="ReplicaSet", owner_name="raw"))
+    assert target is None and "raw" in reason
+
+
+def _pod_snapshot(pod):
+    from kutop.model import Snapshot
+
+    snap = Snapshot()
+    snap.pods = [pod]
+    return snap
+
+
+def test_restart_gate_off_is_noop_warning() -> None:
+    import asyncio
+
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import ConfirmModal
+
+    async def drive() -> None:
+        app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._apply_snapshot(_pod_snapshot(
+                Pod(name="web-7d4b9c6f9d-abcde", namespace="default",
+                    node="node-a", phase="Running", ready="1/1",
+                    owner_kind="ReplicaSet", owner_name="web-7d4b9c6f9d")))
+            await pilot.pause()
+
+            calls: list = []
+            app._do_restart_rollout = (  # type: ignore[assignment]
+                lambda target, ns: calls.append((target, ns)))
+            notices: list = []
+            app.notify = (  # type: ignore[assignment]
+                lambda msg, **kw: notices.append((msg, kw.get("severity"))))
+
+            assert app.allow_destructive is False
+            app.action_restart_pod()
+            await pilot.pause()
+            assert not isinstance(app.screen, ConfirmModal)
+            assert calls == []
+            assert notices and notices[0][1] == "warning"
+            assert "restart disabled" in notices[0][0]
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_restart_warns_for_bare_and_job_owned_pods() -> None:
+    import asyncio
+
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import ConfirmModal
+
+    async def drive() -> None:
+        app = TopApp(["default"], allow_destructive=True,
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            calls: list = []
+            app._do_restart_rollout = (  # type: ignore[assignment]
+                lambda target, ns: calls.append((target, ns)))
+            notices: list = []
+            app.notify = (  # type: ignore[assignment]
+                lambda msg, **kw: notices.append((msg, kw.get("severity"))))
+
+            for pod in (
+                Pod(name="solo", namespace="default", node="node-a",
+                    phase="Running", ready="1/1"),
+                Pod(name="migrate-abc", namespace="default", node="node-a",
+                    phase="Running", ready="1/1",
+                    owner_kind="Job", owner_name="migrate"),
+            ):
+                notices.clear()
+                app._apply_snapshot(_pod_snapshot(pod))
+                await pilot.pause()
+                app.action_restart_pod()
+                await pilot.pause()
+                assert not isinstance(app.screen, ConfirmModal)
+                assert notices and notices[0][1] == "warning"
+                assert "restart unavailable" in notices[0][0]
+                assert "delete (x)" in notices[0][0]
+            assert calls == []
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_restart_confirm_body_spells_full_identity() -> None:
+    import asyncio
+
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import ConfirmModal
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="ctx-a", allow_destructive=True,
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._apply_snapshot(_pod_snapshot(
+                Pod(name="web-7d4b9c6f9d-abcde", namespace="default",
+                    node="node-a", phase="Running", ready="1/1",
+                    owner_kind="ReplicaSet", owner_name="web-7d4b9c6f9d")))
+            await pilot.pause()
+
+            calls: list = []
+            app._do_restart_rollout = (  # type: ignore[assignment]
+                lambda target, ns: calls.append((target, ns)))
+
+            app.action_restart_pod()
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmModal)
+            body = app.screen._body
+            assert "context: ctx-a" in body
+            assert "namespace: default" in body
+            assert "pod: web-7d4b9c6f9d-abcde" in body
+            assert "restarts: deployment/web" in body
+
+            # confirming hands the resolved target to the kubectl runner
+            app.screen.action_confirm()
+            await pilot.pause()
+            assert calls == [("deployment/web", "default")]
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_restart_confirm_body_falls_back_to_current_context() -> None:
+    import asyncio
+
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+    from kutop.render.widgets import ConfirmModal
+
+    async def drive() -> None:
+        app = TopApp(["default"], allow_destructive=True,
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._apply_snapshot(_pod_snapshot(
+                Pod(name="db-0", namespace="default", node="node-a",
+                    phase="Running", ready="1/1",
+                    owner_kind="StatefulSet", owner_name="db")))
+            await pilot.pause()
+
+            app.action_restart_pod()
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmModal)
+            body = app.screen._body
+            assert "context: current" in body
+            assert "restarts: statefulset/db" in body
+            app.screen.action_cancel()
+            await pilot.exit(None)
+
+    asyncio.run(drive())
