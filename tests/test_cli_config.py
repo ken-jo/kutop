@@ -14,6 +14,7 @@ from kutop.config import (
     METRICS_RESOLUTION_SECS,
     Profile,
     REFRESH_INTERVAL_SECS,
+    SNAPSHOT_DETAIL_LEVELS,
     SORTABLE_KEYS,
     apply_detail_preset,
     load_config,
@@ -72,6 +73,73 @@ def test_cli_rejects_unknown_summary_style() -> None:
     assert _build_parser().parse_args(["--summary-style", "tiles"]).summary_style == "tiles"
 
 
+def test_cli_parses_profile_and_config_paths() -> None:
+    args = _build_parser().parse_args(
+        ["--profile", "teststack", "--config", "/tmp/alt-config.yaml"]
+    )
+    assert args.profile == "teststack"
+    assert args.config == "/tmp/alt-config.yaml"
+
+    # both default to None (config then falls back to ~/.config/kutop/config.yaml)
+    defaults = _build_parser().parse_args([])
+    assert defaults.profile is None
+    assert defaults.config is None
+
+
+def test_cli_parses_context_tz_and_filter_values() -> None:
+    args = _build_parser().parse_args(
+        ["--context", "prod", "--tz", "Asia/Seoul", "--filter", "api"]
+    )
+    assert args.context == "prod"
+    assert args.tz == "Asia/Seoul"
+    assert args.filter == "api"
+
+    defaults = _build_parser().parse_args([])
+    assert defaults.context is None
+    assert defaults.tz is None
+    assert defaults.filter is None
+
+
+def test_cli_parses_boolean_view_flags() -> None:
+    args = _build_parser().parse_args(
+        ["--sort-desc", "--group-by-node", "--only-problems"]
+    )
+    assert args.sort_desc is True
+    assert args.group_by_node is True
+    assert args.only_problems is True
+
+    defaults = _build_parser().parse_args([])
+    assert defaults.sort_desc is False
+    assert defaults.group_by_node is False
+    assert defaults.only_problems is False
+
+
+def test_cli_parses_log_tail_as_int() -> None:
+    assert _build_parser().parse_args([]).log_tail == 150
+    assert _build_parser().parse_args(["--log-tail", "500"]).log_tail == 500
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["--log-tail", "many"])
+
+
+def test_cli_rejects_unknown_detail_level() -> None:
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["--detail", "bogus"])
+    # every documented preset stays accepted
+    for level in SNAPSHOT_DETAIL_LEVELS:
+        assert _build_parser().parse_args(["--detail", level]).detail == level
+    assert _build_parser().parse_args([]).detail is None
+
+
+def test_cli_parses_positional_namespaces_and_legacy_interval() -> None:
+    args = _build_parser().parse_args(["team-a,team-b", "9"])
+    assert args.namespaces == "team-a,team-b"
+    assert args.interval == 9.0  # accepted (then ignored) for old top.sh calls
+
+    defaults = _build_parser().parse_args([])
+    assert defaults.namespaces is None
+    assert defaults.interval is None
+
+
 def test_main_exits_2_when_kubectl_missing(monkeypatch) -> None:
     import io
 
@@ -99,6 +167,112 @@ def test_self_test_still_runs_when_kubectl_missing(monkeypatch, tmp_path: Path) 
     monkeypatch.setattr(cli.shutil, "which", lambda cmd: None)
 
     assert cli.main(["--self-test", "--config", str(tmp_path / "config.yaml")]) == 0
+
+
+def test_main_wires_flags_and_namespaces_into_topapp(monkeypatch, tmp_path: Path) -> None:
+    """cli.main builds TopApp from the layered config: positional namespaces,
+    --context/--filter land in cfg, --allow-destructive/--log-tail pass through
+    as constructor kwargs, and the metrics bootstrap runs on the chosen context."""
+    from kutop import cli
+
+    captured: list[dict] = []
+
+    class FakeApp:
+        def __init__(self, **kwargs) -> None:
+            captured.append(kwargs)
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: "/usr/bin/kubectl")
+    # main imports TopApp lazily from kutop.render.app — patch that seam
+    monkeypatch.setattr("kutop.render.app.TopApp", FakeApp)
+    bootstraps: list = []
+    monkeypatch.setattr(
+        "kutop.metrics.maybe_bootstrap_metrics_server",
+        lambda context=None: bootstraps.append(context),
+    )
+
+    assert cli.main([
+        "team-a,team-b",
+        "--config", str(tmp_path / "config.yaml"),
+        "--context", "prod",
+        "--filter", "api",
+        "--allow-destructive",
+        "--log-tail", "500",
+    ]) == 0
+
+    assert len(captured) == 1
+    kwargs = captured[0]
+    assert kwargs["namespaces"] == ["team-a", "team-b"]
+    assert kwargs["context"] == "prod"
+    assert kwargs["allow_destructive"] is True
+    assert kwargs["log_tail"] == 500
+    assert kwargs["config_path"] == str(tmp_path / "config.yaml")
+    cfg = kwargs["config"]
+    assert cfg.namespaces == ["team-a", "team-b"]
+    assert cfg.context == "prod"
+    assert cfg.name_filter == "api"
+    # live launch: discovery + auto refresh stay on, no legacy interval warning
+    assert kwargs["discover_namespaces"] is True
+    assert kwargs["auto_refresh"] is True
+    assert kwargs["interval_deprecated"] is False
+    assert bootstraps == ["prod"]
+
+
+def test_main_layers_profile_user_file_and_view_flags(monkeypatch, tmp_path: Path) -> None:
+    """--profile loads authoritatively, the saved file still supplies UI prefs,
+    and explicit view flags (--tz/--sort-desc/--group-by-node/--only-problems)
+    reach load_config's cli_overrides on top of both."""
+    import kutop.config as kconfig
+    from kutop import cli
+
+    monkeypatch.setattr(kconfig, "_USER_PROFILE_DIR", str(tmp_path))
+    (tmp_path / "teststack.yaml").write_text(
+        "name: teststack\nnamespaces: [team-x]\nthresholds: {cpu_warn: 11}\n",
+        encoding="utf-8",
+    )
+    user_config = tmp_path / "config.yaml"
+    user_config.write_text("view:\n  theme: nord\n", encoding="utf-8")
+
+    captured: list[dict] = []
+
+    class FakeApp:
+        def __init__(self, **kwargs) -> None:
+            captured.append(kwargs)
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: "/usr/bin/kubectl")
+    monkeypatch.setattr("kutop.render.app.TopApp", FakeApp)
+
+    assert cli.main([
+        "--profile", "teststack",
+        "--config", str(user_config),
+        "--tz", "Asia/Seoul",
+        "--sort-desc",
+        "--group-by-node",
+        "--only-problems",
+        "--no-metrics-bootstrap",
+    ]) == 0
+
+    assert len(captured) == 1
+    kwargs = captured[0]
+    assert kwargs["profile"].name == "teststack"
+    assert kwargs["namespaces"] == ["team-x"]
+    cfg = kwargs["config"]
+    # the profile is authoritative for the fields it supplies...
+    assert cfg.profile_name == "teststack"
+    assert cfg.namespaces == ["team-x"]
+    assert cfg.cpu_warn == 11
+    # ...the saved user file still contributes UI prefs...
+    assert cfg.theme == "nord"
+    # ...and explicit CLI flags layer on top of both
+    assert cfg.timezone == "Asia/Seoul"
+    assert cfg.sort_desc is True
+    assert cfg.group_by_node is True
+    assert cfg.only_problems is True
 
 
 def test_detail_presets_adjust_columns_and_panels() -> None:
