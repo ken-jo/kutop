@@ -383,6 +383,9 @@ class TopApp(App):
         self._fetch_gen = 0
         self._refresh_pending = False
         self._last_refresh_error = ""
+        # First-run orientation toast: shown at most once per session, when the
+        # FIRST successful snapshot applies on an out-of-the-box generic config.
+        self._shown_first_run_hint = False
 
     # ── cfg is the single source of truth ─────────────────────────────────────
     # These properties keep the historical attribute API (sidebar handlers,
@@ -925,8 +928,14 @@ class TopApp(App):
             self._notify_refresh_error(snap.error, full=False, errors=snap.errors)
         else:
             self._last_refresh_error = ""
+        first_load = not self._loaded
         self.snapshot = snap
         self._loaded = True
+        # Only the live fetch path passes a generation token; synthetic frames
+        # injected directly (cli --self-test/--snapshot, tests) pass none and
+        # must never toast. This keeps the orientation hint to a real first load.
+        if first_load and gen is not None:
+            self._maybe_show_first_run_hint()
         # Feed rolling history every refresh for the trend meters. A zero used
         # value with a real capacity is a real 0% sample; only missing capacity
         # is treated as an untrustworthy dropout.
@@ -934,6 +943,41 @@ class TopApp(App):
         self._append_trend(self.cpu_hist, s.cpu_used_mcpu, s.cpu_cap_mcpu)
         self._append_trend(self.mem_hist, s.mem_used_mi, s.mem_cap_mi)
         self._render()
+
+    def _maybe_show_first_run_hint(self) -> None:
+        """Orient a first-time user once: name the core affordances via one toast.
+
+        Gated so it never nags a returning user. Shown only when ALL hold:
+          * it has not already fired this session (``_shown_first_run_hint``);
+          * the active profile is the built-in generic one (no per-workload
+            profile was selected — a power user who set one already knows the
+            keys);
+          * the config carries no obvious user customization — a cheap, robust
+            signal that this is an out-of-the-box launch. The chosen heuristic is:
+            the namespace scope is the lone default ``["default"]``, no
+            profile-owned probes/panels were configured (no alertmanager URL, no
+            health probes), and no ad-hoc filter is active (no live search term,
+            only_problems off). ``hide_completed`` is the shipped default, so it
+            is deliberately NOT treated as customization. Each check is a single
+            attribute read, so the guard is cheap and does not depend on disk
+            state.
+        """
+        if self._shown_first_run_hint:
+            return
+        self._shown_first_run_hint = True  # at most once per session, win or skip
+        if (self.cfg.profile_name or "generic") != "generic":
+            return
+        if list(self.namespaces) != ["default"]:
+            return
+        if self.cfg.alertmanager_url or self.cfg.health_probes:
+            return
+        if self._search_term or self.cfg.only_problems:
+            return
+        self.notify(
+            "Press b for sidebar (namespaces, profiles), o for options, / to search",
+            title="Welcome to kutop",
+            timeout=6,
+        )
 
     @staticmethod
     def _refresh_error_detail(error: str, errors: "Optional[list]" = None) -> str:
@@ -994,10 +1038,17 @@ class TopApp(App):
         short = " ".join((error or "unknown error").split())
         if len(short) > 140:
             short = short[:139] + "…"
+        # Name the kube context on the first row so a beginner can tell "right
+        # cluster, unreachable" from "wrong context" (resolved exactly as the
+        # sidebar/confirm modals display it; '' -> 'current' like _display_context
+        # callers).
+        ctx = self._display_context() or "current"
         pad = ["-"] * (len(self.cfg.visible_columns()) - 1)
         mt.clear()
-        mt.add_row(Text(f"cluster unreachable: {short}", style="bold red"),
-                   *pad, key="startup_error")
+        mt.add_row(
+            Text(f"cluster unreachable (context: {ctx}): {short}", style="bold red"),
+            *pad, key="startup_error",
+        )
         mt.add_row(Text("check: kubectl get nodes", style="bold yellow"),
                    *pad, key="startup_hint")
         mt.add_row(Text(f"retrying every {self.interval:g}s...", style="dim"),
@@ -1205,12 +1256,37 @@ class TopApp(App):
                 mt.add_row(*pod_cells(pod), key=f"pod:{pod.namespace}/{pod.name}")
 
         if mt.row_count == 0:
-            msg = "(no pods match filter)" if self._effective_filter() or \
-                self.cfg.only_problems else "(no pods)"
-            mt.add_row(*sep_row(msg))
+            mt.add_row(*sep_row(self._empty_state_message()))
 
         self._restore_row(mt, saved_key, sx, sy)
         self._sync_sidebar_state()
+
+    def _empty_state_message(self) -> str:
+        """Actionable text for the main table's single empty-state guidance row.
+
+        A live search term is the most common reason a beginner sees nothing, so
+        it wins: name the term and how to clear it. Otherwise (no rows at all)
+        name the watched namespaces and any active filters so the user knows what
+        is hiding pods and which key changes it. Falls back to the bare
+        '(no pods)' only when nothing is scoped to mention.
+        """
+        term = self._effective_filter()
+        if term:
+            return f'no pods match "{term}" — esc to clear'
+        active = []
+        if self.cfg.hide_completed:
+            active.append("hide_completed on")
+        if self.cfg.only_problems:
+            active.append("only_problems on")
+        ns = list(self.namespaces)
+        if ns:
+            base = f"no pods in [{', '.join(ns)}]"
+            if active:
+                base += f" ({', '.join(active)})"
+            return f"{base} — b to change namespaces"
+        if active:
+            return f"no pods ({', '.join(active)}) — b to change filters"
+        return "(no pods)"
 
     def _indent_pod_cells(self, pod: Pod, cols, ctx) -> list:
         """Pod cells for the grouped view, with the name cell indented under node."""

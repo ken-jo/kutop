@@ -3164,3 +3164,212 @@ def test_options_cancel_with_profile_preserves_user_fields(tmp_path: Path) -> No
     assert saved_cfg.show_pvc is False, (
         f"show_pvc should be False (pre-open) but got {saved_cfg.show_pvc}"
     )
+
+
+# ── beginner UX polish (workstream D) ──────────────────────────────────────────
+
+
+class _GoodFetcher:
+    """Duck-typed fetcher returning one healthy synthetic frame (no kubectl)."""
+
+    def __init__(self, namespaces=None) -> None:
+        self.namespaces = list(namespaces or ["default"])
+
+    def fetch_core(self):
+        from kutop.model import Node, Pod, Snapshot
+
+        snap = Snapshot()
+        snap.nodes = [Node(name="node-a", cpu_mcpu=1, cpu_cap_mcpu=10, ready=True)]
+        snap.pods = [
+            Pod(name="pod-a", namespace="default", node="node-a",
+                phase="Running", ready="1/1")
+        ]
+        return snap
+
+    def enrich_snapshot(self, snap):
+        return snap
+
+    def fetch(self):
+        return self.enrich_snapshot(self.fetch_core())
+
+    def cancel(self) -> None:
+        pass
+
+
+def test_first_run_hint_shows_once_on_generic_first_load(monkeypatch) -> None:
+    """The orientation toast fires exactly once: on the first successful load of
+    an out-of-the-box generic config, and never on a later snapshot."""
+    from kutop.render.app import TopApp
+
+    notices: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        TopApp, "notify",
+        lambda self, message, **kwargs: notices.append((message, kwargs)),
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        app.fetcher = _GoodFetcher(["default"])  # type: ignore[assignment]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            notices.clear()  # ignore any mount-time toasts
+
+            app.refresh_snapshot()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app._loaded and not app._fetching:
+                    break
+            await pilot.pause()
+
+            assert app._loaded is True
+            hints = [m for m, _ in notices if "for sidebar" in m]
+            assert len(hints) == 1
+            msg = hints[0]
+            assert "b for sidebar" in msg
+            assert "o for options" in msg
+            assert "/ to search" in msg
+            assert app._shown_first_run_hint is True
+
+            # a second snapshot must NOT re-show the hint
+            notices.clear()
+            from kutop.model import Snapshot
+            app._apply_snapshot(Snapshot())
+            await pilot.pause()
+            assert not any("for sidebar" in m for m, _ in notices)
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_first_run_hint_suppressed_for_customized_config(monkeypatch) -> None:
+    """A non-default scope (here: a profile-named, multi-namespace config) is a
+    returning/power user — the orientation toast must stay silent."""
+    from kutop.render.app import TopApp
+
+    notices: list[str] = []
+    monkeypatch.setattr(
+        TopApp, "notify",
+        lambda self, message, **kwargs: notices.append(message),
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["team-a", "team-b"],
+            config=Config(namespaces=["team-a", "team-b"], profile_name="acme"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        app.fetcher = _GoodFetcher(["team-a", "team-b"])  # type: ignore[assignment]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            notices.clear()
+
+            app.refresh_snapshot()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if app._loaded and not app._fetching:
+                    break
+            await pilot.pause()
+
+            assert app._loaded is True
+            assert not any("for sidebar" in m for m in notices)
+            # the once-per-session latch still flips, so a later default scope
+            # cannot belatedly trigger it
+            assert app._shown_first_run_hint is True
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_empty_state_message_names_filter_term_and_namespaces() -> None:
+    """The main-table empty-state row is actionable: a live search names the term
+    and how to clear it; a truly empty scope names namespaces + active filters."""
+    from textual.widgets import DataTable
+
+    from kutop.model import Node, Snapshot
+    from kutop.render.app import TopApp
+
+    async def drive() -> None:
+        app = TopApp(
+            ["team-a", "team-b"],
+            config=Config(namespaces=["team-a", "team-b"]),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        app.fetcher = _GoodFetcher(["team-a", "team-b"])  # type: ignore[assignment]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            # a snapshot with a node but no pods -> truly-empty unfiltered scope
+            snap = Snapshot()
+            snap.nodes = [Node(name="node-a", cpu_mcpu=1, cpu_cap_mcpu=10, ready=True)]
+            app._apply_snapshot(snap)
+            await pilot.pause()
+
+            mt = app.query_one("#main_table", DataTable)
+            rows = [str(mt.get_row_at(i)[0]) for i in range(mt.row_count)]
+            empty = next(r for r in rows if "no pods" in r)
+            assert "team-a" in empty and "team-b" in empty
+            assert "hide_completed on" in empty
+            assert "b to change namespaces" in empty
+
+            # now drive a live search that matches nothing -> filter-specific text
+            app._search_term = "zzz-no-match"
+            app._render_main_table()
+            await pilot.pause()
+            rows = [str(mt.get_row_at(i)[0]) for i in range(mt.row_count)]
+            filtered = next(r for r in rows if "no pods" in r)
+            assert "zzz-no-match" in filtered
+            assert "esc to clear" in filtered
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_unreachable_guidance_first_row_names_context() -> None:
+    """The startup-guidance first row names the resolved kube context so a
+    beginner can distinguish 'right cluster, unreachable' from 'wrong context'."""
+    from textual.widgets import DataTable
+
+    from kutop.fetch import Fetcher
+    from kutop.render.app import TopApp
+
+    class UnreachableFetcher(Fetcher):
+        def _run(self, *args: str, timeout: int = 0) -> str:
+            raise RuntimeError("Unable to connect to the server: dial tcp: timeout")
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(context="prod-eu"),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        app.fetcher = UnreachableFetcher(["default"])  # type: ignore[assignment]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            app.refresh_snapshot()
+            for _ in range(100):
+                await pilot.pause(0.02)
+                if not app._fetching:
+                    break
+            await pilot.pause()
+
+            assert app._loaded is False
+            mt = app.query_one("#main_table", DataTable)
+            first = str(mt.get_row_at(0)[0])
+            assert "cluster unreachable" in first
+            assert "context: prod-eu" in first
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
