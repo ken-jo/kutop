@@ -104,13 +104,26 @@ sudo apt install kutop
 1. Update `version` in `pyproject.toml` and `__version__` in `kutop/__init__.py`
    (they must match; the release workflow reads the former, `kutop --version`
    reports the latter).
-2. Commit and push to `master`.
-3. Create and push a matching tag:
+2. Roll `CHANGELOG.md`: move the `## Unreleased` entries under a new
+   `## X.Y.Z - <date>` heading and leave a fresh empty `## Unreleased` above it.
+   (The GitHub Release body is auto-generated as `Release vX.Y.Z` — it is *not*
+   sourced from the changelog, so edit the release notes by hand if you want
+   them to mirror the changelog.)
+3. Land the release commit on `master` (push directly, or merge a
+   `release/vX.Y.Z` branch). The workflow triggers on the tag from any branch,
+   but the released commit should live on `master`.
+4. Create and push a matching tag (use the real version — the example below is
+   a placeholder, and a tag that already exists is rejected):
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
+
+Pushing the tag starts `release.yml`. With the current repository variables
+(`PUBLISH_PYPI=true`, `PUBLISH_HOMEBREW=true`, `PUBLISH_APT` unset) a release
+publishes to **PyPI and Homebrew**; the apt job is skipped until apt is enabled
+(see the Apt Repository section above).
 
 The tag triggers `.github/workflows/release.yml`, which builds:
 

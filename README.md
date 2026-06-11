@@ -160,7 +160,7 @@ on Debian/Ubuntu for now.
 python -m pip install "kutop @ git+https://github.com/ken-jo/kutop.git"
 
 # a specific tag
-python -m pip install "kutop @ git+https://github.com/ken-jo/kutop.git@v0.4.0"
+python -m pip install "kutop @ git+https://github.com/ken-jo/kutop.git@v0.5.0"
 
 # editable install from a clone
 git clone https://github.com/ken-jo/kutop.git
@@ -277,20 +277,20 @@ that would just re-show identical values).
 |-----|--------|
 | `q` `q` | quit (first press shows a confirmation toast) |
 | `r` | refresh now |
-| `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster, Profile); inside the modal, **Close** (or `o`) keeps changes while **Cancel (esc)** / `Esc` discards every edit and restores the settings as they were when the modal opened *(unreleased)* |
-| `b` | toggle the control sidebar; the header ☰ button also reveals the sidebar or, if already visible, jumps focus to the sidebar MENU section (Options / Keys / Screenshot / Quit — menu Quit exits immediately, unlike the two-press `q` flow) *(unreleased)* |
+| `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster, Profile); inside the modal, **Close** (or `o`) keeps changes while **Cancel (esc)** / `Esc` discards every edit and restores the settings as they were when the modal opened |
+| `b` | toggle the control sidebar; the header ☰ button also reveals the sidebar or, if already visible, jumps focus to the sidebar MENU section (Options / Keys / Screenshot / Quit — menu Quit exits immediately, unlike the two-press `q` flow) |
 | `/` | search / filter pods by name (accepts regular expressions; plain terms use case-insensitive substring match) |
 | `Esc` | clear the search filter |
-| `Esc` (in Options modal) | cancel / discard all edits and restore the pre-open settings *(unreleased)* |
+| `Esc` (in Options modal) | cancel / discard all edits and restore the pre-open settings |
 | `s` / `S` | cycle sort column / flip sort direction (or click a column header) |
 | `g` | group pods under their node |
 | `l` | logs for the focused pod (`kubectl logs -f`) |
 | `d` | describe the focused pod |
-| `y` | YAML manifest for the focused pod (`kubectl get pod <name> -n <ns> -o yaml`) *(unreleased)* |
-| `t` | shell into the focused pod (`kubectl exec -it`, bash with sh fallback) — the dashboard suspends and resumes when the shell exits *(unreleased)* |
+| `y` | YAML manifest for the focused pod (`kubectl get pod <name> -n <ns> -o yaml`) |
+| `t` | shell into the focused pod (`kubectl exec -it`, bash with sh fallback) — the dashboard suspends and resumes when the shell exits |
 | `x` | delete the focused pod (needs the sidebar **Allow delete/restart (x/X)** toggle on, then confirm) |
-| `X` | restart the focused pod's workload via `kubectl rollout restart` (same **Allow delete/restart (x/X)** gate, then a confirm showing context / namespace / pod / target; the Deployment is derived from the ReplicaSet name) *(unreleased)* |
-| `Esc` (in sidebar) | return focus to the pod table *(unreleased)* |
+| `X` | restart the focused pod's workload via `kubectl rollout restart` (same **Allow delete/restart (x/X)** gate, then a confirm showing context / namespace / pod / target; the Deployment is derived from the ReplicaSet name) |
+| `Esc` (in sidebar) | return focus to the pod table |
 | `e` / `v` | toggle the Events / PVC panels |
 | `a` / `h` | toggle the Alerts / Health panels (profile-driven) |
 | `R` | reload `~/.config/kutop/config.yaml` live |
@@ -301,11 +301,8 @@ Inside the full-screen viewers (logs, describe, YAML, event details):
 | Key | Action |
 |-----|--------|
 | `q` / `Esc` | close the viewer |
-| `p` | log viewer: show the **previous (crashed) container's** logs *(unreleased)* |
-| `c` | log viewer: cycle containers on multi-container pods *(unreleased)* |
-
-Keys marked *(unreleased)* are on `master` but not yet in a tagged release —
-they ship in the next release after 0.4.0.
+| `p` | log viewer: show the **previous (crashed) container's** logs |
+| `c` | log viewer: cycle containers on multi-container pods |
 
 In `o` → Thresholds, the sliders also work without a mouse: `←`/`h` and
 `→`/`l` move the active handle, and `[`, `]`, or `Space` switch between the
@@ -351,6 +348,7 @@ kutop --dump-config
 # Options modal, key 'o', in the running app). Layering order:
 #   built-in defaults -> --profile -> this file -> CLI flags.
 profile: "generic"        # active profile name (read-only)
+profiles_by_context: {}   # per-context profile recall (auto-managed)
 view:
   timezone: ""          # IANA tz for timestamps; "" = host local
   theme: "textual-dark"    # app theme; choose from Options (o)
@@ -520,7 +518,7 @@ Forbidden for your user. Everything that could be fetched is still shown.
 The toast now names each failing source (up to 3, e.g. `2 failures: get pods
 -n team-a: forbidden; get pvc -n team-b: timeout`), each capped at 60 chars
 (`…`), with `+N more` when there are additional failures — so you can fix RBAC
-gaps one namespace at a time *(unreleased)*.
+gaps one namespace at a time.
 Fix: deselect the failing namespace(s), or grant RBAC `get/list` on pods,
 nodes, events, and PVCs in each (see
 [Requirements & permissions](#requirements--permissions)).
@@ -553,7 +551,7 @@ Cause: previously, kubectl stderr was truncated at 80 chars, which hid
 admission-webhook denials and RBAC messages.
 Fix: the toast now shows up to 200 chars of kubectl's stderr (whitespace
 collapsed); the full stderr is also written to the Textual devtools log
-(`textual console` in a second terminal) *(unreleased)*.
+(`textual console` in a second terminal).
 
 **Summary tiles disappear on a narrow terminal.**
 Cause: intentional — whole tiles are dropped to fit rather than wrapping and

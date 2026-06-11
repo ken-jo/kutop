@@ -75,7 +75,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--group-by-node", action="store_true",
                     help="group pods under their node (cluster topology view)")
     ap.add_argument("--filter", default=None,
-                    help="initial pod name filter (case-insensitive substring)")
+                    help="initial pod name filter (case-insensitive substring, "
+                         "or a regex like 'web-[0-9]+$')")
     ap.add_argument("--only-problems", action="store_true",
                     help="show only problem pods (non-Running / restarts>0 / oom)")
     ap.add_argument("--allow-destructive", action="store_true",

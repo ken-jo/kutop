@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-06-11
+
 ### Added
 
 - **Inspect pod YAML manifest** (`y`): a full-screen viewer that streams
