@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kutop.config import HealthProbe
+from kutop.config import Config, HealthProbe, load_config, save_config
 from kutop.fetch import Fetcher
 from kutop.model import Event, HealthResult, Node, Pod, PVC
 from kutop.plugins.health import HealthPlugin
@@ -76,6 +76,42 @@ def test_health_plugin_render_seam_updates_custom_panel() -> None:
     HealthPlugin().render(panel, snapshot)
 
     assert panel.rows == [HealthResult(name="api", ok=True, fields={"ready": "true"})]
+
+
+def test_health_plugin_disabled_when_no_probes_then_enabled_with_one() -> None:
+    plugin = HealthPlugin()
+
+    assert plugin.is_enabled(Config(health_probes=[])) is False
+
+    cfg = Config(
+        health_probes=[{"name": "node-rpc", "url": "/api/health", "fields": {}}]
+    )
+    assert plugin.is_enabled(cfg) is True
+
+    # removing the only probe disables the plugin again
+    cfg.health_probes = []
+    assert plugin.is_enabled(cfg) is False
+
+
+def test_added_health_probe_survives_save_load_round_trip(tmp_path: Path) -> None:
+    cfgfile = tmp_path / "config.yaml"
+    # the editor appends a {name, url, fields} dict to cfg.health_probes
+    cfg = Config(
+        health_probes=[
+            {"name": "node-rpc", "url": "/api/v1/health",
+             "fields": {"block": r"height=(\d+)"}}
+        ]
+    )
+
+    save_config(cfg, str(cfgfile))
+    reloaded = load_config(user_path=str(cfgfile))
+
+    assert reloaded.health_probes == [
+        {"name": "node-rpc", "url": "/api/v1/health",
+         "fields": {"block": r"height=(\d+)"}}
+    ]
+    # and the health plugin sees it
+    assert HealthPlugin().is_enabled(reloaded) is True
 
 
 def test_health_plugin_panel_keeps_common_chrome_class() -> None:
