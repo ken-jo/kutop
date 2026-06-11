@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import os
+import re
 import subprocess
 from collections import deque
 from datetime import datetime, timezone
@@ -358,6 +359,9 @@ class TopApp(App):
         # cannot survive a relaunch.
         self._search_term = (self.cfg.name_filter or "").strip()
         self.cfg.name_filter = ""
+        # Compiled name-filter matcher, memoized on the term string so the
+        # regex is not recompiled on every 5s render: (term, matcher).
+        self._filter_cache: tuple[str, "object"] = ("", None)
         # Namespaces discovered live on the cluster (for the Options multi-select).
         self._discovered_ns: list[str] = []
         self._discovered_contexts: list[str] = []
@@ -1169,6 +1173,45 @@ class TopApp(App):
         """The active runtime name substring."""
         return (self._search_term or "").strip().lower()
 
+    # Characters that, when present in a term, make us attempt a regex match.
+    _REGEX_META = frozenset(r".^$*+?[]{}|()\\")
+
+    @classmethod
+    def _term_is_regex(cls, term: str) -> bool:
+        """True when ``term`` should be (and can be) treated as a regex: it
+        carries a metacharacter and ``re.compile`` accepts it. A plain term or
+        an invalid pattern returns False and is matched as a substring."""
+        if not term or not any(ch in cls._REGEX_META for ch in term):
+            return False
+        try:
+            re.compile(term)
+        except re.error:
+            return False
+        return True
+
+    def _compile_filter(self, term: str):
+        """Return a ``name -> bool`` matcher for ``term``.
+
+        A term that contains a regex metacharacter and compiles cleanly is
+        matched case-insensitively with ``re.search``; anything else (a plain
+        term, or one that fails ``re.compile``) falls back to the historical
+        case-insensitive substring test. The compiled matcher is memoized on
+        the term string so it is not rebuilt on every render. This must never
+        raise into the render path — a bad regex degrades to substring.
+        """
+        cached_term, cached_matcher = self._filter_cache
+        if cached_matcher is not None and cached_term == term:
+            return cached_matcher
+
+        if self._term_is_regex(term):
+            rx = re.compile(term, re.IGNORECASE)
+            matcher = lambda name: bool(rx.search(name))  # noqa: E731
+        else:
+            sub = term.lower()
+            matcher = lambda name: sub in name.lower()  # noqa: E731
+        self._filter_cache = (term, matcher)
+        return matcher
+
     @staticmethod
     def _is_problem(pod: Pod) -> bool:
         """A pod is a 'problem' if not cleanly Running / has restarts / oom / crash."""
@@ -1191,10 +1234,11 @@ class TopApp(App):
 
     def _visible_pods(self, pods: list[Pod]) -> list[Pod]:
         """Apply config-driven + live filters (name / hide_completed / only_problems)."""
-        sub = self._effective_filter()
+        term = (self._search_term or "").strip()
+        matcher = self._compile_filter(term) if term else None
         out = []
         for pd in pods:
-            if sub and sub not in pd.name.lower():
+            if matcher is not None and not matcher(pd.name):
                 continue
             if self.cfg.hide_completed and self._is_completed(pd):
                 continue
@@ -1732,8 +1776,12 @@ class TopApp(App):
         except Exception:
             search_visible = False
         if search_visible:
+            # Mirror _compile_filter's decision so the title reflects how the
+            # active term is actually matched (regex vs. plain substring).
+            term = (self._search_term or "").strip()
+            title = "SEARCH (regex)" if self._term_is_regex(term) else "SEARCH"
             return (
-                "SEARCH",
+                title,
                 [
                     (_binding_key("search"), "Edit search"),
                     ("enter", "Keep filter"),
