@@ -740,3 +740,217 @@ def test_name_filter_compiled_matcher_is_cached(monkeypatch) -> None:
     # cache hit: no further compilation on the identical term
     assert calls["n"] == compiles_after_first
     assert first == second == {"web-0"}
+
+
+# ── ReDoS guard: nested-quantifier and over-length patterns ──────────────────
+
+
+def test_term_is_regex_rejects_catastrophic_patterns() -> None:
+    """Nested-quantifier shapes must be treated as plain substrings, not regex.
+
+    Safe-looking patterns with metacharacters but no nested quantifiers remain
+    True (regex path), while the catastrophic family is all False (substring).
+    """
+    from kutop.render.app import TopApp
+
+    # catastrophic patterns -> False (falls back to substring)
+    for bad in ("(a+)+$", "(.*)*", "(.+)+@", "(a{1,5})+"):
+        assert TopApp._term_is_regex(bad) is False, (
+            f"expected False for catastrophic pattern {bad!r}"
+        )
+
+    # safe regex patterns -> True
+    for good in ("web-[0-9]+$", "^api", "[A-Z]ache"):
+        assert TopApp._term_is_regex(good) is True, (
+            f"expected True for safe regex pattern {good!r}"
+        )
+
+
+def test_has_nested_quantifier_white_box() -> None:
+    """The catastrophic-backtracking detector must flag a quantifier applied to
+    a group with an unbounded inner quantifier, and ONLY that — escaped parens
+    are literals, an unquantified group is safe, and a quantifier at end of
+    pattern (empty lookahead char) must not be misread as 'quantified'."""
+    from kutop.render.app import TopApp as T
+
+    # catastrophic: quantifier on a group holding an unbounded quantifier
+    for bad in ("(a+)+", "(.*)*", "(.+)+@", "(a{1,5})+", "((a+)+)", "((a|b)*)+"):
+        assert T._has_nested_quantifier(bad) is True, bad
+
+    # safe: a group NOT quantified, or holding no unbounded quantifier, or
+    # escaped parens (literals, not a group), or a top-level quantifier
+    for ok in (r"\(a+\)+", "()+", "(a+)", "(ab)+", "a+",
+               "web-(v[0-9]+)", "(api+)", "web-[0-9]+$", "(web|api)"):
+        assert T._has_nested_quantifier(ok) is False, ok
+
+
+def test_term_is_regex_rejects_over_length_term() -> None:
+    """A term longer than _REGEX_MAX_LEN is treated as a plain substring."""
+    from kutop.render.app import TopApp
+
+    long_term = "a" * (TopApp._REGEX_MAX_LEN + 1)
+    assert TopApp._term_is_regex(long_term) is False
+
+
+def test_catastrophic_pattern_compile_filter_does_not_hang() -> None:
+    """_compile_filter('(a+)+$') must return immediately (substring fallback).
+
+    The nested-quantifier guard ensures the literal pattern is never handed to
+    the regex engine on an adversarial input.  We verify both that the call
+    returns and that the result is correct (the literal '(a+)+$' is not a
+    substring of a string of 40 'a's followed by 'X').
+    """
+    app = _filter_app("(a+)+$")
+    matcher = app._compile_filter("(a+)+$")
+    adversarial_name = "a" * 40 + "X"
+    # substring check: the literal '(a+)+$' is not in the name -> False
+    result = matcher(adversarial_name)
+    assert result is False
+
+
+def test_over_length_term_compile_filter_uses_substring() -> None:
+    """A term > _REGEX_MAX_LEN is matched as a plain substring, never as regex."""
+    from kutop.render.app import TopApp
+
+    long_term = "a" * (TopApp._REGEX_MAX_LEN + 1)
+    app = _filter_app(long_term)
+    matcher = app._compile_filter(long_term)
+    # the long term itself IS a substring of a string containing it
+    assert matcher("x" + long_term + "y") is True
+    # and the regex-or-substring decision is recorded as substring (not regex)
+    assert TopApp._term_is_regex(long_term) is False
+
+
+# ── Display term not lowercased in empty-state message ────────────────────────
+
+
+def test_empty_state_shows_verbatim_mixed_case_regex_term() -> None:
+    """_effective_filter() must return the term as typed; the empty-state row
+    must display it verbatim (not lowercased) so '[A-Z]' stays '[A-Z]'."""
+
+    async def drive() -> None:
+        from kutop.model import Pod, Snapshot
+        from kutop.render.app import TopApp
+
+        app = TopApp(["default"], context="ctx-b",
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            # load a pod so the table is populated, then set a filter that
+            # matches nothing — forcing the empty-state row to appear
+            snap = Snapshot()
+            snap.pods = [Pod(name="api-99", namespace="default",
+                             node="node-a", phase="Running", ready="1/1")]
+            app._apply_snapshot(snap)
+            await pilot.pause()
+
+            # a mixed-case regex term that matches nothing in the snapshot
+            app._search_term = "Web[A-Z]999"
+            app.cfg.hide_completed = False
+            app.cfg.only_problems = False
+            await pilot.pause()
+
+            msg = app._empty_state_message()
+            # verbatim term preserved — not lowercased
+            assert "Web[A-Z]999" in msg, (
+                f"expected verbatim term in empty-state, got: {msg!r}"
+            )
+            assert "web[a-z]999" not in msg, (
+                f"term was lowercased in empty-state message: {msg!r}"
+            )
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+# ── YAML modal: q closes without arming quit or clearing search ───────────────
+
+
+def test_yaml_modal_q_closes_without_arming_quit_or_clearing_search() -> None:
+    """Pressing 'q' inside the YAML modal must dismiss it via event.stop(),
+    never reaching the app's quit-arming binding.  The search term must survive
+    and _quit_hint_deadline must remain 0.0."""
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+    from kutop.render.modals import YamlViewModal
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="ctx-b",
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._apply_snapshot(_pod_snapshot(
+                Pod(name="web-0", namespace="default", node="node-a",
+                    phase="Running", ready="1/1")))
+            await pilot.pause()
+            # prime a search term that must survive
+            app._search_term = "web"
+
+            await pilot.press("y")
+            await pilot.pause()
+            assert isinstance(app.screen, YamlViewModal), (
+                "expected YamlViewModal to be pushed after 'y'"
+            )
+
+            await pilot.press("q")
+            await pilot.pause()
+            # modal dismissed by q
+            assert not isinstance(app.screen, YamlViewModal), (
+                "expected YamlViewModal to be dismissed after 'q'"
+            )
+            # search term survived
+            assert app._search_term == "web", (
+                f"search term was cleared: {app._search_term!r}"
+            )
+            # q did NOT arm the two-step quit (event.stop() kept it local)
+            assert app._quit_hint_deadline == 0.0, (
+                f"quit was armed: _quit_hint_deadline={app._quit_hint_deadline}"
+            )
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+# ── Integration: YAML modal opened while a regex filter is active ─────────────
+
+
+def test_yaml_modal_opens_with_active_regex_filter_unchanged() -> None:
+    """Opening the YAML modal while a regex filter is active must not alter the
+    search term.  The modal closes cleanly and the filter remains in place."""
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+    from kutop.render.modals import YamlViewModal
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="ctx-b",
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._apply_snapshot(_pod_snapshot(
+                Pod(name="web-0", namespace="default", node="node-a",
+                    phase="Running", ready="1/1")))
+            await pilot.pause()
+            # a valid regex that matches the focused pod
+            app._search_term = "web-[0-9]+"
+            await pilot.pause()
+
+            await pilot.press("y")
+            await pilot.pause()
+            assert isinstance(app.screen, YamlViewModal), (
+                "expected YamlViewModal after 'y' with active regex filter"
+            )
+            # filter must be unchanged while modal is open
+            assert app._search_term == "web-[0-9]+", (
+                f"search term changed on open: {app._search_term!r}"
+            )
+
+            # close the modal; filter still intact
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, YamlViewModal)
+            assert app._search_term == "web-[0-9]+", (
+                f"search term changed on close: {app._search_term!r}"
+            )
+            await pilot.exit(None)
+
+    asyncio.run(drive())

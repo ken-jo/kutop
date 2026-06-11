@@ -87,19 +87,20 @@ presentation (ordering, timezone, thresholds).
   (add/remove probes with name, URL, optional label+regex field; live apply + Esc/Cancel revert); `table.py` the drag-resizable main table;
   `header.py` the header widgets; `widgets.py` the remaining presentation widgets (SummaryBar,
   TrendGraph, ConfirmModal, …); `render/theme.tcss` the styles. Pod-name filter (`/` search
-  and `--filter` flag) detects regex metacharacters and compiles if valid; invalid regex falls back
-  to substring match. Filter matcher cached per term (`_filter_cache`) to avoid recompile on every
-  render. First-run hint fires once on the first live snapshot of a default config (gated on
-  `gen is not None` to keep synthetic/test frames toast-free). Empty-state messages are context-aware:
-  active search shows `no pods match "<term>" — esc to clear`; empty scope names watched namespaces
-  and filters. Startup guidance rows include the kube context name (`cluster unreachable (context: <ctx>): <error>`).
-  Quit is keyboard-complete and
-  two-step: `q` arms a 4s hint, a second `q` or Enter confirms, Esc cancels — `check_action`
-  disables the Enter confirm while a modal, a text input, or the sidebar has focus. Delete and
-  rollout restart are double-gated: the live 'Allow delete/restart' toggle (seeded by
-  `--allow-destructive`, intentionally never persisted) plus a ConfirmModal naming the full
-  target identity (context, namespace, pod, rollout target). Restart maps a ReplicaSet owner to
-  its Deployment only when the RS name suffix is pod-template-hash-like
+  and `--filter` flag) detects regex metacharacters and compiles if valid at render time; invalid
+  patterns or catastrophic-backtracking shapes (nested unbounded quantifiers or over 200 chars)
+  fall back to substring match so untrusted/typo input can never hang the render thread. Filter
+  matcher cached per term (`_filter_cache`) to avoid recompile on every render. First-run hint
+  fires once on the first live snapshot of a default config (gated on `gen is not None` to keep
+  synthetic/test frames toast-free). Empty-state messages are context-aware: active search shows
+  `no pods match "<term>" — esc to clear`; empty scope names watched namespaces and filters.
+  Startup guidance rows include the kube context name (`cluster unreachable (context: <ctx>): <error>`).
+  Quit is keyboard-complete and two-step: `q` arms a 4s hint, a second `q` or Enter confirms,
+  Esc cancels — `check_action` disables the Enter confirm while a modal, a text input, or the
+  sidebar has focus. Delete and rollout restart are double-gated: the live 'Allow delete/restart'
+  toggle (seeded by `--allow-destructive`, intentionally never persisted) plus a ConfirmModal
+  naming the full target identity (context, namespace, pod, rollout target). Restart maps a
+  ReplicaSet owner to its Deployment only when the RS name suffix is pod-template-hash-like
   (`model.pod_template_hash_like`); other ReplicaSets are reported un-rollable. While the
   cluster is unreachable before the first snapshot, the main table shows persistent guidance
   rows (error + `kubectl get nodes` hint + retry cadence) instead of a bare loading row.

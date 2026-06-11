@@ -361,7 +361,7 @@ class TopApp(App):
         self.cfg.name_filter = ""
         # Compiled name-filter matcher, memoized on the term string so the
         # regex is not recompiled on every 5s render: (term, matcher).
-        self._filter_cache: tuple[str, "object"] = ("", None)
+        self._filter_cache: "tuple[str, object, bool]" = ("", None, False)
         # Namespaces discovered live on the cluster (for the Options multi-select).
         self._discovered_ns: list[str] = []
         self._discovered_contexts: list[str] = []
@@ -1170,47 +1170,104 @@ class TopApp(App):
                 pass
 
     def _effective_filter(self) -> str:
-        """The active runtime name substring."""
-        return (self._search_term or "").strip().lower()
+        """The active runtime name filter, exactly as the user typed it
+        (stripped). Display sites (empty-state row, sidebar) use this so a
+        regex term is shown verbatim — matching is case-insensitive regardless,
+        so lowercasing the displayed term would only mislead (e.g. ``[A-Z]``)."""
+        return (self._search_term or "").strip()
 
     # Characters that, when present in a term, make us attempt a regex match.
     _REGEX_META = frozenset(r".^$*+?[]{}|()\\")
+    # Cap a term's length before treating it as a regex; together with the
+    # nested-quantifier guard this bounds catastrophic backtracking that would
+    # otherwise freeze the render thread (Python's re has no match timeout).
+    _REGEX_MAX_LEN = 200
+
+    @staticmethod
+    def _has_nested_quantifier(pattern: str) -> bool:
+        """True for the catastrophic-backtracking family — a quantifier applied
+        to a group whose body already holds an unbounded quantifier (``(a+)+``,
+        ``(.*)*``, ``(a{1,5})+``). Such a term is matched as a plain substring
+        instead of being run, unbounded, on the UI thread."""
+        stack = [False]  # per open group: does its body hold an unbounded quant?
+        i, n = 0, len(pattern)
+        while i < n:
+            c = pattern[i]
+            if c == "\\":
+                i += 2
+                continue
+            if c == "(":
+                stack.append(False)
+            elif c == ")":
+                inner = stack.pop() if len(stack) > 1 else False
+                nxt = pattern[i + 1] if i + 1 < n else ""
+                # tuple membership, not `nxt in "*+{"` — an empty nxt (group at
+                # end of pattern) is a substring of every str and would wrongly
+                # flag a safe, unquantified group like ``(a+)``.
+                quantified = nxt in ("*", "+", "{")
+                if inner and quantified:
+                    return True
+                if quantified and stack:
+                    stack[-1] = True  # a quantified group bubbles up to its parent
+            elif c in ("*", "+", "{"):
+                stack[-1] = True
+            i += 1
+        return False
+
+    @classmethod
+    def _safe_regex(cls, term: str):
+        """A compiled case-insensitive regex for ``term``, or ``None`` to fall
+        back to substring. Returns ``None`` for a plain term, an invalid
+        pattern, an over-long term, or a catastrophic-backtracking shape — so
+        the matcher can never raise or hang the render path."""
+        if not term or len(term) > cls._REGEX_MAX_LEN:
+            return None
+        if not any(ch in cls._REGEX_META for ch in term):
+            return None
+        if cls._has_nested_quantifier(term):
+            return None
+        try:
+            return re.compile(term, re.IGNORECASE)
+        except re.error:
+            return None
 
     @classmethod
     def _term_is_regex(cls, term: str) -> bool:
-        """True when ``term`` should be (and can be) treated as a regex: it
-        carries a metacharacter and ``re.compile`` accepts it. A plain term or
-        an invalid pattern returns False and is matched as a substring."""
-        if not term or not any(ch in cls._REGEX_META for ch in term):
-            return False
-        try:
-            re.compile(term)
-        except re.error:
-            return False
-        return True
+        """True when ``term`` is treated as a (safe) regex rather than a plain
+        substring. A bad/over-long/catastrophic term is matched as a substring."""
+        return cls._safe_regex(term) is not None
 
     def _compile_filter(self, term: str):
-        """Return a ``name -> bool`` matcher for ``term``.
+        """Return a ``name -> bool`` matcher for ``term``, memoized on the term.
 
-        A term that contains a regex metacharacter and compiles cleanly is
-        matched case-insensitively with ``re.search``; anything else (a plain
-        term, or one that fails ``re.compile``) falls back to the historical
-        case-insensitive substring test. The compiled matcher is memoized on
-        the term string so it is not rebuilt on every render. This must never
-        raise into the render path — a bad regex degrades to substring.
+        A safe regex (metacharacter present, compiles, not catastrophic) is
+        matched case-insensitively with ``re.search`` on a length-bounded name;
+        anything else falls back to the historical case-insensitive substring
+        test. Never raises into the render path and never runs an unbounded
+        backtracking match. The matcher and the regex/plain decision are cached
+        together so every per-render call site compiles at most once per term.
         """
-        cached_term, cached_matcher = self._filter_cache
+        cached_term, cached_matcher, _ = self._filter_cache
         if cached_matcher is not None and cached_term == term:
             return cached_matcher
 
-        if self._term_is_regex(term):
-            rx = re.compile(term, re.IGNORECASE)
-            matcher = lambda name: bool(rx.search(name))  # noqa: E731
+        rx = self._safe_regex(term)
+        if rx is not None:
+            matcher = lambda name: bool(rx.search(name[:256]))  # noqa: E731
         else:
             sub = term.lower()
             matcher = lambda name: sub in name.lower()  # noqa: E731
-        self._filter_cache = (term, matcher)
+        self._filter_cache = (term, matcher, rx is not None)
         return matcher
+
+    def _filter_is_regex(self, term: str) -> bool:
+        """Whether the active term is matched as a regex — reads the matcher
+        cache so the SEARCH-panel title costs no extra compile."""
+        if not term:
+            return False
+        self._compile_filter(term)
+        cached_term, _, is_rx = self._filter_cache
+        return bool(is_rx) and cached_term == term
 
     @staticmethod
     def _is_problem(pod: Pod) -> bool:
@@ -1779,7 +1836,7 @@ class TopApp(App):
             # Mirror _compile_filter's decision so the title reflects how the
             # active term is actually matched (regex vs. plain substring).
             term = (self._search_term or "").strip()
-            title = "SEARCH (regex)" if self._term_is_regex(term) else "SEARCH"
+            title = "SEARCH (regex)" if self._filter_is_regex(term) else "SEARCH"
             return (
                 title,
                 [

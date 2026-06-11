@@ -209,6 +209,7 @@ class YamlViewModal(ModalScreen):
         self.pod_name = pod_name
         self.ns = ns
         self.context = context
+        self._proc = None
 
     @staticmethod
     def _yaml_cmd(pod_name: str, ns: str, context: Optional[str]) -> "list[str]":
@@ -235,12 +236,12 @@ class YamlViewModal(ModalScreen):
         log.write("Loading kubectl get pod -o yaml...")
         cmd = self._yaml_cmd(self.pod_name, self.ns, self.context)
         try:
-            proc = await asyncio.create_subprocess_exec(
+            self._proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            out, err = await proc.communicate()
+            out, err = await self._proc.communicate()
             log.clear()
             if out:
                 log.write(out.decode("utf-8", errors="ignore"))
@@ -249,10 +250,24 @@ class YamlViewModal(ModalScreen):
         except Exception as exc:
             log.write(f"[error] {exc}")
 
+    def _kill_proc(self) -> None:
+        """Don't leave kubectl running after an early close — terminate the
+        in-flight process so communicate() returns and the orphan exits."""
+        proc = self._proc
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
     def on_key(self, event) -> None:
         if event.key in ("escape", "q"):
             event.stop()  # see LogViewerModal.on_key: never leak the close key
+            self._kill_proc()
             self.dismiss()
+
+    def on_unmount(self) -> None:
+        self._kill_proc()
 
 
 class EventDetailModal(ModalScreen):

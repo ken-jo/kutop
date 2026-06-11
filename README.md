@@ -296,7 +296,7 @@ that would just re-show identical values).
 | `R` | reload `~/.config/kutop/config.yaml` live |
 | `Tab` / `Shift+Tab` | move focus between widgets (terminal-standard, built into Textual) |
 
-Inside the full-screen viewers (logs, describe, event details):
+Inside the full-screen viewers (logs, describe, YAML, event details):
 
 | Key | Action |
 |-----|--------|
@@ -315,7 +315,7 @@ The **NODE/POD column is resizable**: drag the `│` handle on its header to wid
 or narrow it (the width persists). Click any column header to sort by it.
 
 The sidebar Keys panel intentionally shows only the current work context. For
-example, a focused pod row surfaces `l` logs, `d` describe, `x` delete, `t` shell, and `X` restart, while
+example, a focused pod row surfaces `l` logs, `d` describe, `y` YAML, `t` shell, `x` delete, and `X` restart, while
 the search bar surfaces `/`, `Enter`, and `Esc`; global shortcut summaries stay
 in the footer and native help.
 
