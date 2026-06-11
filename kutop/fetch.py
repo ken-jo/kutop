@@ -821,6 +821,11 @@ class Fetcher:
                 used_total = 0
                 cap_total = 0
                 have_pvc = False
+                # A counted PVC volume whose used/cap is missing or non-numeric
+                # makes that total UNKNOWN, not 0 — reporting a parse failure as
+                # a known 0 would violate the None-means-unknown invariant.
+                used_known = True
+                cap_known = True
                 for vol in p.get("volume", []) or []:
                     if not (vol.get("pvcRef") or {}).get("name"):
                         continue  # only PVC-backed volumes count toward pod storage
@@ -829,13 +834,21 @@ class Fetcher:
                     if used is None and cap is None:
                         continue  # missing or non-numeric both fields: skip entry
                     have_pvc = True
-                    if used is not None:
+                    if used is None:
+                        used_known = False
+                    else:
                         used_total += used
-                    if cap is not None:
+                    if cap is None:
+                        cap_known = False
+                    else:
                         cap_total += cap
                 if have_pvc:
-                    pod.storage_used_mi = used_total // (1024 * 1024)  # bytes -> MiB
-                    pod.storage_cap_mi = cap_total // (1024 * 1024)
+                    pod.storage_used_mi = (
+                        used_total // (1024 * 1024) if used_known else None
+                    )
+                    pod.storage_cap_mi = (
+                        cap_total // (1024 * 1024) if cap_known else None
+                    )
 
     # ── summary ──────────────────────────────────────────────────────────────
     def _build_summary(self, snap: Snapshot) -> Summary:

@@ -234,6 +234,35 @@ def test_unparseable_pods_json_is_recorded_not_silently_dropped() -> None:
     assert any("pods" in e and "default" in e for e in snap.errors)
 
 
+def test_pvc_volume_garbage_usedBytes_yields_none_used_but_valid_cap() -> None:
+    """A PVC volume whose usedBytes is non-numeric but whose capacityBytes is
+    valid must leave storage_used_mi=None (unknown, not 0) while still
+    reporting the correct storage_cap_mi.
+
+    This pins the '_fill_pod_storage used_known / cap_known' fix: a parse
+    failure on one field must not zero-out the other valid field.
+    """
+    from kutop.model import Pod
+
+    pod = Pod(name="app-0", namespace="default")
+    summaries = {
+        "node-1": {"pods": [
+            {"podRef": {"namespace": "default", "name": "app-0"},
+             "volume": [{"pvcRef": {"name": "x"},
+                         "usedBytes": "GARBAGE",
+                         "capacityBytes": 1073741824}]},  # 1 GiB = 1024 MiB
+        ]},
+    }
+    Fetcher([])._fill_pod_storage([pod], summaries)
+    # valid cap is reported; unknown used stays None (never becomes 0)
+    assert pod.storage_cap_mi == 1024, (
+        f"expected storage_cap_mi=1024, got {pod.storage_cap_mi}"
+    )
+    assert pod.storage_used_mi is None, (
+        f"expected storage_used_mi=None (unknown), got {pod.storage_used_mi}"
+    )
+
+
 def test_one_malformed_storage_entry_does_not_discard_other_pods_storage() -> None:
     # one volume with a non-numeric usedBytes precedes a valid pod's volume;
     # the bad entry is skipped in isolation, the valid pod's storage survives

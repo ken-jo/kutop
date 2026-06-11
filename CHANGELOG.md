@@ -9,16 +9,20 @@
   active --context), closeable with Esc or q.
 - **Pod name filter now accepts regular expressions**: the `/` search and
   `--filter` flag understand both plain substring (case-insensitive) and regex
-  patterns (detected by metacharacters and validated at input time); an invalid
-  regex pattern falls back gracefully to substring matching. The sidebar SEARCH
-  hint shows "(regex)" when the active term is treated as a pattern.
+  patterns (detected by metacharacters and compiled lazily at render time); an
+  invalid regex pattern or a catastrophic-backtracking pattern (nested unbounded
+  quantifiers like `(a+)+` or over 200 chars) falls back gracefully to substring
+  matching. The sidebar SEARCH hint shows "(regex)" when the active term is
+  treated as a pattern.
 - **Health-probe editor in Options modal**: the Profile tab now hosts a guided
   add/remove editor for health probes — give each probe a name, URL (http, https,
   or an API-proxy path starting with `/`), and an optional label + regex field;
   live apply with Esc/Cancel revert, so probes are no longer YAML-only.
 - **First-run orientation toast**: a one-time welcome message on the first live
-  snapshot of a default config names the core keys (b sidebar, o options, / search);
-  suppressed for any customized config or on later runs.
+  snapshot of a fresh launch with the default profile and namespace (no health
+  probes, alertmanager URL, or active filters); suppressed when a non-generic
+  profile, custom namespaces, probes, or a live search/only_problems filter are
+  active or on later runs.
 - **Shell into the focused pod** (`t`): the dashboard suspends, hands the real
   terminal to `kubectl exec -it` (bash with sh fallback), and resumes with an
   immediate refetch when the shell exits.
