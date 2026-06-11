@@ -205,3 +205,59 @@ def test_pvc_usage_is_keyed_by_namespace_and_name() -> None:
     Fetcher([])._fill_pvc_usage([prod, staging], summaries)
     assert prod.used_mi == 500
     assert staging.used_mi is None  # unknown stays None, never cross-assigned
+
+
+class UnparseablePodsFetcher(Fetcher):
+    """API server reachable, nodes JSON valid, but the pods body is rc=0 garbage.
+
+    kubectl exiting 0 with a truncated/garbage body must NOT yield an empty,
+    error-free snapshot that silently replaces the previous good frame.
+    """
+
+    def _run(self, *args: str, timeout: int = 0) -> str:
+        joined = " ".join(args)
+        if args[0] == "top":
+            raise RuntimeError("Metrics API not available")
+        if joined == "get nodes -o json":
+            return json.dumps({"items": []})
+        if joined == "get pods -n default -o json":
+            return "{ this is not valid json"  # rc=0, garbage body
+        return ""
+
+
+def test_unparseable_pods_json_is_recorded_not_silently_dropped() -> None:
+    snap = UnparseablePodsFetcher(["default"]).fetch_core()
+    assert snap.pods == []
+    # the failure must surface (like the sibling nodes/events/pvcs fetchers) so
+    # the renderer keeps the previous frame instead of going blank silently
+    assert snap.error
+    assert any("pods" in e and "default" in e for e in snap.errors)
+
+
+def test_one_malformed_storage_entry_does_not_discard_other_pods_storage() -> None:
+    # one volume with a non-numeric usedBytes precedes a valid pod's volume;
+    # the bad entry is skipped in isolation, the valid pod's storage survives
+    good = PVC(name="data-good", namespace="default", capacity_mi=1000)
+    summaries = {
+        "node-1": {"pods": [
+            {"podRef": {"namespace": "default", "name": "bad-pod"},
+             "volume": [{"pvcRef": {"namespace": "default", "name": "data-bad"},
+                         "usedBytes": "not-a-number"}]},
+            {"podRef": {"namespace": "default", "name": "good-pod"},
+             "volume": [{"pvcRef": {"namespace": "default", "name": "data-good"},
+                         "usedBytes": 200 * 1024 * 1024}]},
+        ]},
+    }
+    # _fill_pvc_usage: malformed entry skipped, valid PVC still populated
+    Fetcher([])._fill_pvc_usage([good], summaries)
+    assert good.used_mi == 200
+
+    # _fill_pod_storage: malformed pod's volume skipped, valid pod populated
+    from kutop.model import Pod
+
+    bad_pod = Pod(name="bad-pod", namespace="default")
+    good_pod = Pod(name="good-pod", namespace="default")
+    Fetcher([])._fill_pod_storage([bad_pod, good_pod], summaries)
+    assert good_pod.storage_used_mi == 200
+    # a non-numeric usedBytes never becomes a known 0 (None means unknown)
+    assert bad_pod.storage_used_mi is None

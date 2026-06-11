@@ -30,6 +30,14 @@ def test_to_mcpu_garbage_is_zero() -> None:
     assert to_mcpu("oops") == 0
 
 
+def test_to_mcpu_negative_is_clamped_to_zero() -> None:
+    # a negative CPU quantity is garbage (Kubernetes never emits one); the
+    # "garbage yields 0" contract must hold instead of returning -1000
+    assert to_mcpu("-1") == 0
+    assert to_mcpu("-250m") == 0
+    assert to_mcpu("-1e3") == 0
+
+
 def test_to_mi_binary_and_decimal_suffixes() -> None:
     assert to_mi("256Mi") == 256
     assert to_mi("1Gi") == 1024
@@ -53,6 +61,13 @@ def test_to_mi_garbage_is_zero() -> None:
     assert to_mi("-") == 0
     assert to_mi("<none>") == 0
     assert to_mi("12parsecs") == 0
+
+
+def test_to_mi_negative_is_clamped_to_zero() -> None:
+    # a negative memory quantity is garbage; clamp to 0 rather than -5
+    assert to_mi("-5Mi") == 0
+    assert to_mi("-1Gi") == 0
+    assert to_mi("-1048576") == 0
 
 
 def test_fmt_helpers() -> None:

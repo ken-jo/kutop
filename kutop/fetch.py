@@ -514,6 +514,11 @@ class Fetcher:
         try:
             data = json.loads(gj)
         except Exception:
+            # kubectl exited 0 with a truncated/garbage body: record it like the
+            # sibling fetchers (_fetch_nodes/_fetch_events/_fetch_pvcs) so the
+            # empty result is surfaced as a refresh error instead of silently
+            # replacing the previous good frame with an empty, error-free table.
+            self._record_fetch_error(f"get pods -n {ns}: unparseable kubectl output")
             return pods
         for item in data.get("items", []):
             pod = self._parse_pod(item, ns, usage)
@@ -784,12 +789,12 @@ class Fetcher:
                     pname = ref.get("name")
                     if not pname:
                         continue
-                    used = vol.get("usedBytes")
+                    used = _as_int(vol.get("usedBytes"))
                     if used is None:
-                        continue
+                        continue  # missing or non-numeric usedBytes: skip this entry
                     pvc = by_key.get((ref.get("namespace", ""), pname))
                     if pvc is not None:
-                        pvc.used_mi = int(used) // (1024 * 1024)  # bytes -> MiB
+                        pvc.used_mi = used // (1024 * 1024)  # bytes -> MiB
 
     def _fill_pod_storage(self, pods: list[Pod], summaries: "dict[str, dict]") -> None:
         """Attribute PVC-backed storage to each pod from the cached summaries.
@@ -798,8 +803,10 @@ class Fetcher:
         ``capacityBytes`` of its PVC-backed volumes (volume entries carrying a
         ``pvcRef``) and assign them to the matching :class:`Pod` by
         (namespace, name). Pods with no PVC-backed volume stay
-        ``storage_used_mi=None`` so a stateless pod renders as '-'. Failure
-        isolated per pod entry; a malformed entry is skipped.
+        ``storage_used_mi=None`` so a stateless pod renders as '-'. Failure is
+        isolated per volume entry: one non-numeric ``usedBytes``/``capacityBytes``
+        skips only that entry (via :func:`_as_int`) instead of discarding storage
+        for every pod in the cycle.
         """
         by_key: dict[tuple[str, str], Pod] = {(p.namespace, p.name): p for p in pods}
         if not by_key:
@@ -817,15 +824,15 @@ class Fetcher:
                 for vol in p.get("volume", []) or []:
                     if not (vol.get("pvcRef") or {}).get("name"):
                         continue  # only PVC-backed volumes count toward pod storage
-                    used = vol.get("usedBytes")
-                    cap = vol.get("capacityBytes")
+                    used = _as_int(vol.get("usedBytes"))
+                    cap = _as_int(vol.get("capacityBytes"))
                     if used is None and cap is None:
-                        continue
+                        continue  # missing or non-numeric both fields: skip entry
                     have_pvc = True
                     if used is not None:
-                        used_total += int(used)
+                        used_total += used
                     if cap is not None:
-                        cap_total += int(cap)
+                        cap_total += cap
                 if have_pvc:
                     pod.storage_used_mi = used_total // (1024 * 1024)  # bytes -> MiB
                     pod.storage_cap_mi = cap_total // (1024 * 1024)
@@ -853,6 +860,23 @@ class Fetcher:
         s.warn_events = sum(1 for e in snap.events if e.type == "Warning")
         s.alerts_firing = len(snap.alerts)
         return s
+
+
+# ── parsing helpers ──────────────────────────────────────────────────────────
+def _as_int(x: object) -> Optional[int]:
+    """Coerce a kubelet byte field to int, or ``None`` if it isn't numeric.
+
+    Used per volume entry so a single malformed ``usedBytes``/``capacityBytes``
+    skips only that entry instead of discarding storage for every pod in the
+    cycle. ``None`` (never a known 0) preserves the storage_used_mi/used_mi
+    "None means unknown" invariant for a parse failure.
+    """
+    if x is None or isinstance(x, bool):
+        return None
+    try:
+        return int(x)
+    except (TypeError, ValueError):
+        return None
 
 
 # ── node helpers ─────────────────────────────────────────────────────────────
