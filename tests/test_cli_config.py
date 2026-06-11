@@ -2675,6 +2675,255 @@ def test_hidden_ansi_themes_are_not_offered() -> None:
     assert "ansi-light" not in app._theme_options()
 
 
+def test_options_modal_add_health_probe_rewires_fetcher_and_persists(monkeypatch) -> None:
+    from textual.widgets import Button, Input
+
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg, path=None, **kw: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(health_probes=[]),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert app.fetcher.health_probes == []
+            app.action_open_options()
+            await pilot.pause()
+            saved.clear()
+
+            app.screen.query_one("#opt_hp_name", Input).value = "node-rpc"
+            app.screen.query_one("#opt_hp_url", Input).value = "/api/v1/health"
+            app.screen.query_one("#opt_hp_field_label", Input).value = "block"
+            app.screen.query_one("#opt_hp_field_regex", Input).value = r"height=(\d+)"
+            await pilot.pause()
+
+            app.screen.query_one("#opt_hp_add", Button).press()
+            await pilot.pause()
+
+            assert app.cfg.health_probes == [
+                {"name": "node-rpc", "url": "/api/v1/health",
+                 "fields": {"block": r"height=(\d+)"}}
+            ]
+            # the app re-wired the fetcher so the next refresh scrapes it
+            assert [hp.name for hp in app.fetcher.health_probes] == ["node-rpc"]
+            assert app.fetcher.health_probes[0].url == "/api/v1/health"
+            assert app.fetcher.health_probes[0].fields == {"block": r"height=(\d+)"}
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    assert saved[-1]["probes"]["health_probes"] == [
+        {"name": "node-rpc", "url": "/api/v1/health",
+         "fields": {"block": r"height=(\d+)"}}
+    ]
+
+
+def test_options_modal_add_health_probe_rejects_bad_url(monkeypatch) -> None:
+    from textual.widgets import Button, Input, Label
+
+    from kutop.render.app import TopApp
+
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg, path=None, **kw: "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(health_probes=[]),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+
+            app.screen.query_one("#opt_hp_name", Input).value = "bad"
+            app.screen.query_one("#opt_hp_url", Input).value = "ftp://nope"
+            await pilot.pause()
+            app.screen.query_one("#opt_hp_add", Button).press()
+            await pilot.pause()
+
+            # rejected inline, nothing added, no crash
+            assert app.cfg.health_probes == []
+            notice = app.screen.query_one("#opt_hp_notice", Label)
+            assert "http" in str(notice.render())
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_options_modal_remove_health_probe_disables_plugin(monkeypatch) -> None:
+    from textual.widgets import Button, OptionList
+
+    from kutop.plugins.health import HealthPlugin
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg, path=None, **kw: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(
+                health_probes=[{"name": "svc", "url": "/api/health", "fields": {}}]
+            ),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert HealthPlugin().is_enabled(app.cfg) is True
+            app.action_open_options()
+            await pilot.pause()
+            saved.clear()
+
+            ol = app.screen.query_one("#opt_health_probes", OptionList)
+            ol.highlighted = 0
+            await pilot.pause()
+            app.screen.query_one("#opt_hp_remove", Button).press()
+            await pilot.pause()
+
+            assert app.cfg.health_probes == []
+            assert HealthPlugin().is_enabled(app.cfg) is False
+            assert app.fetcher.health_probes == []
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    assert saved[-1]["probes"]["health_probes"] == []
+
+
+def test_options_modal_cancel_reverts_health_probe_add(monkeypatch) -> None:
+    from textual.widgets import Button, Input
+
+    from kutop.render.app import TopApp
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg, path=None, **kw: saved.append(cfg.to_dict()) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(
+            ["default"],
+            config=Config(health_probes=[]),
+            discover_namespaces=False,
+            auto_refresh=False,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            app.action_open_options()
+            await pilot.pause()
+            saved.clear()
+
+            app.screen.query_one("#opt_hp_url", Input).value = "/api/health"
+            await pilot.pause()
+            app.screen.query_one("#opt_hp_add", Button).press()
+            await pilot.pause()
+            assert len(app.cfg.health_probes) == 1
+
+            # Esc/Cancel re-adopts the opening snapshot (_orig_cfg) -> no probes
+            await pilot.click("#opt_cancel")
+            await pilot.pause()
+
+            assert len(app.screen_stack) == 1
+            assert app.cfg.health_probes == []
+            assert app.fetcher.health_probes == []
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    assert saved[-1]["probes"]["health_probes"] == []
+
+
+def test_options_modal_added_probe_under_active_profile_not_persisted(
+        tmp_path: Path, monkeypatch) -> None:
+    import kutop.config as kconfig
+    from textual.widgets import Button, Input
+
+    from kutop.render.app import TopApp
+
+    # a profile that itself supplies a health probe -> probes are profile-owned
+    monkeypatch.setattr(kconfig, "_USER_PROFILE_DIR", str(tmp_path))
+    (tmp_path / "bundle.yaml").write_text(
+        """
+name: bundle
+namespaces: [team-x]
+health_probes:
+  - name: from-profile
+    url: /api/profile-health
+    fields: {}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    # Capture the persisted VIEW (after profile-owned stripping) exactly as the
+    # real save_config would write it, by routing through _config_for_persist.
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "kutop.render.app.save_config",
+        lambda cfg, path=None, **kw: saved.append(
+            kconfig._config_for_persist(cfg, kw.get("profile")).to_dict()
+        ) or "/tmp/kutop-config.yaml",
+    )
+
+    async def drive() -> None:
+        app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.refresh_snapshot = lambda: None  # type: ignore[assignment]
+            app.set_profile("bundle")
+            await pilot.pause()
+            assert app.profile.name == "bundle"
+            assert app.cfg.health_probes == [
+                {"name": "from-profile", "url": "/api/profile-health", "fields": {}}
+            ]
+
+            app.action_open_options()
+            await pilot.pause()
+            saved.clear()
+
+            # add a second probe through the editor
+            app.screen.query_one("#opt_hp_name", Input).value = "added-live"
+            app.screen.query_one("#opt_hp_url", Input).value = "/api/added"
+            await pilot.pause()
+            app.screen.query_one("#opt_hp_add", Button).press()
+            await pilot.pause()
+
+            assert [p["name"] for p in app.cfg.health_probes] == [
+                "from-profile", "added-live",
+            ]
+
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+    # profile-owned stripping holds: the persisted view carries NO health_probes
+    # (the profile re-supplies them on the next load; persisting them would leak
+    # one context's profile probes into the shared config file).
+    assert saved[-1]["probes"]["health_probes"] == []
+
+
 def test_options_modal_context_input_persists(monkeypatch) -> None:
     from textual.widgets import Select
 

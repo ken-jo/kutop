@@ -286,12 +286,33 @@ class OptionsModal(ModalScreen):
                                         placeholder="http://…/api/v2/alerts",
                                         compact=True)
                             yield Label("blank = alerts panel hidden", classes="opt_hint")
-                        hp_n = len(c.health_probes)
-                        yield Label(
-                            f"  health_probes: {hp_n} configured "
-                            "(edit in config.yaml / profile)",
-                            classes="opt_hint", id="opt_health_probes_lbl",
-                        )
+                        # health_probes: a guided list editor. Each row is
+                        # 'name -> url'; the inputs below add one (name + url +
+                        # an optional single 'label: regex' field pair). All
+                        # edits land on self._cfg.health_probes and flow through
+                        # _apply(), so the wave-2 Esc/Cancel revert (re-adopting
+                        # self._orig_cfg) restores the pre-edit probes for free.
+                        yield Label("health_probes", classes="opt_label")
+                        yield OptionList(id="opt_health_probes")
+                        with Vertical(classes="opt_field"):
+                            yield Input("", id="opt_hp_name", classes="opt_input",
+                                        placeholder="name (e.g. node-rpc)",
+                                        compact=True)
+                            yield Input("", id="opt_hp_url", classes="opt_input",
+                                        placeholder="url  http://… https://… or /api/…",
+                                        compact=True)
+                            yield Input("", id="opt_hp_field_label", classes="opt_input",
+                                        placeholder="field label (optional, e.g. block)",
+                                        compact=True)
+                            yield Input("", id="opt_hp_field_regex", classes="opt_input",
+                                        placeholder="field regex (optional, group 1 = value)",
+                                        compact=True)
+                        with Horizontal(classes="opt_btnrow"):
+                            yield Button("Add probe", id="opt_hp_add",
+                                         classes="opt_btn")
+                            yield Button("Remove selected", id="opt_hp_remove",
+                                         classes="opt_btn")
+                        yield Label("", classes="opt_hint", id="opt_hp_notice")
 
             with Horizontal(id="opt_footer"):
                 yield Button("Export config", id="opt_export", variant="primary")
@@ -302,6 +323,7 @@ class OptionsModal(ModalScreen):
     def on_mount(self) -> None:
         self._rebuild_columns()
         self._rebuild_namespaces()
+        self._rebuild_health_probes()
         self.call_after_refresh(self._enable_input)
 
     def _enable_input(self) -> None:
@@ -389,6 +411,91 @@ class OptionsModal(ModalScreen):
             self._cfg.columns = cols
             self._rebuild_columns()
             self._apply()
+
+    # ── health-probe list editor ──────────────────────────────────────────
+    # A guided editor for self._cfg.health_probes (a list of
+    # {name, url, fields} dicts). Add/remove rebuild the OptionList and call
+    # _apply() so the change rewires the Fetcher and persists through the same
+    # app.apply_config seam every other Options edit uses — which also means the
+    # Esc/Cancel revert (re-adopting self._orig_cfg) restores the probes.
+    @staticmethod
+    def _valid_probe_url(url: str) -> bool:
+        """Light URL check: API-proxy path ('/…') or an http(s) URL."""
+        return url.startswith(("http://", "https://", "/"))
+
+    def _rebuild_health_probes(self) -> None:
+        ol = self.query_one("#opt_health_probes", OptionList)
+        sel = ol.highlighted
+        ol.clear_options()
+        probes = self._cfg.health_probes or []
+        if not probes:
+            ol.add_option(Option("(none — add a probe below)", disabled=True))
+        else:
+            for i, hp in enumerate(probes):
+                name = str(hp.get("name", "") or "?")
+                url = str(hp.get("url", "") or "?")
+                ol.add_option(Option(f"{name} -> {url}", id=f"hp::{i}"))
+        if sel is not None and sel < ol.option_count:
+            ol.highlighted = sel
+
+    def _hp_notice(self, msg: str) -> None:
+        try:
+            self.query_one("#opt_hp_notice", Label).update(msg)
+        except Exception:
+            pass
+
+    def _add_health_probe(self) -> None:
+        name = self.query_one("#opt_hp_name", Input).value.strip()
+        url = self.query_one("#opt_hp_url", Input).value.strip()
+        label = self.query_one("#opt_hp_field_label", Input).value.strip()
+        regex = self.query_one("#opt_hp_field_regex", Input).value.strip()
+        if not url:
+            self._hp_notice("url is required")
+            return
+        if not self._valid_probe_url(url):
+            self._hp_notice("url must start with http://, https://, or /")
+            return
+        if not name:
+            # default name keeps the add usable without a sub-modal
+            name = f"probe-{len(self._cfg.health_probes) + 1}"
+        fields: dict = {}
+        if label and regex:
+            fields[label] = regex
+        probe = {"name": name, "url": url, "fields": fields}
+        self._cfg.health_probes = list(self._cfg.health_probes) + [probe]
+        for iid in ("opt_hp_name", "opt_hp_url",
+                    "opt_hp_field_label", "opt_hp_field_regex"):
+            self.query_one(f"#{iid}", Input).value = ""
+        self._hp_notice(f"added {name}")
+        self._rebuild_health_probes()
+        self._apply()
+
+    def _current_hp_index(self) -> Optional[int]:
+        ol = self.query_one("#opt_health_probes", OptionList)
+        if ol.highlighted is None:
+            return None
+        opt = ol.get_option_at_index(ol.highlighted)
+        oid = opt.id or ""
+        if not oid.startswith("hp::"):
+            return None
+        try:
+            return int(oid.split("::", 1)[1])
+        except ValueError:
+            return None
+
+    def _remove_health_probe(self) -> None:
+        idx = self._current_hp_index()
+        if idx is None:
+            self._hp_notice("select a probe to remove")
+            return
+        probes = list(self._cfg.health_probes)
+        if not (0 <= idx < len(probes)):
+            return
+        removed = probes.pop(idx)
+        self._cfg.health_probes = probes
+        self._hp_notice(f"removed {removed.get('name', '?')}")
+        self._rebuild_health_probes()
+        self._apply()
 
     # ── apply + persist ───────────────────────────────────────────────────
     def _apply(self) -> None:
@@ -487,14 +594,25 @@ class OptionsModal(ModalScreen):
             self._cfg.summary_style = str(event.value)
         self._apply()
 
+    # The probe-add inputs (name/url/field pair) stage a NEW probe; they don't
+    # mutate the config until "Add probe" is pressed, so they are not consumed
+    # as live-config edits. Enter inside any of them is a shortcut for Add.
+    _HP_ADD_INPUTS = ("opt_hp_name", "opt_hp_url",
+                      "opt_hp_field_label", "opt_hp_field_regex")
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if not self._ready_for_input:
+            return
+        if (event.input.id or "") in self._HP_ADD_INPUTS:
+            self._add_health_probe()
             return
         self._consume_input(event.input)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if not self._ready_for_input:
             return
+        if (event.input.id or "") in self._HP_ADD_INPUTS:
+            return  # staged, not a live-config edit
         # apply numeric/text inputs on change (validated/coerced in app)
         self._consume_input(event.input)
 
@@ -567,6 +685,10 @@ class OptionsModal(ModalScreen):
             self._move_col(-1)
         elif bid == "opt_col_down":
             self._move_col(1)
+        elif bid == "opt_hp_add":
+            self._add_health_probe()
+        elif bid == "opt_hp_remove":
+            self._remove_health_probe()
         elif bid == "opt_export":
             path = self.app.export_config(self._cfg)  # type: ignore[attr-defined]
             self._set_status(f"exported -> {path}" if path
