@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Inspect pod YAML manifest** (`y`): a full-screen viewer that streams
+  `kubectl get pod <name> -n <ns> -o yaml` for the focused pod (honoring the
+  active --context), closeable with Esc or q.
+- **Pod name filter now accepts regular expressions**: the `/` search and
+  `--filter` flag understand both plain substring (case-insensitive) and regex
+  patterns (detected by metacharacters and validated at input time); an invalid
+  regex pattern falls back gracefully to substring matching. The sidebar SEARCH
+  hint shows "(regex)" when the active term is treated as a pattern.
+- **Health-probe editor in Options modal**: the Profile tab now hosts a guided
+  add/remove editor for health probes — give each probe a name, URL (http, https,
+  or an API-proxy path starting with `/`), and an optional label + regex field;
+  live apply with Esc/Cancel revert, so probes are no longer YAML-only.
+- **First-run orientation toast**: a one-time welcome message on the first live
+  snapshot of a default config names the core keys (b sidebar, o options, / search);
+  suppressed for any customized config or on later runs.
 - **Shell into the focused pod** (`t`): the dashboard suspends, hands the real
   terminal to `kubectl exec -it` (bash with sh fallback), and resumes with an
   immediate refetch when the shell exits.
@@ -31,6 +46,24 @@
 
 ### Fixed
 
+- **Main-table empty state is now actionable**: when a search filter is active,
+  it names the term and how to clear it (`no pods match "<search>" — esc to clear`);
+  when the scope is empty, it lists the watched namespaces and active filters
+  (`no pods in [ns-a, ns-b] (hide_completed on) — b to change namespaces`).
+- **Cluster-unreachable startup guidance now names the kube context** on its
+  first row (`cluster unreachable (context: <name>): <error>`) so beginners can
+  tell "right cluster, unreachable" from "wrong context".
+- Fixed: a per-namespace `kubectl get pods` returning exit 0 with a truncated/garbage
+  JSON body no longer silently wipes the pod table — the parse failure is now
+  recorded (`get pods -n <ns>: unparseable kubectl output`) and surfaced as a
+  refresh error, so the previous good frame is kept.
+- Fixed: a single malformed `usedBytes`/`capacityBytes` field in a kubelet
+  stats summary no longer discards PVC-backed storage for every pod in that
+  refresh cycle — each volume entry is parsed in isolation, and a non-numeric
+  byte field skips only that entry (a parse failure stays "unknown", never 0).
+- Fixed: `to_mcpu`/`to_mi` now clamp negative quantities to 0, honoring their
+  documented 'garbage yields 0' contract (Kubernetes never emits negative resource
+  amounts).
 - A malformed `~/.config/kutop/config.yaml` no longer silently resets every
   saved preference: the broken file is backed up to `config.yaml.invalid` before
   the app's next save can overwrite it, the app launches with defaults, and a

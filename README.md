@@ -59,6 +59,13 @@ while it probes for Metrics Server. If Metrics Server is missing, kutop asks
 to install it, naming the kubectl context it would modify and defaulting to No
 — only an explicit `y` applies anything to your cluster.
 
+On your first launch with a default config, you'll see a brief orientation
+toast naming the core keys. When you search for pods or select a namespace filter
+that finds no results, the empty-state message tells you why and how to fix it
+(e.g., `no pods match "xyz" — esc to clear` or `no pods in [team-a] — b to change
+namespaces`). If the cluster is unreachable before the first snapshot, the guidance
+rows show the kube context so you can verify you're looking at the right cluster.
+
 **First keys:** press `q` twice to quit, `o` for options, `b` for the sidebar,
 `/` to search pods. Full list under [Keybindings](#keybindings).
 
@@ -241,6 +248,7 @@ kutop                               # generic view, namespace 'default'
 kutop demo-ns                       # namespace demo-ns
 kutop ns-a,ns-b                     # multiple namespaces (comma list)
 kutop --profile example             # load a profile (ordering / tz / thresholds)
+kutop --filter '^web-'              # filter pod names by regex or substring
 python -m kutop demo-ns             # module form
 python -m kubetop demo-ns           # legacy module alias
 kutop --context demo-context demo-ns  # pick a kubeconfig context
@@ -271,13 +279,14 @@ that would just re-show identical values).
 | `r` | refresh now |
 | `o` | options / settings (tabbed: View, Columns, Panels, Thresholds, Cluster, Profile); inside the modal, **Close** (or `o`) keeps changes while **Cancel (esc)** / `Esc` discards every edit and restores the settings as they were when the modal opened *(unreleased)* |
 | `b` | toggle the control sidebar; the header ☰ button also reveals the sidebar or, if already visible, jumps focus to the sidebar MENU section (Options / Keys / Screenshot / Quit — menu Quit exits immediately, unlike the two-press `q` flow) *(unreleased)* |
-| `/` | search / filter pods by name |
+| `/` | search / filter pods by name (accepts regular expressions; plain terms use case-insensitive substring match) |
 | `Esc` | clear the search filter |
 | `Esc` (in Options modal) | cancel / discard all edits and restore the pre-open settings *(unreleased)* |
 | `s` / `S` | cycle sort column / flip sort direction (or click a column header) |
 | `g` | group pods under their node |
 | `l` | logs for the focused pod (`kubectl logs -f`) |
 | `d` | describe the focused pod |
+| `y` | YAML manifest for the focused pod (`kubectl get pod <name> -n <ns> -o yaml`) *(unreleased)* |
 | `t` | shell into the focused pod (`kubectl exec -it`, bash with sh fallback) — the dashboard suspends and resumes when the shell exits *(unreleased)* |
 | `x` | delete the focused pod (needs the sidebar **Allow delete/restart (x/X)** toggle on, then confirm) |
 | `X` | restart the focused pod's workload via `kubectl rollout restart` (same **Allow delete/restart (x/X)** gate, then a confirm showing context / namespace / pod / target; the Deployment is derived from the ReplicaSet name) *(unreleased)* |
@@ -436,8 +445,11 @@ The Alerts and custom Health panels are opt-in and profile-driven. A
 kubeconfig auth with no localhost port-forward. Health is a self-contained
 custom panel plugin (`kutop/plugins/health.py`); the core does not depend on it.
 
-To update the custom panel without changing code, edit a profile or
-`~/.config/kutop/config.yaml`:
+Health probes can be edited live in the app: press `o` (Options), go to the
+**Profile** tab, and use the guided health-probe editor to add, remove, and
+configure probes — each with a name, URL, and optional label and regex field;
+changes apply immediately and persist. Or edit a profile or
+`~/.config/kutop/config.yaml` directly:
 
 ```yaml
 panels:
@@ -523,8 +535,8 @@ renders.
 **The Alerts panel says `set probes.alertmanager_url to enable`, or Health
 says `no probes configured`.**
 Cause: these panels are opt-in and have nothing to read yet.
-Fix: set `probes.alertmanager_url` / `probes.health_probes` in a profile or
-`~/.config/kutop/config.yaml` — see
+Fix: configure probes in-app (press `o` → Profile tab → health-probe editor) or
+in a profile / `~/.config/kutop/config.yaml` — see
 [Alerts & custom panels](#alerts--custom-panels-no-port-forward).
 
 **Pressing `x` says `delete disabled`, or `X` says `restart disabled`.**
