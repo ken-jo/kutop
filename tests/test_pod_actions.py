@@ -559,3 +559,106 @@ def test_restart_runner_invokes_kubectl_and_refreshes(monkeypatch) -> None:
             await pilot.exit(None)
 
     asyncio.run(drive_fail())
+
+
+# ── pod YAML inspector (y) ────────────────────────────────────────────────────
+
+
+def test_yaml_view_command_modes() -> None:
+    from kutop.render.modals import YamlViewModal
+
+    # with an explicit context the argv carries --context before the subcommand
+    assert YamlViewModal._yaml_cmd("web-0", "default", "ctx-a") == [
+        "kubectl", "--context", "ctx-a", "get", "pod", "web-0",
+        "-n", "default", "-o", "yaml",
+    ]
+    # no context -> no --context flag
+    assert YamlViewModal._yaml_cmd("solo", "ns1", None) == [
+        "kubectl", "get", "pod", "solo", "-n", "ns1", "-o", "yaml",
+    ]
+
+
+def test_y_keypress_on_focused_pod_pushes_yaml_modal() -> None:
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+    from kutop.render.modals import YamlViewModal
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="ctx-b",
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._apply_snapshot(_pod_snapshot(
+                Pod(name="web-0", namespace="default", node="node-a",
+                    phase="Running", ready="1/1")))
+            await pilot.pause()
+
+            depth = len(app.screen_stack)
+            await pilot.press("y")
+            await pilot.pause()
+            assert isinstance(app.screen, YamlViewModal)
+            assert len(app.screen_stack) == depth + 1
+            assert app.screen.pod_name == "web-0"
+            assert app.screen.ns == "default"
+            assert app.screen.context == "ctx-b"
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_y_with_no_focused_pod_notifies_and_pushes_nothing() -> None:
+    from kutop.render.app import TopApp
+    from kutop.render.modals import YamlViewModal
+
+    async def drive() -> None:
+        app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            notices: list = []
+            app.notify = (  # type: ignore[assignment]
+                lambda msg, **kw: notices.append((str(msg), kw.get("severity"))))
+
+            depth = len(app.screen_stack)
+            app.action_show_yaml()
+            await pilot.pause()
+            assert not isinstance(app.screen, YamlViewModal)
+            assert len(app.screen_stack) == depth
+            assert notices and notices[0][1] == "warning"
+            assert "focus a pod row first" in notices[0][0]
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_yaml_modal_escape_closes_without_arming_quit_or_clearing_search() -> None:
+    from kutop.model import Pod
+    from kutop.render.app import TopApp
+    from kutop.render.modals import YamlViewModal
+
+    async def drive() -> None:
+        app = TopApp(["default"], context="ctx-b",
+                     discover_namespaces=False, auto_refresh=False)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._apply_snapshot(_pod_snapshot(
+                Pod(name="web-0", namespace="default", node="node-a",
+                    phase="Running", ready="1/1")))
+            await pilot.pause()
+            # an active search term must survive the modal's close key
+            app._search_term = "web"
+
+            await pilot.press("y")
+            await pilot.pause()
+            assert isinstance(app.screen, YamlViewModal)
+
+            await pilot.press("escape")
+            await pilot.pause()
+            # escape closed the modal — and never reached app.clear_search
+            assert not isinstance(app.screen, YamlViewModal)
+            assert app._search_term == "web"
+            # nor did q-driven quit arming bleed through (no q pressed, but the
+            # event.stop() contract is what keeps the close key local)
+            assert app._quit_hint_deadline == 0.0
+            await pilot.exit(None)
+
+    asyncio.run(drive())

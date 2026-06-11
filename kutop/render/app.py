@@ -55,7 +55,7 @@ from ..config import (
 from ..fetch import Fetcher
 from ..model import Pod, Snapshot, fmt_age, age_seconds
 from .header import MetricsIndicator, ThemeHeader, ThemeHeaderIcon
-from .modals import DescribeModal, EventDetailModal, LogViewerModal
+from .modals import DescribeModal, EventDetailModal, LogViewerModal, YamlViewModal
 from .sidebar import SidebarPanel, SidebarState
 from .table import ResizableDataTable
 from .widgets import (
@@ -96,6 +96,7 @@ _BINDING_SPECS = [
     ("g", "toggle_group", "Group"),
     ("l", "show_logs", "Logs"),
     ("d", "describe_pod", "Describe"),
+    ("y", "show_yaml", "YAML"),
     ("t", "shell_pod", "Shell"),
     ("x", "delete_pod", "Delete"),
     ("X", "restart_pod", "Restart"),
@@ -1754,6 +1755,7 @@ class TopApp(App):
             rows = [
                 (_binding_key("show_logs"), "Logs"),
                 (_binding_key("describe_pod"), "Describe"),
+                (_binding_key("show_yaml"), "YAML"),
                 (_binding_key("shell_pod"), "Shell"),
             ]
             delete_label = "Delete" if self.allow_destructive else "Delete disabled"
@@ -2155,6 +2157,13 @@ class TopApp(App):
             self.push_screen(
                 DescribeModal(pod.name, pod.namespace, self.context, owner=owner)
             )
+        else:
+            self.notify("focus a pod row first", severity="warning")
+
+    def action_show_yaml(self) -> None:
+        pod = self._focused_pod()
+        if pod:
+            self.push_screen(YamlViewModal(pod.name, pod.namespace, self.context))
         else:
             self.notify("focus a pod row first", severity="warning")
 
