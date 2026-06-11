@@ -662,3 +662,81 @@ def test_yaml_modal_escape_closes_without_arming_quit_or_clearing_search() -> No
             await pilot.exit(None)
 
     asyncio.run(drive())
+
+
+# ── name filter: regex with substring fallback (key '/' and --filter) ─────────
+
+
+def _filter_app(term: str):
+    """A non-mounted TopApp with the live search term primed. _visible_pods is
+    a pure method (reads only self._search_term / self.cfg / self._filter_cache)
+    so it can be exercised without run_test, like the _shell_cmd test above."""
+    from kutop.render.app import TopApp
+
+    app = TopApp(namespaces=["default"], context="ctx-b",
+                 discover_namespaces=False, auto_refresh=False)
+    app._search_term = term
+    # hide_completed defaults on; turn it off so the filter is the only gate.
+    app.cfg.hide_completed = False
+    app.cfg.only_problems = False
+    return app
+
+
+def _pods(*names: str):
+    from kutop.model import Pod
+    return [Pod(name=n, namespace="default", node="node-a",
+                phase="Running", ready="1/1") for n in names]
+
+
+def test_name_filter_plain_term_is_case_insensitive_substring() -> None:
+    """(a) A plain term keeps the historical case-insensitive substring match."""
+    app = _filter_app("WEB")
+    visible = {p.name for p in app._visible_pods(_pods("web-0", "api-1", "Webhook-2"))}
+    assert visible == {"web-0", "Webhook-2"}
+
+
+def test_name_filter_regex_anchors_and_classes() -> None:
+    """(b) A regex term matches via re.search; unrelated pods are dropped."""
+    app = _filter_app("web-[0-9]+$")
+    visible = {p.name for p in app._visible_pods(
+        _pods("web-0", "web-12", "web-canary", "api-3"))}
+    assert visible == {"web-0", "web-12"}
+    # case-insensitivity carries through the regex path too
+    app2 = _filter_app("^WEB")
+    visible2 = {p.name for p in app2._visible_pods(_pods("web-0", "api-web"))}
+    assert visible2 == {"web-0"}
+
+
+def test_name_filter_invalid_regex_degrades_to_substring() -> None:
+    """(c) An unbalanced pattern never raises — it falls back to substring."""
+    app = _filter_app("web[")  # invalid regex (unterminated character class)
+    # must not raise during render-equivalent filtering
+    visible = {p.name for p in app._visible_pods(
+        _pods("web[0]", "web-1", "api-2"))}
+    # treated as the literal substring 'web[' → only the pod containing it
+    assert visible == {"web[0]"}
+
+
+def test_name_filter_compiled_matcher_is_cached(monkeypatch) -> None:
+    """(d) The compiled matcher is memoized on the term: re.compile does not
+    run again on a second render with the same term."""
+    import re as _re
+
+    app = _filter_app("web-[0-9]+$")
+    calls = {"n": 0}
+    real_compile = _re.compile
+
+    def counting_compile(pattern, flags=0):
+        calls["n"] += 1
+        return real_compile(pattern, flags)
+
+    monkeypatch.setattr(_re, "compile", counting_compile)
+
+    pods = _pods("web-0", "api-1")
+    first = {p.name for p in app._visible_pods(pods)}
+    compiles_after_first = calls["n"]
+    assert compiles_after_first >= 1  # the regex was compiled on first render
+    second = {p.name for p in app._visible_pods(pods)}
+    # cache hit: no further compilation on the identical term
+    assert calls["n"] == compiles_after_first
+    assert first == second == {"web-0"}
