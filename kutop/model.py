@@ -24,21 +24,24 @@ def to_mcpu(v: str) -> int:
     """Parse a Kubernetes CPU quantity into millicores. '1' -> 1000, '250m' -> 250.
 
     Also accepts the rarer but valid 'n' (nano) / 'u' (micro) suffixes and
-    exponent forms ('1e3' cores). Garbage yields 0.
+    exponent forms ('1e3' cores). Garbage yields 0 — including a negative
+    quantity, which Kubernetes never emits for a resource amount.
     """
     if not v or v in ("-", "<none>"):
         return 0
     v = v.strip()
     try:
         if v.endswith("n"):
-            return int(float(v[:-1]) / 1_000_000)
-        if v.endswith("u"):
-            return int(float(v[:-1]) / 1000)
-        if v.endswith("m"):
-            return int(float(v[:-1]))
-        return int(float(v) * 1000)
+            result = int(float(v[:-1]) / 1_000_000)
+        elif v.endswith("u"):
+            result = int(float(v[:-1]) / 1000)
+        elif v.endswith("m"):
+            result = int(float(v[:-1]))
+        else:
+            result = int(float(v) * 1000)
     except ValueError:
         return 0
+    return max(0, result)
 
 
 _MI_BYTES = 1024 * 1024
@@ -59,7 +62,8 @@ def to_mi(v: str) -> int:
 
     Handles binary (Ki/Mi/Gi/Ti/Pi/Ei) and decimal (k/M/G/T/P/E) suffixes plus
     bare-byte values — including exponent forms like "1e9", which the API
-    preserves verbatim in ``kubectl get -o json``. Garbage yields 0.
+    preserves verbatim in ``kubectl get -o json``. Garbage yields 0 — including
+    a negative quantity, which Kubernetes never emits for a resource amount.
     """
     if not v or v in ("-", "<none>"):
         return 0
@@ -70,9 +74,9 @@ def to_mi(v: str) -> int:
                 num = float(v[: -len(suffix)].strip())
             except ValueError:
                 return 0
-            return int(num * scale / _MI_BYTES)
+            return max(0, int(num * scale / _MI_BYTES))
     try:
-        return int(float(v) / _MI_BYTES)
+        return max(0, int(float(v) / _MI_BYTES))
     except ValueError:
         return 0
 
