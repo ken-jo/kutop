@@ -16,7 +16,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Label, RichLog
 
-__all__ = ["LogViewerModal", "DescribeModal", "EventDetailModal"]
+__all__ = ["LogViewerModal", "DescribeModal", "YamlViewModal", "EventDetailModal"]
 
 class LogViewerModal(ModalScreen):
     """Asynchronous log streaming (`kubectl logs`) with crashloop forensics.
@@ -174,6 +174,66 @@ class DescribeModal(ModalScreen):
         if self.context:
             cmd += ["--context", self.context]
         cmd += ["describe", "pod", self.pod_name, "-n", self.ns]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await proc.communicate()
+            log.clear()
+            if out:
+                log.write(out.decode("utf-8", errors="ignore"))
+            if err:
+                log.write(f"\n[stderr]\n{err.decode('utf-8', errors='ignore')}")
+        except Exception as exc:
+            log.write(f"[error] {exc}")
+
+    def on_key(self, event) -> None:
+        if event.key in ("escape", "q"):
+            event.stop()  # see LogViewerModal.on_key: never leak the close key
+            self.dismiss()
+
+
+class YamlViewModal(ModalScreen):
+    """`kubectl get pod -o yaml` viewer.
+
+    Models DescribeModal: same async on_mount runner (no new subprocess path),
+    same close-key handling that stops the event so q/escape never leak into the
+    app bindings. The argv is factored into a static helper so it can be unit
+    tested without spinning up the screen.
+    """
+
+    def __init__(self, pod_name: str, ns: str, context: Optional[str]) -> None:
+        super().__init__()
+        self.pod_name = pod_name
+        self.ns = ns
+        self.context = context
+
+    @staticmethod
+    def _yaml_cmd(pod_name: str, ns: str, context: Optional[str]) -> "list[str]":
+        """argv for `kubectl [--context X] get pod <name> -n <ns> -o yaml`."""
+        cmd = ["kubectl"]
+        if context:
+            cmd += ["--context", context]
+        cmd += ["get", "pod", pod_name, "-n", ns, "-o", "yaml"]
+        return cmd
+
+    def compose(self) -> ComposeResult:
+        # Reuses DescribeModal's styled ids (#desc_box/#desc_hdr/#desc_content)
+        # so the YAML viewer inherits the same modal layout without a new TCSS
+        # rule. Only one of these modals is ever on screen at a time.
+        with Vertical(id="desc_box"):
+            yield Label(
+                f"YAML: {self.pod_name} [{self.ns}] — ESC/q to close",
+                id="desc_hdr",
+            )
+            yield RichLog(id="desc_content", highlight=True)
+
+    async def on_mount(self) -> None:
+        log = self.query_one("#desc_content", RichLog)
+        log.write("Loading kubectl get pod -o yaml...")
+        cmd = self._yaml_cmd(self.pod_name, self.ns, self.context)
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
