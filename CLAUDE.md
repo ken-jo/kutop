@@ -38,8 +38,9 @@ presentation (ordering, timezone, thresholds).
 
 - **`model.py`** — domain dataclasses (`Pod`, `Node`, `PVC`, `Event`, `Alert`, `HealthResult`,
   `Summary`, `Snapshot`) and unit helpers (`to_mcpu`, `to_mi`, `fmt_*`, `age_seconds`). The
-  single source of truth for shape. Carries **no** workload-specific knowledge (no namespace
-  names, pod prefixes, or priorities).
+  single source of truth for shape. `to_mcpu`/`to_mi` clamp negative quantities to 0 (honoring
+  the 'garbage yields 0' contract — Kubernetes never emits negatives). Carries **no** workload-specific
+  knowledge (no namespace names, pod prefixes, or priorities).
 - **`config.py`** — two structures: `Profile` (the *only* place workload literals live: pod
   ordering, timezone, alertmanager URL, health probes) and `Config` (runtime-editable: panels,
   columns, thresholds, namespaces, theme — the refresh cadence is fixed at 5s,
@@ -66,21 +67,33 @@ presentation (ordering, timezone, thresholds).
   single-primary-failure contract. Calls whose failure is EXPECTED (metrics-server absent,
   kubelet stats, optional probes) use `_run_optional` instead: it diverts its failures into a
   **thread-local** scratch sink (never touches the shared list) that is simply discarded, so
-  parallel workers' real failures are untouched and the refresh is not flagged. PVC usage comes
-  from the kubelet summary API (`/api/v1/nodes/<node>/proxy/stats/summary`) per node because
+  parallel workers' real failures are untouched and the refresh is not flagged. `_fetch_pods_for_namespace`
+  now records unparseable JSON responses (exit 0 with malformed body) as `get pods -n <ns>: unparseable kubectl output`
+  via `_record_fetch_error`, so silent pod-table drops are caught. `_as_int` helper parses per-volume byte counts in isolation,
+  rejecting non-numeric and bool values, so a single malformed `usedBytes`/`capacityBytes` field no longer discards storage for every pod.
+  PVC usage comes from the kubelet summary API (`/api/v1/nodes/<node>/proxy/stats/summary`) per node because
   metrics-server does not expose it — one node failing never aborts the refresh. `cancel()`
   kills in-flight processes for immediate quit.
 - **`render/`** — split along class seams. **`app.py`** (`TopApp`) owns keybindings
   (`_BINDING_SPECS` is the single source of truth for keys), sorting, filtering, grouping,
-  Options-modal wiring, and the pod actions (logs `l`, describe `d`, shell `t`, delete `x`,
-  rollout restart `X`). `modals.py` holds the log/describe/event modals; `sidebar.py` the
+  Options-modal wiring, and the pod actions (logs `l`, describe `d`, YAML `y`, shell `t`, delete `x`,
+  rollout restart `X`). `modals.py` holds the log/describe/event modals and `YamlViewModal`
+  (opens with `y`, streams `kubectl get pod <name> -n <ns> -o yaml`); `sidebar.py` the
   `SidebarPanel`/`SidebarState` (namespace checkboxes, sort/panel toggles, PROFILE/CONTEXT
   dropdowns, the 'Allow delete/restart (x/X)' gate, and the MENU section — Options/Keys/
   Screenshot/Quit — that replaced the old hamburger ThemeMenuModal: the ☰ header icon reveals
   the sidebar or focuses its first MENU button, and Esc inside the sidebar returns focus to the
-  pod table); `options.py` the `OptionsModal`; `table.py` the drag-resizable main table;
+  pod table); `options.py` the `OptionsModal` with a guided in-app health-probe editor on the Profile tab
+  (add/remove probes with name, URL, optional label+regex field; live apply + Esc/Cancel revert); `table.py` the drag-resizable main table;
   `header.py` the header widgets; `widgets.py` the remaining presentation widgets (SummaryBar,
-  TrendGraph, ConfirmModal, …); `render/theme.tcss` the styles. Quit is keyboard-complete and
+  TrendGraph, ConfirmModal, …); `render/theme.tcss` the styles. Pod-name filter (`/` search
+  and `--filter` flag) detects regex metacharacters and compiles if valid; invalid regex falls back
+  to substring match. Filter matcher cached per term (`_filter_cache`) to avoid recompile on every
+  render. First-run hint fires once on the first live snapshot of a default config (gated on
+  `gen is not None` to keep synthetic/test frames toast-free). Empty-state messages are context-aware:
+  active search shows `no pods match "<term>" — esc to clear`; empty scope names watched namespaces
+  and filters. Startup guidance rows include the kube context name (`cluster unreachable (context: <ctx>): <error>`).
+  Quit is keyboard-complete and
   two-step: `q` arms a 4s hint, a second `q` or Enter confirms, Esc cancels — `check_action`
   disables the Enter confirm while a modal, a text input, or the sidebar has focus. Delete and
   rollout restart are double-gated: the live 'Allow delete/restart' toggle (seeded by
