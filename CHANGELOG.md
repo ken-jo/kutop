@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Crash when a kubectl call timed out** (`MarkupError: Expected markup value`).
+  A timeout surfaced `subprocess.TimeoutExpired`, whose text embeds the full
+  argv — e.g. `Command '[... '--sort-by=.lastTimestamp', '-o', 'json']' timed
+  out` — and the `[` (with the `=` inside) was parsed as Textual markup,
+  crashing the whole app during layout. Toasts now render as plain text
+  (`TopApp.notify` defaults `markup=False`), so no notification can be broken by
+  its own dynamic content; the timeout message is also shortened to
+  `timed out after 6s` instead of dumping the command line.
+
 ## 0.5.0 - 2026-06-11
 
 ### Added

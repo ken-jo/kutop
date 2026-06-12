@@ -147,7 +147,10 @@ class Fetcher:
                 proc.communicate(timeout=1)
             except Exception:
                 pass
-            raise
+            # Raise a concise message instead of TimeoutExpired, whose str()
+            # dumps the whole kubectl argv ("Command '[...]' timed out") — ugly
+            # in the error toast and full of brackets.
+            raise RuntimeError(f"timed out after {timeout}s")
         finally:
             with self._procs_lock:
                 self._procs.discard(proc)

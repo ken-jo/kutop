@@ -445,6 +445,21 @@ class TopApp(App):
     def show_health(self, value: bool) -> None:
         self.cfg.show_health = bool(value)
 
+    def notify(self, message, *, title="", severity="information",
+               timeout=None, markup=False) -> None:
+        """Show a toast as PLAIN TEXT by default (markup=False).
+
+        Every kutop toast carries dynamic content — kubectl stderr, a failing
+        command line, namespaces, paths, profile names — none of it intended as
+        Textual markup. A kubectl timeout in particular embeds the full argv
+        (``['kubectl', ...]``); parsed as markup the unbalanced ``[`` raises
+        MarkupError from inside the compositor and crashes the whole app during
+        layout. Defaulting markup off makes notifications immune to their own
+        content; a caller that genuinely wants markup passes ``markup=True``.
+        """
+        super().notify(message, title=title, severity=severity,
+                       timeout=timeout, markup=markup)
+
     def _all_plugins(self) -> list:
         """Every registered plugin (for mounting/visibility/render).
 
