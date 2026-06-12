@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.1 - 2026-06-12
+
 ### Fixed
 
 - **Crash when a kubectl call timed out** (`MarkupError: Expected markup value`).
