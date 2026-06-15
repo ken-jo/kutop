@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.2 - 2026-06-15
+
 ### Fixed
 
 - **Sidebar panel checkboxes now toggle in one click.** A panel toggle (Alerts,
