@@ -620,10 +620,10 @@ class Config:
     show_trends: bool = True
     show_podtable: bool = True
     show_events: bool = True
-    # PVC is now shown PER POD (storage / storage_gauge columns), so the
-    # standalone cluster-wide PVC panel is OFF by default. Power users can still
-    # toggle it on (key 'v' / Options > Panels) for a cluster-wide PVC list.
-    show_pvc: bool = False
+    # Storage is also shown PER POD (storage / storage_gauge columns), but the
+    # standalone cluster-wide PVC panel is ON by default so a fresh launch shows
+    # every panel. Toggle it off with key 'v' / Options > Panels / the sidebar.
+    show_pvc: bool = True
     show_alerts: bool = True            # M2: AlertManager alerts panel
     show_health: bool = True            # M3: workload health row
     show_keys: bool = True              # context-sensitive sidebar key hints
@@ -839,7 +839,7 @@ def _config_from_dict(d: dict) -> Config:
         show_trends=_coerce_bool(panels.get("trends"), True),
         show_podtable=_coerce_bool(panels.get("podtable"), True),
         show_events=_coerce_bool(panels.get("events"), True),
-        show_pvc=_coerce_bool(panels.get("pvc"), False),
+        show_pvc=_coerce_bool(panels.get("pvc"), True),
         show_alerts=_coerce_bool(panels.get("alerts"), True),
         show_health=_coerce_bool(panels.get("health"), True),
         show_keys=_coerce_bool(panels.get("keys"), True),
@@ -1226,7 +1226,7 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
     lines.append(f"  trends: {b(cfg.show_trends)}          # CPU/MEM trend meters")
     lines.append(f"  podtable: {b(cfg.show_podtable)}        # main node/pod table")
     lines.append(f"  events: {b(cfg.show_events)}          # warning events panel")
-    lines.append(f"  pvc: {b(cfg.show_pvc)}             # cluster-wide PVC list panel (off by default; storage is per-pod)")
+    lines.append(f"  pvc: {b(cfg.show_pvc)}             # cluster-wide PVC list panel (storage is also shown per-pod)")
     lines.append(f"  alerts: {b(cfg.show_alerts)}          # AlertManager alerts panel (needs probes.alertmanager_url)")
     lines.append(f"  health: {b(cfg.show_health)}          # workload health row (needs probes.health_probes)")
     lines.append(f"  keys: {b(cfg.show_keys)}            # context-sensitive key hints in the sidebar")

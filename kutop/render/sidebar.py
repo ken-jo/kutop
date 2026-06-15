@@ -427,7 +427,14 @@ class SidebarPanel(Vertical):
         try:
             cb = self.query_one(f"#{widget_id}", Checkbox)
             if cb.value != value:
-                cb.value = value
+                # Suppress the Changed echo from this programmatic write (like
+                # the Select sync below). With every sync write prevented,
+                # on_checkbox_changed only ever sees genuine user clicks and no
+                # longer needs the _syncing gate — which used to DROP a click
+                # that raced a 5s refresh-driven re-sync, the "two presses to
+                # toggle a panel" bug.
+                with cb.prevent(Checkbox.Changed):
+                    cb.value = value
         except Exception:
             pass
 
@@ -446,7 +453,11 @@ class SidebarPanel(Vertical):
             self.app.action_quit()  # type: ignore[attr-defined]
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        if self._syncing or not self._ready_for_input:
+        # Only genuine user clicks reach here: programmatic syncs go through
+        # _set_checkbox, which prevents the Changed echo. The _syncing flag is
+        # intentionally NOT checked — gating on it dropped a real click that
+        # raced a refresh-driven re-sync (the "press twice to toggle" bug).
+        if not self._ready_for_input:
             return
         app = self.app  # type: ignore[assignment]
         cb = event.checkbox

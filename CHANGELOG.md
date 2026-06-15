@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Sidebar panel checkboxes now toggle in one click.** A panel toggle (Alerts,
+  PVC, Events, …) that landed while the 5s refresh was re-syncing the sidebar
+  was dropped by the `_syncing` gate, so the panel only flipped on the second
+  press. Programmatic sync writes now suppress their `Changed` echo (via
+  `prevent()`, like the Select controls), and the checkbox handler no longer
+  gates on `_syncing` — every genuine click counts.
+
+### Changed
+
+- The cluster-wide **PVC panel is now ON by default**, so a fresh launch shows
+  every panel. Per-pod storage columns remain; toggle the panel off with `v`,
+  the sidebar, or Options > Panels.
+
 ## 0.5.1 - 2026-06-12
 
 ### Fixed
