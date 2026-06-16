@@ -1676,7 +1676,7 @@ def test_initial_refresh_applies_core_snapshot_before_enrichment() -> None:
             ]
             return snap
 
-        def enrich_snapshot(self, snap: Snapshot) -> Snapshot:
+        def enrich_snapshot(self, snap: Snapshot, *, heavy: bool = True) -> Snapshot:
             self.calls.append("enrich")
             return snap
 
@@ -1734,7 +1734,7 @@ def test_first_fetch_failure_shows_persistent_guidance_until_snapshot() -> None:
             ]
             return snap
 
-        def enrich_snapshot(self, snap: Snapshot) -> Snapshot:
+        def enrich_snapshot(self, snap: Snapshot, *, heavy: bool = True) -> Snapshot:
             return snap
 
         def fetch(self) -> Snapshot:
@@ -3186,7 +3186,7 @@ class _GoodFetcher:
         ]
         return snap
 
-    def enrich_snapshot(self, snap):
+    def enrich_snapshot(self, snap, *, heavy=True):
         return snap
 
     def fetch(self):

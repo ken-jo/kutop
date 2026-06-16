@@ -73,7 +73,13 @@ presentation (ordering, timezone, thresholds).
   rejecting non-numeric and bool values, so a single malformed `usedBytes`/`capacityBytes` field no longer discards storage for every pod.
   PVC usage comes from the kubelet summary API (`/api/v1/nodes/<node>/proxy/stats/summary`) per node because
   metrics-server does not expose it — one node failing never aborts the refresh. `cancel()`
-  kills in-flight processes for immediate quit.
+  kills in-flight processes for immediate quit. **Fan-out is bounded (issue #12):** a
+  `BoundedSemaphore(_MAX_CONCURRENCY=4)` in `_run` caps simultaneous kubectl processes; `_node_summaries`
+  caches each node's payload for `_NODE_SUMMARY_TTL=30s` keyed by `(context, node)`; and `enrich_snapshot`
+  takes `heavy=` — a heavy cycle re-lists events/PVCs/probes and caches them, a light cycle re-attaches the
+  cached lists (storage still re-fills from the TTL-cached summaries every cycle). The app runs the heavy
+  cycle every `HEAVY_REFRESH_EVERY=3` ticks; a scope switch calls `fetcher.invalidate_caches()` and forces
+  the next cycle heavy so a light cycle never shows another cluster's data.
 - **`render/`** — split along class seams. **`app.py`** (`TopApp`) owns keybindings
   (`_BINDING_SPECS` is the single source of truth for keys), sorting, filtering, grouping,
   Options-modal wiring, and the pod actions (logs `l`, describe `d`, YAML `y`, shell `t`, delete `x`,

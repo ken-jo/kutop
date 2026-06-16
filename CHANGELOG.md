@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Changed
+
+- **Bounded kubectl fan-out during live refresh** (issue #12). On multi-namespace
+  / multi-node clusters each 5s refresh used to spawn `2 + 4N + M` short-lived
+  `kubectl` processes (N namespaces, M nodes), which on proxied workstations
+  amplified into sustained API/proxy traffic. Three changes cut this without
+  changing the architecture (still kubectl-only, no in-cluster agent):
+  - **Global concurrency cap**: at most 4 `kubectl` processes run at once per
+    refresh, so the per-namespace/per-node fan-out no longer bursts a dozen
+    simultaneous TLS/proxy CONNECTs.
+  - **Cadence split**: the fast pod/problem signals still refresh every 5s, but
+    the heavier panels (events, PVC list, alert/health probes) re-list every
+    ~15s. The per-pod storage column still tracks every cycle via the cache
+    below; a namespace/context/profile switch or manual refresh (`r`) forces an
+    immediate full refresh.
+  - **Node `/stats/summary` TTL cache (30s)**: the per-node kubelet summary
+    (PVC + disk usage, fetched through the API-server `--raw` proxy — the single
+    heaviest source) is cached per context, so it is re-fetched roughly once per
+    30s instead of every 5s.
+- kutop now prints a one-line stderr note on the live path when `HTTPS_PROXY` /
+  `HTTP_PROXY` is set, since every kubectl/API call traverses that proxy; add
+  the API host to `NO_PROXY` to bypass it.
+
 ## 0.5.2 - 2026-06-15
 
 ### Fixed

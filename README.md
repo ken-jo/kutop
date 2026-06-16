@@ -674,6 +674,13 @@ The detail presets are one-shot column layouts:
 * If the cluster becomes unreachable, the previous frame is kept and the error
   is surfaced as a toast (once per distinct error, not every 5s).
 * Node/pod CPU & memory come from `kubectl top` + `kubectl get -o json`.
+* To keep API/proxy traffic bounded on larger clusters, the fast pod/problem
+  signals refresh every 5s while the heavier panels (events, PVC list, alert /
+  health probes) re-list every ~15s; at most 4 `kubectl` processes run at once;
+  and the per-node kubelet summary is cached for ~30s. A scope switch or manual
+  refresh (`r`) forces an immediate full refresh. If `HTTPS_PROXY`/`HTTP_PROXY`
+  is set, kutop notes that kubectl traffic traverses it (add the API host to
+  `NO_PROXY` to bypass).
 * PVC usage comes from the kubelet summary API
   (`/api/v1/nodes/<node>/proxy/stats/summary`) because metrics-server does not
   expose it — a node whose summary call fails is skipped, others still report.

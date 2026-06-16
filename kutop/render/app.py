@@ -41,6 +41,7 @@ from textual.widgets import (
 from .. import __version__, model
 from ..config import (
     Config,
+    HEAVY_REFRESH_EVERY,
     METRICS_RESOLUTION_SECS,
     Profile,
     REFRESH_INTERVAL_SECS,
@@ -388,6 +389,14 @@ class TopApp(App):
         self._fetch_gen = 0
         self._refresh_pending = False
         self._last_refresh_error = ""
+        # Heavy/light cadence (issue #12): the timer ticks the core fetch every
+        # cycle, but the heavy panels (events/PVC/probes) only re-list every
+        # _heavy_every cycles. _force_heavy makes the next fetch heavy regardless
+        # (first paint, scope switch, manual refresh) so the user sees fresh
+        # auxiliary data immediately. _cycle counts loaded refreshes.
+        self._cycle = 0
+        self._heavy_every = max(1, int(HEAVY_REFRESH_EVERY))
+        self._force_heavy = True
         # First-run orientation toast: shown at most once per session, when the
         # FIRST successful snapshot applies on an out-of-the-box generic config.
         self._shown_first_run_hint = False
@@ -805,17 +814,34 @@ class TopApp(App):
         )
 
     def _request_refresh(self) -> None:
-        """Urgent refresh (scope change / manual): now, or queued if in flight."""
+        """Urgent refresh (scope change / manual): now, or queued if in flight.
+
+        Forces a heavy cycle so the auxiliary panels (events/PVC/probes) are
+        re-listed immediately rather than waiting for the next heavy tick.
+        """
         self._refresh_pending = True
+        self._force_heavy = True
         self.refresh_snapshot()
 
     def _bump_fetch_gen(self) -> None:
-        """Invalidate in-flight fetches: their scope (ns/context/probes) is stale."""
+        """Invalidate in-flight fetches: their scope (ns/context/probes) is stale.
+
+        Also drops the fetcher's cross-refresh caches and forces the next cycle
+        heavy, so a light cycle can never re-attach the previous cluster's
+        events/PVCs or serve a stale node summary.
+        """
         self._fetch_gen += 1
+        self._force_heavy = True
+        try:
+            self.fetcher.invalidate_caches()
+        except Exception:
+            pass
 
     def _fetch_worker(self, gen: int) -> None:
         try:
             if not self._loaded:
+                # first paint is always heavy so every panel populates at once
+                self._force_heavy = False
                 snap = self.fetcher.fetch_core()
                 try:
                     # first paint gets a COPY: enrich_snapshot below keeps
@@ -825,9 +851,15 @@ class TopApp(App):
                     )
                 except Exception:
                     pass
-                snap = self.fetcher.enrich_snapshot(snap)
+                snap = self.fetcher.enrich_snapshot(snap, heavy=True)
             else:
-                snap = self.fetcher.fetch()
+                # cadence split (issue #12): core every tick, heavy panels every
+                # Nth tick (or when forced by a scope switch / manual refresh)
+                self._cycle += 1
+                heavy = self._force_heavy or (self._cycle % self._heavy_every == 0)
+                self._force_heavy = False
+                snap = self.fetcher.fetch_core()
+                snap = self.fetcher.enrich_snapshot(snap, heavy=heavy)
             # marshal back to the UI thread; if the app is tearing down the call
             # may be rejected — swallow it so the worker thread returns cleanly.
             try:

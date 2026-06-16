@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
@@ -33,6 +34,21 @@ from .model import Node, Pod, PVC, Event, Summary, Snapshot
 # timeouts bound the worst case if a kill ever races a freshly-spawned process.
 _KUBECTL_TIMEOUT = 6
 _STATS_TIMEOUT = 4
+
+# Global ceiling on SIMULTANEOUS kubectl processes per fetcher. The per-namespace
+# and per-node ThreadPoolExecutors each fan out, so without a shared cap a single
+# refresh on a multi-namespace, multi-node cluster could spawn a dozen kubectl
+# processes (and as many TLS/proxy CONNECTs) at once — the burst that makes a
+# proxied workstation network feel unstable (issue #12). Queued calls wait for a
+# slot; total work is unchanged, only the concurrency is bounded.
+_MAX_CONCURRENCY = 4
+
+# Node kubelet /stats/summary carries PVC + disk usage, which changes slowly.
+# Re-listing it every 5s per node is the heaviest single source (each is an
+# API-server `--raw` proxy call). Cache each node's payload for this many seconds
+# so the per-pod storage column and PVC panel stay populated every cycle while
+# the actual proxy calls happen ~once per TTL instead of every refresh.
+_NODE_SUMMARY_TTL = 30.0
 
 
 def current_context_name(context: Optional[str] = None) -> str:
@@ -89,6 +105,19 @@ class Fetcher:
         self._fetch_errors: "list[str]" = []
         self._errors_lock = threading.Lock()
         self._tl = threading.local()
+        # Global concurrency cap (issue #12): bounds simultaneous kubectl procs.
+        self._sem = threading.BoundedSemaphore(_MAX_CONCURRENCY)
+        # Node /stats/summary TTL cache, keyed by (context, node) so a context
+        # switch never serves another cluster's payload: (monotonic_ts, summary).
+        self._summary_cache: "dict[tuple, tuple[float, Optional[dict]]]" = {}
+        self._summary_cache_lock = threading.Lock()
+        # Last heavy-cadence panel data, re-attached on the cheap core-only
+        # cycles so events/PVC/alerts/health panels stay populated without
+        # re-listing every namespace each refresh (see enrich_snapshot heavy=).
+        self._last_events: "list[Event]" = []
+        self._last_pvcs: "list[PVC]" = []
+        self._last_alerts: list = []
+        self._last_health: list = []
 
     def cancel(self) -> None:
         """Abort any in-flight (and future) kubectl calls. Idempotent, thread-safe.
@@ -105,6 +134,18 @@ class Fetcher:
             except Exception:
                 pass
 
+    def invalidate_caches(self) -> None:
+        """Drop all cross-refresh caches. Called on a scope (ns/context/profile)
+        switch so a light cycle can never re-attach the previous cluster's
+        events/PVCs or serve a stale node summary — the next fetch refills them.
+        """
+        with self._summary_cache_lock:
+            self._summary_cache.clear()
+        self._last_events = []
+        self._last_pvcs = []
+        self._last_alerts = []
+        self._last_health = []
+
     # ── low-level kubectl ────────────────────────────────────────────────────
     def _base(self) -> list[str]:
         cmd = ["kubectl"]
@@ -120,47 +161,54 @@ class Fetcher:
         """
         if self._cancelled.is_set():
             raise RuntimeError("cancelled")
-        proc = subprocess.Popen(
-            self._base() + list(args),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        with self._procs_lock:
-            self._procs.add(proc)
-        # Re-check after registering: cancel() may have snapshotted _procs in
-        # the gap between the check above and the add, so its kill pass missed
-        # this process — kill it ourselves instead of blocking up to `timeout`.
-        if self._cancelled.is_set():
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        try:
-            out, err = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                # Bounded drain: kill() only signals kubectl itself, and an exec
-                # credential plugin grandchild can keep the stderr pipe open —
-                # an unbounded communicate() would then block indefinitely.
-                proc.communicate(timeout=1)
-            except Exception:
-                pass
-            # Raise a concise message instead of TimeoutExpired, whose str()
-            # dumps the whole kubectl argv ("Command '[...]' timed out") — ugly
-            # in the error toast and full of brackets.
-            raise RuntimeError(f"timed out after {timeout}s")
-        finally:
-            with self._procs_lock:
-                self._procs.discard(proc)
-        if self._cancelled.is_set():
-            raise RuntimeError("cancelled")
-        if proc.returncode != 0:
-            raise RuntimeError(
-                (err or out or f"kubectl {' '.join(args)} failed").strip()
+        # Hold a concurrency slot for the lifetime of the subprocess so a refresh
+        # never runs more than _MAX_CONCURRENCY kubectl processes at once. A
+        # thread blocked here for a slot still exits fast on quit: cancel() kills
+        # the running procs, which frees slots, and the re-check below raises.
+        with self._sem:
+            if self._cancelled.is_set():
+                raise RuntimeError("cancelled")
+            proc = subprocess.Popen(
+                self._base() + list(args),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
-        return out
+            with self._procs_lock:
+                self._procs.add(proc)
+            # Re-check after registering: cancel() may have snapshotted _procs in
+            # the gap between the check above and the add, so its kill pass missed
+            # this process — kill it ourselves instead of blocking up to `timeout`.
+            if self._cancelled.is_set():
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            try:
+                out, err = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    # Bounded drain: kill() only signals kubectl itself, and an
+                    # exec credential plugin grandchild can keep the stderr pipe
+                    # open — an unbounded communicate() would block indefinitely.
+                    proc.communicate(timeout=1)
+                except Exception:
+                    pass
+                # Raise a concise message instead of TimeoutExpired, whose str()
+                # dumps the whole kubectl argv ("Command '[...]' timed out") —
+                # ugly in the error toast and full of brackets.
+                raise RuntimeError(f"timed out after {timeout}s")
+            finally:
+                with self._procs_lock:
+                    self._procs.discard(proc)
+            if self._cancelled.is_set():
+                raise RuntimeError("cancelled")
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    (err or out or f"kubectl {' '.join(args)} failed").strip()
+                )
+            return out
 
     def _run_safe(self, *args: str, timeout: int = _KUBECTL_TIMEOUT) -> str:
         """Run kubectl, returning stdout or '' on any failure (never raises).
@@ -322,22 +370,40 @@ class Fetcher:
         if not snap.error or snap.error in merged:
             snap.error = merged[0]
 
-    def enrich_snapshot(self, snap: Snapshot) -> Snapshot:
-        """Fill slower auxiliary panels and storage details into ``snap``."""
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            events_future = pool.submit(self._fetch_events)
-            pvcs_future = pool.submit(self._fetch_pvcs)
-            try:
-                snap.events = events_future.result()
-            except Exception as exc:
-                snap.error = snap.error or f"events: {exc}"
-                snap.errors.append(f"events: {exc}")
+    def enrich_snapshot(self, snap: Snapshot, *, heavy: bool = True) -> Snapshot:
+        """Fill slower auxiliary panels and storage details into ``snap``.
 
-            try:
-                snap.pvcs = pvcs_future.result()
-            except Exception as exc:
-                snap.error = snap.error or f"pvcs: {exc}"
-                snap.errors.append(f"pvcs: {exc}")
+        ``heavy`` controls the cadence split (issue #12). On a HEAVY cycle the
+        per-namespace events/PVC lists and the alert/health probes are fetched
+        fresh and cached. On a LIGHT (core-cadence) cycle those re-list calls are
+        skipped and the last heavy results are re-attached, so the panels stay
+        populated without re-listing every namespace each 5s. Either way the node
+        /stats/summary (TTL-cached) and the per-pod storage fill run every cycle,
+        keeping the storage column current cheaply. ``invalidate_caches()`` clears
+        the re-attach state on a scope switch so a light cycle can never show
+        another cluster's data.
+        """
+        if heavy:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                events_future = pool.submit(self._fetch_events)
+                pvcs_future = pool.submit(self._fetch_pvcs)
+                try:
+                    snap.events = events_future.result()
+                except Exception as exc:
+                    snap.error = snap.error or f"events: {exc}"
+                    snap.errors.append(f"events: {exc}")
+
+                try:
+                    snap.pvcs = pvcs_future.result()
+                except Exception as exc:
+                    snap.error = snap.error or f"pvcs: {exc}"
+                    snap.errors.append(f"pvcs: {exc}")
+        else:
+            # light cadence: reuse the last heavy fetch's lists (the PVCs already
+            # carry their last-known usage; storage is re-filled below from the
+            # TTL-cached node summaries so the per-pod column still tracks).
+            snap.events = list(self._last_events)
+            snap.pvcs = list(self._last_pvcs)
 
         # Kubelet stats summary (BUG FIX #2) drives both the cluster-wide PVC
         # panel usage AND per-pod storage attribution. Fetch each node's summary
@@ -387,22 +453,34 @@ class Fetcher:
                     if used_known:
                         pod.storage_used_mi = used
 
-        # Optional profile-linked HTTP probes. Alerts (AlertManager) are GENERIC
-        # monitoring and stay in core. Each is robust: an unreachable/unset
-        # endpoint yields empty data and never crashes the refresh.
-        if self.alertmanager_url:
-            try:
-                from .probes import fetch_alerts
-                snap.alerts = fetch_alerts(self.alertmanager_url, getter=self._probe_body)
-            except Exception:
-                snap.alerts = []
+        if heavy:
+            # Optional profile-linked HTTP probes. Alerts (AlertManager) are
+            # GENERIC monitoring and stay in core. Each is robust: an
+            # unreachable/unset endpoint yields empty data and never crashes the
+            # refresh. These are network calls too, so they ride the heavy cadence.
+            if self.alertmanager_url:
+                try:
+                    from .probes import fetch_alerts
+                    snap.alerts = fetch_alerts(
+                        self.alertmanager_url, getter=self._probe_body)
+                except Exception:
+                    snap.alerts = []
 
-        # Domain-specific signals (e.g. workload health) come from optional
-        # plugins. The core never imports a plugin module by name: it iterates the
-        # plugin seam, letting each enabled plugin populate the snapshot. Guarded
-        # so a missing/broken plugin (or the whole plugins package) never breaks
-        # the refresh — the core runs fully without any plugin present.
-        self._run_plugins(snap)
+            # Domain-specific signals (e.g. workload health) come from optional
+            # plugins. The core never imports a plugin module by name: it iterates
+            # the plugin seam, letting each enabled plugin populate the snapshot.
+            # Guarded so a missing/broken plugin (or the whole plugins package)
+            # never breaks the refresh — the core runs fully without any plugin.
+            self._run_plugins(snap)
+
+            # cache this heavy cycle's panels for the next light cycles
+            self._last_events = list(snap.events)
+            self._last_pvcs = list(snap.pvcs)
+            self._last_alerts = list(snap.alerts)
+            self._last_health = list(snap.health)
+        else:
+            snap.alerts = list(self._last_alerts)
+            snap.health = list(self._last_health)
 
         self._fold_fetch_errors(snap)
 
@@ -763,9 +841,30 @@ class Fetcher:
         summaries: dict[str, dict] = {}
         if not node_names:
             return summaries
-        max_workers = max(1, min(8, len(node_names)))
+
+        # Serve fresh-enough nodes from the TTL cache; only fetch the rest. The
+        # cache stores misses (None) too, so an unreachable node is not retried
+        # every 5s either — it recovers within the TTL window.
+        now = time.monotonic()
+        to_fetch: list[str] = []
+        with self._summary_cache_lock:
+            for node in node_names:
+                entry = self._summary_cache.get((self.context, node))
+                if entry is not None and (now - entry[0]) < _NODE_SUMMARY_TTL:
+                    if entry[1] is not None:
+                        summaries[node] = entry[1]
+                else:
+                    to_fetch.append(node)
+        if not to_fetch:
+            return summaries
+
+        max_workers = max(1, min(8, len(to_fetch)))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            for node, stats in pool.map(node_summary, node_names):
+            results = list(pool.map(node_summary, to_fetch))
+        stamp = time.monotonic()
+        with self._summary_cache_lock:
+            for node, stats in results:
+                self._summary_cache[(self.context, node)] = (stamp, stats)
                 if stats is not None:
                     summaries[node] = stats
         return summaries

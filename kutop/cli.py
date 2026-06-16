@@ -389,6 +389,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"wrote snapshot SVG -> {args.snapshot}")
         return code
 
+    _warn_if_proxied()
+
     if not args.no_metrics_bootstrap:
         from .metrics import maybe_bootstrap_metrics_server
 
@@ -396,6 +398,27 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     app.run()
     return 0
+
+
+def _warn_if_proxied() -> None:
+    """Warn (stderr) when a proxy env var is set on the live path.
+
+    Every kutop data read shells out to ``kubectl``, so each call honors
+    ``HTTPS_PROXY`` / ``HTTP_PROXY`` and traverses that proxy. On a busy cluster
+    the per-refresh kubectl fan-out then amplifies into sustained proxy traffic
+    (issue #12); naming the offending var lets the operator decide whether to
+    unset it or add the API endpoint to ``NO_PROXY``.
+    """
+    proxied = [name for name in ("HTTPS_PROXY", "https_proxy",
+                                 "HTTP_PROXY", "http_proxy")
+               if os.environ.get(name)]
+    if not proxied:
+        return
+    sys.stderr.write(
+        f"[kutop] note: {proxied[0]} is set — every kubectl/API call traverses "
+        "that proxy; on busy clusters this can amplify network traffic. Add the "
+        "API host to NO_PROXY to bypass it.\n"
+    )
 
 
 if __name__ == "__main__":

@@ -530,6 +530,14 @@ def clamp_name_width(v) -> int:
 REFRESH_INTERVAL_SECS = 5.0
 METRICS_RESOLUTION_SECS = 15
 
+# Heavy panels (events / PVC list / alert + health probes) refresh once every
+# HEAVY_REFRESH_EVERY core cycles instead of every cycle, to cut per-refresh
+# kubectl/API fan-out (issue #12). 3 -> the fast pod/problem signals stay at
+# REFRESH_INTERVAL_SECS (5s) while events/PVC re-list every ~15s; the per-pod
+# storage column still tracks every cycle via the TTL-cached node summaries.
+# A scope switch or manual refresh forces a heavy cycle immediately.
+HEAVY_REFRESH_EVERY = 3
+
 
 def default_visible_columns() -> list:
     """Return the built-in visible table columns in default display order."""
