@@ -79,7 +79,12 @@ presentation (ordering, timezone, thresholds).
   takes `heavy=` — a heavy cycle re-lists events/PVCs/probes and caches them, a light cycle re-attaches the
   cached lists (storage still re-fills from the TTL-cached summaries every cycle). The app runs the heavy
   cycle every `HEAVY_REFRESH_EVERY=3` ticks; a scope switch calls `fetcher.invalidate_caches()` and forces
-  the next cycle heavy so a light cycle never shows another cluster's data.
+  the next cycle heavy so a light cycle never shows another cluster's data. When
+  watching `>= _ALL_NS_THRESHOLD=4` namespaces, `_fetch_pods/_fetch_events/_fetch_pvcs` issue ONE
+  cluster-wide `-A` list (filtered client-side) instead of one call per namespace; a forbidden `-A`
+  records the resource in `_all_ns_blocked` and falls back to the per-namespace fan-out (remembered
+  for the session, cleared on scope switch). Pod usage is keyed by `(namespace, name)` so the same
+  map serves the scoped `top` and the `top -A` paths.
 - **`render/`** — split along class seams. **`app.py`** (`TopApp`) owns keybindings
   (`_BINDING_SPECS` is the single source of truth for keys), sorting, filtering, grouping,
   Options-modal wiring, and the pod actions (logs `l`, describe `d`, YAML `y`, shell `t`, delete `x`,

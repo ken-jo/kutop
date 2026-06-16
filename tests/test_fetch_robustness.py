@@ -142,6 +142,12 @@ def test_concurrency_determinism_no_optional_leak() -> None:
             if args[0] == "top":
                 raise RuntimeError("metrics-server unavailable")
 
+            # this fake simulates a NAMESPACE-SCOPED-RBAC cluster: the cluster-
+            # wide `-A` list is forbidden, so the fetcher falls back to the
+            # per-namespace fan-out this test is exercising.
+            if "-A" in args:
+                raise RuntimeError("forbidden: cannot list at cluster scope")
+
             if joined == "get nodes -o json":
                 return json.dumps({"items": []})
 

@@ -50,6 +50,15 @@ _MAX_CONCURRENCY = 4
 # the actual proxy calls happen ~once per TTL instead of every refresh.
 _NODE_SUMMARY_TTL = 30.0
 
+# Adaptive all-namespaces consolidation (issue #12 follow-up): when watching at
+# least this many namespaces, list pods/events/PVCs with ONE cluster-wide
+# `-A` call (filtered client-side) instead of one call per namespace — N calls
+# collapse to 1. Below the threshold the scoped per-namespace calls are kept,
+# because a single `-A` would pull the WHOLE cluster's objects (a much larger
+# payload) to show only a few namespaces. A user without cluster-wide list RBAC
+# falls back to per-namespace automatically (remembered for the session).
+_ALL_NS_THRESHOLD = 4
+
 
 def current_context_name(context: Optional[str] = None) -> str:
     """The active kube context name, or '' if it cannot be determined.
@@ -118,6 +127,11 @@ class Fetcher:
         self._last_pvcs: "list[PVC]" = []
         self._last_alerts: list = []
         self._last_health: list = []
+        # Resources whose cluster-wide `-A` list returned a forbidden/RBAC error
+        # this session — fall back to per-namespace for them (remembered so we
+        # don't pay the forbidden round-trip every refresh). Cleared on a scope
+        # switch (context change may grant different RBAC).
+        self._all_ns_blocked: "set[str]" = set()
 
     def cancel(self) -> None:
         """Abort any in-flight (and future) kubectl calls. Idempotent, thread-safe.
@@ -145,6 +159,21 @@ class Fetcher:
         self._last_pvcs = []
         self._last_alerts = []
         self._last_health = []
+        # a context switch may grant different RBAC — re-probe `-A` next time
+        self._all_ns_blocked = set()
+
+    def _use_all_namespaces(self, resource: str) -> bool:
+        """True when one cluster-wide ``-A`` list should replace the per-namespace
+        fan-out for ``resource`` this cycle (see :data:`_ALL_NS_THRESHOLD`)."""
+        return (len(self.namespaces) >= _ALL_NS_THRESHOLD
+                and resource not in self._all_ns_blocked)
+
+    @staticmethod
+    def _looks_forbidden(msg: str) -> bool:
+        """Heuristic: did a list fail because of missing cluster-wide RBAC (so we
+        should fall back to per-namespace) rather than a transient error?"""
+        low = msg.lower()
+        return "forbidden" in low or "cannot list" in low
 
     # ── low-level kubectl ────────────────────────────────────────────────────
     def _base(self) -> list[str]:
@@ -551,43 +580,65 @@ class Fetcher:
 
     # ── pods ─────────────────────────────────────────────────────────────────
     def _fetch_pods(self) -> list[Pod]:
-        """Build Pod objects per namespace from `top pods` + `get pods -o json`."""
+        """Build Pod objects from `top pods` + `get pods -o json`.
+
+        One namespace -> one scoped pair of calls. Many namespaces (>=
+        :data:`_ALL_NS_THRESHOLD`) -> ONE cluster-wide ``-A`` pair filtered to
+        the watched set, unless that is RBAC-forbidden, in which case we fall
+        back to the per-namespace fan-out.
+        """
         if not self.namespaces:
             return []
         if len(self.namespaces) == 1:
             return self._fetch_pods_for_namespace(self.namespaces[0])
-        pods: list[Pod] = []
+        if self._use_all_namespaces("pods"):
+            pods = self._fetch_pods_all()
+            if pods is not None:
+                return pods  # consolidated path succeeded
+            # else: `-A` was forbidden -> _all_ns_blocked set, fall through
+        pods = []
         max_workers = max(1, min(8, len(self.namespaces)))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             for ns_pods in pool.map(self._fetch_pods_for_namespace, self.namespaces):
                 pods.extend(ns_pods)
         return pods
 
+    @staticmethod
+    def _pod_usage_all_ns(lines: str) -> "dict[tuple, tuple]":
+        """Parse ``kubectl top pods -A`` output into ``{(ns, pod): (cpu, mem)}``.
+
+        The ``-A`` layout leads with a NAMESPACE column; CPU/MEM are always the
+        last two columns whether or not ``--containers`` adds a container column,
+        so container rows sum cleanly per pod by indexing from the end.
+        """
+        usage: "dict[tuple, tuple]" = {}
+        for line in lines.splitlines():
+            parts = line.split()
+            if len(parts) < 4:                 # NAMESPACE POD ... CPU MEM
+                continue
+            key = (parts[0], parts[1])
+            pc, pm = usage.get(key, (0, 0))
+            usage[key] = (pc + model.to_mcpu(parts[-2]),
+                          pm + model.to_mi(parts[-1]))
+        return usage
+
     def _fetch_pods_for_namespace(self, ns: str) -> list[Pod]:
         """Build Pod objects for one namespace."""
         pods: list[Pod] = []
-        # usage map: pod name -> (cpu_mcpu, mem_mi) summed across containers
-        usage: dict[str, tuple[int, int]] = {}
+        # usage map: (ns, pod) -> (cpu_mcpu, mem_mi) summed across containers
         tp = self._run_optional("top", "pods", "-n", ns, "--no-headers", "--containers")
-        if tp:
-            for line in tp.splitlines():
-                parts = line.split()
-                # POD  NAME(container)  CPU  MEM
-                if len(parts) < 4:
-                    continue
-                pod_name = parts[0]
-                cpu = model.to_mcpu(parts[2])
-                mem = model.to_mi(parts[3])
-                pc, pm = usage.get(pod_name, (0, 0))
-                usage[pod_name] = (pc + cpu, pm + mem)
-        else:
+        if not tp:
             # fall back to pod-level top if --containers unsupported
             tp = self._run_optional("top", "pods", "-n", ns, "--no-headers")
-            for line in tp.splitlines():
-                parts = line.split()
-                if len(parts) < 3:
-                    continue
-                usage[parts[0]] = (model.to_mcpu(parts[1]), model.to_mi(parts[2]))
+        usage: "dict[tuple, tuple]" = {}
+        for line in tp.splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            usage[(ns, parts[0])] = (
+                usage.get((ns, parts[0]), (0, 0))[0] + model.to_mcpu(parts[-2]),
+                usage.get((ns, parts[0]), (0, 0))[1] + model.to_mi(parts[-1]),
+            )
 
         gj = self._run_safe("get", "pods", "-n", ns, "-o", "json")
         if not gj:
@@ -602,6 +653,40 @@ class Fetcher:
             self._record_fetch_error(f"get pods -n {ns}: unparseable kubectl output")
             return pods
         for item in data.get("items", []):
+            pod = self._parse_pod(item, ns, usage)
+            if pod is not None:
+                pods.append(pod)
+        return pods
+
+    def _fetch_pods_all(self) -> "Optional[list[Pod]]":
+        """One cluster-wide pods fetch (`top pods -A` + `get pods -A`), filtered
+        to the watched namespaces. Returns the pod list, or ``None`` when the
+        cluster-wide list is RBAC-forbidden (the caller then falls back to the
+        per-namespace fan-out)."""
+        watched = set(self.namespaces)
+        tp = self._run_optional("top", "pods", "-A", "--no-headers", "--containers")
+        if not tp:
+            tp = self._run_optional("top", "pods", "-A", "--no-headers")
+        usage = self._pod_usage_all_ns(tp)
+
+        try:
+            gj = self._run("get", "pods", "-A", "-o", "json")
+        except Exception as exc:
+            if self._looks_forbidden(str(exc)):
+                self._all_ns_blocked.add("pods")
+                return None  # fall back to per-namespace (scoped RBAC)
+            self._record_fetch_error(f"get pods -A: {exc}")
+            return []
+        try:
+            data = json.loads(gj)
+        except Exception:
+            self._record_fetch_error("get pods -A: unparseable kubectl output")
+            return []
+        pods: list[Pod] = []
+        for item in data.get("items", []):
+            ns = (item.get("metadata", {}) or {}).get("namespace", "")
+            if ns not in watched:
+                continue
             pod = self._parse_pod(item, ns, usage)
             if pod is not None:
                 pods.append(pod)
@@ -745,13 +830,34 @@ class Fetcher:
         pod.last_terminated_reason = last_reason
         pod.last_exit_code = last_exit
 
-        c_usage = usage.get(name, (0, 0))
+        # usage is keyed by (namespace, name) so the same map serves both the
+        # per-namespace `top` and the cluster-wide `top -A` paths.
+        c_usage = usage.get((ns, name), (0, 0))
         pod.cpu_mcpu = c_usage[0]
         pod.mem_mi = c_usage[1]
         return pod
 
     # ── events ───────────────────────────────────────────────────────────────
+    @staticmethod
+    def _event_from_item(item: dict) -> Event:
+        obj = item.get("involvedObject", {}) or {}
+        return Event(
+            ts_utc=item.get("lastTimestamp")
+            or item.get("eventTime")
+            or item.get("firstTimestamp")
+            or "",
+            name=obj.get("name", "") or "",
+            reason=item.get("reason", "") or "",
+            message=(item.get("message", "") or "").replace("\n", " "),
+            count=int(item.get("count", 1) or 1),
+            type=item.get("type", "Normal") or "Normal",
+        )
+
     def _fetch_events(self) -> list[Event]:
+        if self._use_all_namespaces("events"):
+            evs = self._fetch_events_all()
+            if evs is not None:
+                return evs
         events: list[Event] = []
         for ns in self.namespaces:
             gj = self._run_safe(
@@ -767,27 +873,60 @@ class Fetcher:
                 self._record_fetch_error(f"events[{ns}]: unparseable kubectl output")
                 continue
             for item in data.get("items", []):
-                obj = item.get("involvedObject", {}) or {}
-                events.append(
-                    Event(
-                        ts_utc=item.get("lastTimestamp")
-                        or item.get("eventTime")
-                        or item.get("firstTimestamp")
-                        or "",
-                        name=obj.get("name", "") or "",
-                        reason=item.get("reason", "") or "",
-                        message=(item.get("message", "") or "").replace("\n", " "),
-                        count=int(item.get("count", 1) or 1),
-                        type=item.get("type", "Normal") or "Normal",
-                    )
-                )
+                events.append(self._event_from_item(item))
         # keep most recent first by timestamp string (ISO sorts lexically)
         events.sort(key=lambda e: e.ts_utc, reverse=True)
         return events
 
+    def _fetch_events_all(self) -> "Optional[list[Event]]":
+        """One cluster-wide events fetch filtered to the watched namespaces, or
+        ``None`` when `-A` is RBAC-forbidden (caller falls back to per-namespace)."""
+        watched = set(self.namespaces)
+        try:
+            gj = self._run("get", "events", "-A",
+                           "--sort-by=.lastTimestamp", "-o", "json")
+        except Exception as exc:
+            if self._looks_forbidden(str(exc)):
+                self._all_ns_blocked.add("events")
+                return None
+            self._record_fetch_error(f"get events -A: {exc}")
+            return []
+        try:
+            data = json.loads(gj)
+        except Exception:
+            self._record_fetch_error("get events -A: unparseable kubectl output")
+            return []
+        events = [
+            self._event_from_item(item)
+            for item in data.get("items", [])
+            if (item.get("metadata", {}) or {}).get("namespace", "") in watched
+        ]
+        events.sort(key=lambda e: e.ts_utc, reverse=True)
+        return events
+
     # ── pvcs ─────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _pvc_from_item(item: dict, ns: str) -> "Optional[PVC]":
+        meta = item.get("metadata", {})
+        name = meta.get("name", "")
+        if not name:
+            return None
+        status = item.get("status", {})
+        spec = item.get("spec", {})
+        cap = (status.get("capacity", {}) or {}).get("storage", "0")
+        return PVC(
+            name=name,
+            namespace=ns,
+            capacity_mi=model.to_mi(str(cap)),
+            storage_class=spec.get("storageClassName", "") or "",
+        )
+
     def _fetch_pvcs(self) -> list[PVC]:
-        pvcs: list[PVC] = []
+        if self._use_all_namespaces("pvc"):
+            pvcs = self._fetch_pvcs_all()
+            if pvcs is not None:
+                return pvcs
+        pvcs = []
         for ns in self.namespaces:
             gj = self._run_safe("get", "pvc", "-n", ns, "-o", "json")
             if not gj:
@@ -798,21 +937,36 @@ class Fetcher:
                 self._record_fetch_error(f"pvc[{ns}]: unparseable kubectl output")
                 continue
             for item in data.get("items", []):
-                meta = item.get("metadata", {})
-                name = meta.get("name", "")
-                if not name:
-                    continue
-                status = item.get("status", {})
-                spec = item.get("spec", {})
-                cap = (status.get("capacity", {}) or {}).get("storage", "0")
-                pvcs.append(
-                    PVC(
-                        name=name,
-                        namespace=ns,
-                        capacity_mi=model.to_mi(str(cap)),
-                        storage_class=spec.get("storageClassName", "") or "",
-                    )
-                )
+                pvc = self._pvc_from_item(item, ns)
+                if pvc is not None:
+                    pvcs.append(pvc)
+        return pvcs
+
+    def _fetch_pvcs_all(self) -> "Optional[list[PVC]]":
+        """One cluster-wide PVC fetch filtered to the watched namespaces, or
+        ``None`` when `-A` is RBAC-forbidden (caller falls back to per-namespace)."""
+        watched = set(self.namespaces)
+        try:
+            gj = self._run("get", "pvc", "-A", "-o", "json")
+        except Exception as exc:
+            if self._looks_forbidden(str(exc)):
+                self._all_ns_blocked.add("pvc")
+                return None
+            self._record_fetch_error(f"get pvc -A: {exc}")
+            return []
+        try:
+            data = json.loads(gj)
+        except Exception:
+            self._record_fetch_error("get pvc -A: unparseable kubectl output")
+            return []
+        pvcs: list[PVC] = []
+        for item in data.get("items", []):
+            ns = (item.get("metadata", {}) or {}).get("namespace", "")
+            if ns not in watched:
+                continue
+            pvc = self._pvc_from_item(item, ns)
+            if pvc is not None:
+                pvcs.append(pvc)
         return pvcs
 
     def _node_summaries(self, node_names: list[str]) -> "dict[str, dict]":
