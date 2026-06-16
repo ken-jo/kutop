@@ -21,6 +21,13 @@
     (PVC + disk usage, fetched through the API-server `--raw` proxy — the single
     heaviest source) is cached per context, so it is re-fetched roughly once per
     30s instead of every 5s.
+  - **Adaptive all-namespaces consolidation**: when watching 4+ namespaces,
+    pods/events/PVCs are listed with ONE cluster-wide `-A` call (filtered
+    client-side) instead of one call per namespace — `N` list calls collapse to
+    1. Below that threshold the scoped per-namespace calls are kept (a single
+    `-A` would pull the whole cluster's objects to show only a few namespaces).
+    A user without cluster-wide list RBAC falls back to per-namespace
+    automatically, remembered for the session.
 - kutop now prints a one-line stderr note on the live path when `HTTPS_PROXY` /
   `HTTP_PROXY` is set, since every kubectl/API call traverses that proxy; add
   the API host to `NO_PROXY` to bypass it.
