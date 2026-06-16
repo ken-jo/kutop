@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.3 - 2026-06-16
+
 ### Changed
 
 - **Bounded kubectl fan-out during live refresh** (issue #12). On multi-namespace
