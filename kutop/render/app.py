@@ -663,7 +663,7 @@ class TopApp(App):
             self.refresh_snapshot()
             self._refresh_timer = self.set_interval(self.interval, self.refresh_snapshot)
 
-        # BUG FIX #4: discover cluster namespaces live and repopulate the
+        # Discover cluster namespaces live and repopulate the
         # sidebar list. Guarded off for --self-test so no kubectl is shelled out.
         if self._discover_namespaces:
             self.run_worker(
@@ -748,7 +748,7 @@ class TopApp(App):
             return label
         return base
 
-    # ── namespace discovery worker (BUG FIX #4) ────────────────────────────────
+    # ── namespace discovery worker ─────────────────────────────────────────────
     def _discover_ns_worker(self) -> None:
         """Thread worker: list cluster namespaces, then repopulate the sidebar.
 
@@ -847,18 +847,33 @@ class TopApp(App):
                     # first paint gets a COPY: enrich_snapshot below keeps
                     # mutating `snap` on this thread while the UI renders it
                     self.call_from_thread(
-                        self._apply_snapshot, copy.deepcopy(snap), gen
+                        self._apply_snapshot, copy.deepcopy(snap), gen, False
                     )
                 except Exception:
                     pass
+                if gen != self._fetch_gen:
+                    return
                 snap = self.fetcher.enrich_snapshot(snap, heavy=True)
             else:
                 # cadence split (issue #12): core every tick, heavy panels every
                 # Nth tick (or when forced by a scope switch / manual refresh)
                 self._cycle += 1
-                heavy = self._force_heavy or (self._cycle % self._heavy_every == 0)
+                forced = self._force_heavy
+                heavy = forced or (self._cycle % self._heavy_every == 0)
                 self._force_heavy = False
                 snap = self.fetcher.fetch_core()
+                if gen != self._fetch_gen:
+                    return
+                # Scope/manual refreshes should show fresh pods as soon as core
+                # data arrives. Routine cadence cycles keep their single final
+                # paint so auxiliary panels never flash empty every 5 seconds.
+                if forced:
+                    try:
+                        self.call_from_thread(
+                            self._apply_snapshot, copy.deepcopy(snap), gen, False
+                        )
+                    except Exception:
+                        pass
                 snap = self.fetcher.enrich_snapshot(snap, heavy=heavy)
             # marshal back to the UI thread; if the app is tearing down the call
             # may be rejected — swallow it so the worker thread returns cleanly.
@@ -960,7 +975,12 @@ class TopApp(App):
         except Exception:
             pass
 
-    def _apply_snapshot(self, snap: Snapshot, gen: Optional[int] = None) -> None:
+    def _apply_snapshot(
+        self,
+        snap: Snapshot,
+        gen: Optional[int] = None,
+        record_history: bool = True,
+    ) -> None:
         if gen is not None and gen != self._fetch_gen:
             return  # fetched under an old namespace/context scope: drop it
         if snap.error and not snap.nodes and not snap.pods:
@@ -991,9 +1011,10 @@ class TopApp(App):
         # Feed rolling history every refresh for the trend meters. A zero used
         # value with a real capacity is a real 0% sample; only missing capacity
         # is treated as an untrustworthy dropout.
-        s = snap.summary
-        self._append_trend(self.cpu_hist, s.cpu_used_mcpu, s.cpu_cap_mcpu)
-        self._append_trend(self.mem_hist, s.mem_used_mi, s.mem_cap_mi)
+        if record_history:
+            s = snap.summary
+            self._append_trend(self.cpu_hist, s.cpu_used_mcpu, s.cpu_cap_mcpu)
+            self._append_trend(self.mem_hist, s.mem_used_mi, s.mem_cap_mi)
         self._render()
 
     def _maybe_show_first_run_hint(self) -> None:
@@ -1340,8 +1361,11 @@ class TopApp(App):
         """Apply config-driven + live filters (name / hide_completed / only_problems)."""
         term = (self._search_term or "").strip()
         matcher = self._compile_filter(term) if term else None
+        namespaces = set(self.namespaces)
         out = []
         for pd in pods:
+            if namespaces and pd.namespace not in namespaces:
+                continue
             if matcher is not None and not matcher(pd.name):
                 continue
             if self.cfg.hide_completed and self._is_completed(pd):
@@ -1619,13 +1643,14 @@ class TopApp(App):
     def _persist_state(self) -> None:
         """Persist current config to the active config file (--config or default).
 
-        Best effort — failure must never disturb the UI.
+        A failed save does not stop the UI, but it must be visible so a setting
+        never appears durable when it was not written.
         """
         self._sync_cfg_from_app()
         try:
             save_config(self.cfg, self._config_path, profile=self.profile)
-        except Exception:
-            pass  # unwritable path or other I/O error — don't disturb the UI
+        except Exception as exc:
+            self.notify(f"config save failed: {exc}", severity="error", timeout=6)
 
     def commit_name_width(self, width: int) -> None:
         """Adopt a drag-resized NODE/POD column width and persist it.
@@ -2015,7 +2040,7 @@ class TopApp(App):
         self.apply_panel_visibility(persist=True)
 
     def action_reload_config(self) -> None:
-        """Re-read the user config file and apply it live (M5 hot-reload).
+        """Re-read the user config file and apply it live.
 
         Re-runs the same layered load the CLI used (defaults -> profile -> file)
         so an edit to ``~/.config/kutop/config.yaml`` takes effect without a
@@ -2217,6 +2242,8 @@ class TopApp(App):
         self.notify(f"namespaces: {', '.join(ns_list)}")
         self._persist_state()
         self._sync_sidebar_state()
+        if self._loaded:
+            self._render_main_table()
         self._request_refresh()
 
     # legacy shim: a CSV string still routes through the list-based selector

@@ -220,6 +220,58 @@ def test_main_wires_flags_and_namespaces_into_topapp(monkeypatch, tmp_path: Path
     assert bootstraps == ["prod"]
 
 
+def test_live_main_routes_proxy_notice_to_app_without_stderr(
+        monkeypatch, tmp_path: Path, capsys) -> None:
+    """Proxy diagnostics belong inside the fullscreen app, not the terminal
+    frame that the TUI immediately overwrites."""
+    from kutop import cli
+
+    captured: list[dict] = []
+
+    class FakeApp:
+        def __init__(self, **kwargs) -> None:
+            captured.append(kwargs)
+
+        def run(self) -> None:
+            pass
+
+    monkeypatch.setattr(cli.shutil, "which", lambda cmd: "/usr/bin/kubectl")
+    monkeypatch.setattr("kutop.render.app.TopApp", FakeApp)
+    for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.local:3128")
+
+    assert cli.main([
+        "--no-metrics-bootstrap",
+        "--config", str(tmp_path / "config.yaml"),
+    ]) == 0
+
+    assert capsys.readouterr().err == ""
+    warnings = captured[0]["config"].load_warnings
+    assert len([warning for warning in warnings if "HTTPS_PROXY" in warning]) == 1
+
+
+def test_persist_state_surfaces_save_failure(monkeypatch) -> None:
+    from kutop.render.app import TopApp
+
+    app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+    seen: list[tuple[str, str]] = []
+
+    def fail_save(*args, **kwargs) -> None:
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr("kutop.render.app.save_config", fail_save)
+    monkeypatch.setattr(
+        app, "notify",
+        lambda message, severity="information", **kwargs:
+            seen.append((str(message), severity)),
+    )
+
+    app._persist_state()
+
+    assert seen == [("config save failed: read-only filesystem", "error")]
+
+
 def test_main_layers_profile_user_file_and_view_flags(monkeypatch, tmp_path: Path) -> None:
     """--profile loads authoritatively, the saved file still supplies UI prefs,
     and explicit view flags (--tz/--sort-desc/--group-by-node/--only-problems)

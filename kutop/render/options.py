@@ -290,8 +290,8 @@ class OptionsModal(ModalScreen):
                         # 'name -> url'; the inputs below add one (name + url +
                         # an optional single 'label: regex' field pair). All
                         # edits land on self._cfg.health_probes and flow through
-                        # _apply(), so the wave-2 Esc/Cancel revert (re-adopting
-                        # self._orig_cfg) restores the pre-edit probes for free.
+                        # _apply(), so Esc/Cancel re-adopts self._orig_cfg and
+                        # restores the pre-edit probes.
                         yield Label("health_probes", classes="opt_label")
                         yield OptionList(id="opt_health_probes")
                         with Vertical(classes="opt_field"):

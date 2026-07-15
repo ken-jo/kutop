@@ -2,7 +2,7 @@
 
 Covers the node /stats/summary TTL cache, the heavy/light enrich cadence with
 re-attach + scope invalidation, the global concurrency cap, and the proxy
-warning.
+startup notice.
 """
 
 from __future__ import annotations
@@ -158,22 +158,23 @@ def test_run_caps_concurrent_kubectl_processes(monkeypatch) -> None:
     assert state["peak"] >= 2  # the cap actually allowed parallelism
 
 
-# ── proxy warning ─────────────────────────────────────────────────────────────
+# ── proxy startup notice ──────────────────────────────────────────────────────
 
 
-def test_warn_if_proxied(monkeypatch, capsys) -> None:
-    from kutop.cli import _warn_if_proxied
+def test_proxy_env_note_is_optional_and_does_not_overstate_routing(monkeypatch) -> None:
+    from kutop.cli import _proxy_env_note
 
     for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY"):
         monkeypatch.delenv(var, raising=False)
 
-    _warn_if_proxied()
-    assert capsys.readouterr().err == ""         # nothing set -> silent
+    assert _proxy_env_note() is None
 
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.local:3128")
-    _warn_if_proxied()
-    err = capsys.readouterr().err
-    assert "HTTPS_PROXY" in err and "NO_PROXY" in err
+    note = _proxy_env_note()
+    assert note is not None
+    assert "HTTPS_PROXY" in note and "NO_PROXY" in note
+    assert "may use" in note
+    assert "every kubectl/API call traverses" not in note
 
 
 # ── app wiring: scope change forces a heavy cycle + clears caches ──────────────
@@ -191,3 +192,109 @@ def test_bump_fetch_gen_forces_heavy_and_invalidates() -> None:
 
     assert app._force_heavy is True          # next fetch re-lists the heavy panels
     assert invalidated == [True]             # old-scope caches dropped
+
+
+def test_loaded_refresh_applies_core_before_heavy_enrichment() -> None:
+    """Pods render as soon as core data is ready, before slower enrichment."""
+    from kutop.render.app import TopApp
+
+    app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+    app._loaded = True
+    app._fetch_gen = 4
+    app._fetching = True
+
+    class FetcherStub:
+        def fetch_core(self) -> Snapshot:
+            snap = Snapshot()
+            snap.pods = [Pod(name="core-pod", namespace="default")]
+            return snap
+
+        def enrich_snapshot(self, snap: Snapshot, *, heavy: bool) -> Snapshot:
+            snap.events = [Event(
+                ts_utc="2026-01-01T00:00:00Z",
+                name="heavy-event",
+                reason="test",
+                message="heavy data ready",
+            )]
+            return snap
+
+    app.fetcher = FetcherStub()  # type: ignore[assignment]
+    applied: list[Snapshot] = []
+    record_history: list[bool] = []
+
+    def call_from_thread(callback, *args) -> None:
+        if callback == app._apply_snapshot:
+            applied.append(args[0])
+            record_history.append(args[2] if len(args) > 2 else True)
+
+    app.call_from_thread = call_from_thread  # type: ignore[method-assign]
+
+    app._fetch_worker(4)
+
+    assert len(applied) == 2
+    assert [pod.name for pod in applied[0].pods] == ["core-pod"]
+    assert applied[0].events == []
+    assert [event.name for event in applied[1].events] == ["heavy-event"]
+    assert record_history == [False, True]
+
+
+def test_routine_refresh_keeps_single_final_paint() -> None:
+    """Core previews are for urgent refreshes only; routine cycles must not
+    flash empty auxiliary panels or record two trend samples."""
+    from kutop.render.app import TopApp
+
+    app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+    app._loaded = True
+    app._fetch_gen = 5
+    app._fetching = True
+    app._force_heavy = False
+
+    class FetcherStub:
+        def fetch_core(self) -> Snapshot:
+            return Snapshot(pods=[Pod(name="routine-pod", namespace="default")])
+
+        def enrich_snapshot(self, snap: Snapshot, *, heavy: bool) -> Snapshot:
+            return snap
+
+    app.fetcher = FetcherStub()  # type: ignore[assignment]
+    applied: list[tuple] = []
+    app.call_from_thread = (  # type: ignore[method-assign]
+        lambda callback, *args: applied.append(args)
+        if callback == app._apply_snapshot else None
+    )
+
+    app._fetch_worker(5)
+
+    assert len(applied) == 1
+    assert len(applied[0]) == 2  # snapshot + generation; default history recording
+
+
+def test_stale_generation_skips_heavy_enrichment() -> None:
+    """Old-scope core work must not continue into slow heavy enrichment."""
+    from kutop.render.app import TopApp
+
+    app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+    app._loaded = True
+    app._fetch_gen = 7
+    app._fetching = True
+    enriched: list[bool] = []
+    scheduled: list[object] = []
+
+    class FetcherStub:
+        def fetch_core(self) -> Snapshot:
+            app._fetch_gen += 1
+            return Snapshot()
+
+        def enrich_snapshot(self, snap: Snapshot, *, heavy: bool) -> Snapshot:
+            enriched.append(heavy)
+            return snap
+
+    app.fetcher = FetcherStub()  # type: ignore[assignment]
+    app.call_from_thread = (  # type: ignore[method-assign]
+        lambda callback, *args: scheduled.append(callback)
+    )
+
+    app._fetch_worker(7)
+
+    assert enriched == []
+    assert app.refresh_snapshot in scheduled

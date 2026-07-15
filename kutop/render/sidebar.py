@@ -59,9 +59,9 @@ class SidebarPanel(Vertical):
     The namespace checkboxes are the primary selector — the Options modal mirrors
     the same ticked set via ``apply_config``.
 
-    BUG FIX #3: the controls live inside a ``VerticalScroll`` so that on short
-    terminals the lower sections (NAMESPACE / PANELS) remain reachable by
-    scrolling instead of being clipped off the bottom of the viewport. The
+    The controls live inside a ``VerticalScroll`` so that on short terminals
+    the lower sections (NAMESPACE / PANELS) remain reachable instead of being
+    clipped off the bottom of the viewport. The
     namespace checkbox list itself sits in its own bounded ``VerticalScroll`` so
     that a cluster with many namespaces never overflows the lower controls.
     """

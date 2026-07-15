@@ -259,7 +259,7 @@ class Alert:
 
 @dataclass
 class HealthResult:
-    """One workload health-probe scrape result (M3).
+    """One workload health-probe scrape result.
 
     ``fields`` maps a field label to its extracted value (regex group 1). When
     the probe was unreachable, ``ok`` is False and ``error`` carries a short
@@ -296,8 +296,8 @@ class Snapshot:
     pods: list[Pod] = field(default_factory=list)
     pvcs: list[PVC] = field(default_factory=list)
     events: list[Event] = field(default_factory=list)
-    alerts: list[Alert] = field(default_factory=list)         # M2 (AlertManager)
-    health: list[HealthResult] = field(default_factory=list)  # M3 (health probes)
+    alerts: list[Alert] = field(default_factory=list)         # AlertManager
+    health: list[HealthResult] = field(default_factory=list)  # health probes
     summary: Summary = field(default_factory=Summary)
     error: str = ""        # non-empty if the refresh failed; renderer keeps prior frame
     # EVERY distinct failure recorded this cycle (error is always errors[0] when
