@@ -63,7 +63,7 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
 
 @dataclass
 class HealthProbe:
-    """Optional workload health row (M4). Scrapes an HTTP/metrics endpoint."""
+    """Optional workload health row scraped from an HTTP/metrics endpoint."""
     name: str
     url: str
     # regex -> label; each capturing group 1 becomes the displayed value
@@ -632,11 +632,11 @@ class Config:
     # standalone cluster-wide PVC panel is ON by default so a fresh launch shows
     # every panel. Toggle it off with key 'v' / Options > Panels / the sidebar.
     show_pvc: bool = True
-    show_alerts: bool = True            # M2: AlertManager alerts panel
-    show_health: bool = True            # M3: workload health row
+    show_alerts: bool = True            # AlertManager alerts panel
+    show_health: bool = True            # workload health row
     show_keys: bool = True              # context-sensitive sidebar key hints
 
-    # Cluster-linked HTTP probes (M2/M3). Sourced from the profile by default,
+    # Cluster-linked HTTP probes. Sourced from the profile by default,
     # overridable in the user config. Empty -> the corresponding panel hides.
     alertmanager_url: str = ""          # AlertManager /api/v2/alerts URL
     # health_probes: list of {name, url, fields:{label: regex}} dicts.

@@ -199,7 +199,7 @@ DataTable:focus > .datatable--fixed-cursor {
 
 /* ── trend graphs row ───────────────────────────────────────────────────── */
 /* Small fixed strip — these are at-a-glance context, NOT the focus. The main
- * NODE/POD table below is the dominant panel (BUG FIX #1). */
+ * NODE/POD table below is the dominant panel. */
 #trends {
     height: 6;
     layout: horizontal;
@@ -263,8 +263,8 @@ Screen.-panel-backgrounds-on TrendGraph {
     margin-bottom: 0;
 }
 
-/* BUG FIX #3: scroll the sidebar body so SORT BY / PANELS stay reachable on
- * short terminals instead of being clipped off the bottom. */
+/* Scroll the sidebar body so SORT BY / PANELS stay reachable on short
+ * terminals instead of being clipped off the bottom. */
 #side_scroll {
     height: 1fr;
     width: 100%;
@@ -363,7 +363,7 @@ Screen.-panel-backgrounds-on TrendGraph {
     height: 1fr;
 }
 
-/* BUG FIX #1: the NODE/POD table is the DOMINANT panel. It takes ~65% of the
+/* The NODE/POD table is the dominant panel. It takes ~65% of the
  * content column (2fr) while the Events+PVC bottom row shares the remaining
  * ~35% (1fr). Using fr units keeps this proportion stable at any terminal
  * height instead of the previous fixed 14-row bottom strip swamping a short

@@ -653,7 +653,7 @@ class SummaryBar(Static):
         return t
 
 
-# ── alerts panel helpers (M2) + health row (M3) ───────────────────────────────
+# ── alerts panel helpers + health row ─────────────────────────────────────────
 
 
 _SEVERITY_STYLE = {

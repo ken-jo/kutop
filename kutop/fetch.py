@@ -96,7 +96,7 @@ class Fetcher:
     ) -> None:
         self.namespaces = list(namespaces) or []
         self.context = context
-        # Optional, profile-linked HTTP probes (M2/M3). Empty -> skipped entirely
+        # Optional, profile-linked HTTP probes. Empty -> skipped entirely
         # (never touches the network), keeping --self-test kubectl/network-free.
         self.alertmanager_url = alertmanager_url or ""
         self.health_probes = list(health_probes or [])
@@ -434,7 +434,7 @@ class Fetcher:
             snap.events = list(self._last_events)
             snap.pvcs = list(self._last_pvcs)
 
-        # Kubelet stats summary (BUG FIX #2) drives both the cluster-wide PVC
+        # Kubelet stats summary drives both the cluster-wide PVC
         # panel usage AND per-pod storage attribution. Fetch each node's summary
         # ONCE (reused for both), then derive PVC usage + per-pod storage from
         # the cached payloads. Best effort: a node summary failure is isolated

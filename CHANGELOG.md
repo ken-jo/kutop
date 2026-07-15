@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.5.4 - 2026-07-15
+
+### Fixed
+
+- Sidebar namespace changes now remove stale pod rows immediately, abandon
+  stale generations before heavy enrichment, and render fresh core pod data
+  before slower events/PVC/probe work completes.
+- Proxy environment diagnostics now appear as an in-app notice instead of a
+  transient stderr line before the fullscreen TUI. The notice no longer claims
+  that every request is proxied when `NO_PROXY` may bypass the API host.
+- Config save failures now surface as an error toast instead of silently making
+  a setting appear persisted.
+
 ## 0.5.3 - 2026-06-16
 
 ### Changed

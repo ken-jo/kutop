@@ -45,7 +45,7 @@ def _http_get(url: str, timeout: float) -> Optional[str]:
         return None
 
 
-# ── AlertManager alerts (M2) ──────────────────────────────────────────────────
+# ── AlertManager alerts ───────────────────────────────────────────────────────
 
 # Label keys, most-specific first, used to name the target an alert is about.
 _RESOURCE_LABELS = (
@@ -112,7 +112,7 @@ def fetch_alerts(url: str, timeout: float = _DEFAULT_TIMEOUT,
     return out
 
 
-# ── workload health probes (M3) ───────────────────────────────────────────────
+# ── workload health probes ────────────────────────────────────────────────────
 
 
 def scrape_probe(name: str, url: str, fields: dict,
