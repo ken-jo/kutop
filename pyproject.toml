@@ -70,7 +70,13 @@ Issues = "https://github.com/ken-jo/kutop/issues"
 
 [project.optional-dependencies]
 profiles = []
-test = ["pytest>=9,<10", "ruff==0.16.5"]
+# pytest 9 requires Python >= 3.10, but runtime code targets 3.9 (see the CI
+# matrix), so the 3.9 leg keeps the last series that supports it.
+test = [
+    "pytest>=9,<10; python_version >= '3.10'",
+    "pytest>=8.4,<9; python_version < '3.10'",
+    "ruff==0.16.5",
+]
 
 [project.scripts]
 kutop = "kutop.cli:main"

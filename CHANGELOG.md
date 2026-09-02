@@ -133,7 +133,8 @@
   events.k8s.io `series.count`/`lastObservedTime` are honoured; the kube
   context name is resolved on the discovery worker instead of blocking the
   first paint.
-- Dependencies: Textual 8.2.8, pytest 9, ruff pinned to 0.16.5 with an explicit
+- Dependencies: Textual 8.2.8, pytest 9 (8.4 on the Python 3.9 leg, where
+  pytest 9 does not install), ruff pinned to 0.16.5 with an explicit
   rule set (`E`, `F`, `W`, `B`) so `ruff check` is deterministic across releases.
   The unreachable `kubetop/__main__.py` was removed (`python -m kubetop` already
   runs kutop's entry point).
