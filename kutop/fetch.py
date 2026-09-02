@@ -24,6 +24,8 @@ Key robustness contracts:
 from __future__ import annotations
 
 import json
+import logging
+import re
 import subprocess
 import threading
 import time
@@ -32,6 +34,36 @@ from typing import NamedTuple, Optional
 
 from . import model
 from .model import Node, Pod, PVC, Event, Summary, Snapshot
+
+_log = logging.getLogger("kutop.fetch")
+
+# klog line prefix as kubectl's client-go emits it on stderr:
+#   E0902 15:28:25.409307 13950 memcache.go:265] "Unhandled Error" err="..."
+_KLOG_RE = re.compile(r'^[IWEF]\d{4} \d\d:\d\d:\d\d\.\d+\s+\d+ \S+:\d+\] ')
+_KLOG_ERR_RE = re.compile(r'err="((?:[^"\\]|\\.)*)"')
+
+
+def clean_kubectl_error(text: str) -> str:
+    """Reduce kubectl stderr to the line a human needs.
+
+    client-go prefixes retries with klog noise (timestamp, pid, source file)
+    that buries the real reason — the toast used to show ``E0902 15:28:25.409307
+    13950 memcache.go:265] …`` and cut off before the message. Keep the
+    non-klog lines (kubectl's own summary, e.g. ``The connection to the server
+    localhost:8080 was refused …``); when only klog lines exist, surface the
+    ``err="…"`` payload of the last one. Never returns an empty string for a
+    non-empty input.
+    """
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return (text or "").strip()
+    plain = [ln for ln in lines if not _KLOG_RE.match(ln)]
+    if plain:
+        return " ".join(plain)
+    m = _KLOG_ERR_RE.search(lines[-1])
+    if m:
+        return m.group(1).replace('\\"', '"')
+    return _KLOG_RE.sub("", lines[-1])
 
 # Kept short so a quit mid-refresh can't hang the UI for long: the worker thread
 # blocks in a kubectl call, and asyncio's shutdown joins that thread on exit.
@@ -342,7 +374,8 @@ class Fetcher:
                 raise RuntimeError("cancelled")
             if proc.returncode != 0:
                 raise RuntimeError(
-                    (err or out or f"kubectl {' '.join(args)} failed").strip()
+                    clean_kubectl_error(err or out)
+                    or f"kubectl {' '.join(args)} failed"
                 )
             return out
 
@@ -378,8 +411,10 @@ class Fetcher:
         """
         sink = getattr(self._tl, "sink", None)
         if sink is not None:
+            _log.debug("optional kubectl call failed (ignored): %s", msg)
             sink.append(msg)
             return
+        _log.warning("kubectl call failed: %s", msg)
         with self._errors_lock:
             self._fetch_errors.append(msg)
 
@@ -500,6 +535,8 @@ class Fetcher:
     def fetch_core(self) -> Snapshot:
         """Acquire the first-paint snapshot: nodes, pods, and summary only."""
         snap = Snapshot()
+        _log.debug("fetch_core: context=%s namespaces=%s",
+                   self.context or "(current)", ",".join(self.namespaces))
         with self._errors_lock:
             self._fetch_errors = []  # fresh refresh: previous cycle's errors are stale
         nodes_by_name: dict[str, Node] = {}

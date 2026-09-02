@@ -9,6 +9,7 @@ headlessly with a synthetic snapshot (no kubectl) for cluster-independent CI.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import shutil
 import sys
@@ -107,6 +108,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="start with pod delete (x) and rollout restart (X) enabled "
                          "(seeds the in-app 'Allow delete/restart' sidebar toggle; "
                          "still confirm-gated)")
+    ap.add_argument("--log-file", metavar="PATH", default=None,
+                    help="append a debug log (kubectl failures, refresh cycles, "
+                         "context/namespace/profile switches) to PATH; also "
+                         "KUTOP_LOG_FILE=PATH")
     ap.add_argument("--no-metrics-bootstrap", action="store_true",
                     help="skip the interactive Metrics Server preflight/install prompt")
     ap.add_argument("--log-tail", type=_log_tail_arg, default=150, metavar="N",
@@ -312,9 +317,35 @@ def _recall_startup_profile(args, profile, cfg, base_over, cli_over):
     return recalled, recalled_cfg
 
 
+def _setup_log_file(path: Optional[str]) -> Optional[str]:
+    """Attach a DEBUG file handler to the ``kutop`` logger; returns the path.
+
+    Opt-in only (``--log-file`` / ``KUTOP_LOG_FILE``): the TUI owns the
+    terminal, so this is the one place a user can see WHY a refresh failed or
+    when a scope switch happened. Never raises — an unwritable path is reported
+    on stderr and the app runs without a log.
+    """
+    target = (path or os.environ.get("KUTOP_LOG_FILE") or "").strip()
+    if not target:
+        return None
+    try:
+        handler = logging.FileHandler(os.path.expanduser(target), encoding="utf-8")
+    except OSError as exc:
+        sys.stderr.write(f"kutop: cannot open log file {target!r}: {exc}\n")
+        return None
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s %(threadName)s: %(message)s"))
+    logger = logging.getLogger("kutop")
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    logger.info("kutop %s starting; argv=%s", __version__, sys.argv[1:])
+    return target
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    _setup_log_file(args.log_file)
 
     # An empty --snapshot path would render to '' and fail deep inside Textual;
     # reject it where the user can still see a parser error.

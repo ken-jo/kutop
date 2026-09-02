@@ -536,7 +536,12 @@ class SidebarPanel(Vertical):
             app.set_remember_profile_per_context(event.value)  # type: ignore[attr-defined]
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        if self._syncing or not self._ready_for_input:
+        # NOT gated on _syncing: every programmatic Select write goes through
+        # prevent(Select.Changed), so a Changed that reaches here is the USER's.
+        # Gating it used to drop a real pick whenever a sidebar sync (e.g. the
+        # focus change from the closing dropdown) landed between the pick and
+        # its dispatch — the context switch then only "took" on the second try.
+        if not self._ready_for_input:
             return
         # Idempotency guards (same rationale as side_context below): a Changed
         # echo that slips past prevent()/_syncing carries the value we just

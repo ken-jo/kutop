@@ -99,7 +99,10 @@ presentation (ordering, timezone, thresholds).
   kubelet reports its own pods' volumes only). `_parse_pod` aggregates regular + init +
   ephemeral container statuses via `_scan_container_statuses` (init failures surface as
   `Init:<reason>` while the pod is not Running; `status.reason` such as Evicted is used when no
-  container reason exists). Heavy-cycle caches carry a `_cache_scope` tag and a light cycle
+  container reason exists). `_run` reduces kubectl stderr through `clean_kubectl_error` (klog
+  prefixes stripped, kubectl's own summary line kept) before it becomes a `Snapshot.errors`
+  entry. Failures are also logged to the `kutop.fetch` logger (opt-in file via `--log-file` /
+  `KUTOP_LOG_FILE`, wired in `cli._setup_log_file`). Heavy-cycle caches carry a `_cache_scope` tag and a light cycle
   re-attaches them only when the tag matches the live scope. `kubectl top pods --containers`
   is retried without the flag only when the server rejects it (`_top_pods`). All subprocess
   output is decoded UTF-8 with `errors="replace"`.
@@ -132,7 +135,12 @@ presentation (ordering, timezone, thresholds).
   ReplicaSet owner to its Deployment only when the RS name suffix is pod-template-hash-like
   (`model.pod_template_hash_like`); other ReplicaSets are reported un-rollable. While the
   cluster is unreachable before the first snapshot, the main table shows persistent guidance
-  rows (error + `kubectl get nodes` hint + retry cadence) instead of a bare loading row.
+  rows (error + `kubectl get nodes` hint + retry cadence) instead of a bare loading row; no
+  toast fires before the first frame (the rows carry the detail), and a `localhost:8080`
+  failure with no context resolved renders as `no kube context selected` guidance
+  (`_looks_like_no_context`). Sidebar `Select` picks are never gated on `_syncing` —
+  programmatic writes are suppressed with `prevent()`, so a `Changed` that arrives is the
+  user's.
   Refresh errors are surfaced via `_notify_refresh_error` (deduped per severity+text);
   `_refresh_error_detail` aggregates `Snapshot.errors` into one toast line: up to 3 sources
   shown, each capped at 60 chars (`…`), with `+N more` beyond. `OptionsModal`

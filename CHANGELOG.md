@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **Sidebar CONTEXT switch now takes effect on the first pick.** A sidebar sync
+  triggered by the closing dropdown's focus change could land between the pick
+  and its dispatch and drop it, so the switch only worked when a different
+  context was chosen and then the intended one again. User `Select` picks are
+  no longer gated on the internal sync flag (programmatic writes are already
+  suppressed with `prevent()`).
+- **Launching with no kubectl current-context no longer looks like a crash.**
+  kubectl's klog noise (`E0902 15:28:25.409307 13950 memcache.go:265] …`) is
+  stripped from refresh errors so the real reason survives the toast, the
+  start-up guidance rows say `no kube context selected` with the fix (`b` →
+  CONTEXT, or `kubectl config use-context`), and failures before the first
+  frame go to those rows only instead of stacking `refresh failed` toasts.
 - **Crash and data-loss fixes in the TUI.** The event detail modal no longer
   crashes the app on messages containing bracketed paths (`[/data/pvc-1]`);
   the Logs/Describe/YAML headers, the health-probe option list, and the
@@ -47,6 +59,13 @@
 - The saved config file is created `0600` (probe URLs can embed tokens) and an
   existing file's mode is preserved; `tools/snapshot.py` no longer writes to a
   fixed world-readable `/tmp` name.
+
+### Added
+
+- `--log-file PATH` (or `KUTOP_LOG_FILE=PATH`) appends a debug log — every
+  failed kubectl call with its cleaned error, each refresh cycle's scope and
+  outcome, and context/namespace/profile switches — so a misbehaving live
+  session can be diagnosed after the fact.
 
 ### Changed
 

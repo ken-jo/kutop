@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import os
 import re
 import subprocess
@@ -92,6 +93,10 @@ _HIDDEN_THEMES = {"ansi-dark", "ansi-light"}
 # Toast detail used when the pod list failed but the previous one is kept on
 # screen — the table is deliberately NOT empty, so say why.
 _PODS_CARRIED_DETAIL = "pods list failed — showing previous pods"
+_log = logging.getLogger("kutop.app")
+# kubectl's built-in default server when kubeconfig has NO current-context:
+# every call then dials localhost:8080 and fails with "connection refused".
+_NO_CONTEXT_MARKER = "localhost:8080"
 
 
 _BINDING_SPECS = [
@@ -1051,11 +1056,17 @@ class TopApp(App):
             return  # fetched under an old namespace/context scope: drop it
         if snap.error and not snap.nodes and not snap.pods:
             # full failure: keep previous frame, surface error
-            self._notify_refresh_error(snap.error, full=True, errors=snap.errors)
+            _log.warning("refresh failed: %s", "; ".join(snap.errors or [snap.error]))
+            if self._loaded:
+                self._notify_refresh_error(snap.error, full=True, errors=snap.errors)
             # the frame on screen is now older than one cycle: say so on the
             # panel border, and keep the age ticking on every failed retry
             self._mark_pods_stale()
             if not self._loaded:
+                # Before the first frame the guidance rows carry the SAME
+                # detail persistently; a toast per retry (whose text changes as
+                # the core and heavy cycles add sources) just stacks up and
+                # makes a plain "no context selected yet" look like a crash.
                 # no previous frame exists yet: a 4s toast alone would leave
                 # the bare Loading row sitting there forever. The guidance row
                 # carries the SAME aggregated detail as the toast so a
@@ -1087,6 +1098,9 @@ class TopApp(App):
         else:
             self._last_refresh_error = ""
         first_load = not self._loaded
+        _log.debug("snapshot applied: nodes=%d pods=%d events=%d pvcs=%d errors=%s",
+                   len(snap.nodes), len(snap.pods), len(snap.events), len(snap.pvcs),
+                   "; ".join(snap.errors) or "-")
         self.snapshot = snap
         self._loaded = True
         # Only the live fetch path passes a generation token; synthetic frames
@@ -1256,13 +1270,31 @@ class TopApp(App):
         short = " ".join((error or "unknown error").split())
         if len(short) > 140:
             short = short[:139] + "…"
+        pad = ["-"] * (len(self.cfg.visible_columns()) - 1)
+        mt.clear()
+        if self._looks_like_no_context(error):
+            # Not an outage: kubeconfig simply has no current-context, so
+            # kubectl dialled its localhost:8080 default. Say that, and where
+            # to fix it, instead of "cluster unreachable".
+            mt.add_row(
+                Text("no kube context selected — kubectl has no current-context",
+                     style="bold yellow"),
+                *pad, key="startup_error",
+            )
+            mt.add_row(
+                Text(f"press {_binding_key('toggle_sidebar')} and pick one under "
+                     "CONTEXT, or run: kubectl config use-context <name>",
+                     style="bold yellow"),
+                *pad, key="startup_hint",
+            )
+            mt.add_row(Text(f"retrying every {self.interval:g}s...", style="dim"),
+                       *pad, key="startup_retry")
+            return
         # Name the kube context on the first row so a beginner can tell "right
         # cluster, unreachable" from "wrong context" (resolved exactly as the
         # sidebar/confirm modals display it; '' -> 'current' like _display_context
         # callers).
         ctx = self._display_context() or "current"
-        pad = ["-"] * (len(self.cfg.visible_columns()) - 1)
-        mt.clear()
         mt.add_row(
             Text(f"cluster unreachable (context: {ctx}): {short}", style="bold red"),
             *pad, key="startup_error",
@@ -1271,6 +1303,12 @@ class TopApp(App):
                    *pad, key="startup_hint")
         mt.add_row(Text(f"retrying every {self.interval:g}s...", style="dim"),
                    *pad, key="startup_retry")
+
+    def _looks_like_no_context(self, error: str) -> bool:
+        """True when the failure is kubectl dialling its localhost:8080 default —
+        i.e. no context is selected — rather than a real cluster outage."""
+        return (not self.context and not self._resolved_context
+                and _NO_CONTEXT_MARKER in (error or ""))
 
     def _repopulate_unloaded_table(self, mt: DataTable) -> None:
         """A column rebuild clears every row; before the first snapshot the
@@ -2388,6 +2426,7 @@ class TopApp(App):
             return
         if ns_list == list(self.namespaces):
             return
+        _log.info("namespace switch: %s -> %s", ",".join(self.namespaces), ",".join(ns_list))
         self.namespaces = ns_list
         self._bump_fetch_gen()  # drop any in-flight old-scope fetch result
         self.fetcher.namespaces = ns_list
@@ -2535,6 +2574,7 @@ class TopApp(App):
 
         # Reassign BEFORE adopting so the 'priority' sort uses the new weights on
         # the very first re-render.
+        _log.info("profile switch: %r -> %r", self.cfg.profile_name, new_profile.name)
         self.profile = new_profile
         cfg = copy.deepcopy(self.cfg)
         cfg.profile_name = new_profile.name
@@ -2604,6 +2644,7 @@ class TopApp(App):
         name = (name or "").strip()
         if name == (self.context or ""):
             return
+        _log.info("context switch: %r -> %r", self.context or "", name)
         cfg = copy.deepcopy(self.cfg)
         cfg.context = name
         self._adopt_config(cfg, persist=True)
