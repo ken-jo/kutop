@@ -67,6 +67,22 @@
   outcome, and context/namespace/profile switches — so a misbehaving live
   session can be diagnosed after the fact.
 
+### Fixed
+
+- **The sidebar NAMESPACES list now tracks the selected context.** A namespace
+  listing carries the scope token it started under, so a slow listing from the
+  previous cluster can no longer land as the new one's list (switching contexts
+  back and forth used to race exactly that way). A context change — from the
+  sidebar or the Options modal — re-lists immediately and drops the previous
+  cluster's namespaces instead of leaving them tickable.
+- **A failed namespace listing is no longer silent.** It used to leave the
+  sidebar showing only the watched namespaces, which reads as "this cluster has
+  one namespace" rather than "the listing failed". The NAMESPACES header now
+  says `loading…` while listing and `unavailable` when it failed, the reason is
+  toasted once, and the next good refresh retries the listing on its own — so a
+  cluster that was slow at launch fills the list in without the user switching
+  contexts to force it.
+
 ### Removed
 
 - The startup notice about `HTTPS_PROXY` / `HTTP_PROXY`. Whether to route

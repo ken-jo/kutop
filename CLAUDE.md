@@ -160,7 +160,12 @@ presentation (ordering, timezone, thresholds).
   passes `reload_overrides` (base/CLI layers + `profile_authoritative`) so `R` re-runs the
   identical layering; `set_profile` takes timezone/alertmanager/probes from the profile only
   when it supplies them, else from the profile-free user layer. The kube context name is
-  resolved on the discovery worker (never on the UI thread at mount). Event rows use
+  resolved on the discovery worker (never on the UI thread at mount). Namespace
+  discovery has its own scope token (`_discover_gen`, bumped by
+  `_start_ns_discovery`) so a listing from a superseded context is dropped; the
+  sidebar NAMESPACES header shows `loading…`/`unavailable` via
+  `SidebarPanel.set_ns_status`, and a failed listing is retried on the next
+  good frame. Event rows use
   content-derived keys resolved through `_event_rows`. Modal headers, the event detail modal,
   the confirm modal body and the health-probe option list render cluster/user text as
   `rich.text.Text`, never markup. Textual PRIVATE

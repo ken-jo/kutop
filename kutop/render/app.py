@@ -391,6 +391,16 @@ class TopApp(App):
         self._filter_cache: "tuple[str, object, bool]" = ("", None, False)
         # Namespaces discovered live on the cluster (for the Options multi-select).
         self._discovered_ns: list[str] = []
+        # Discovery lifecycle. Like the fetch path's _fetch_gen, _discover_gen is
+        # a scope token bumped on every context switch so a slow listing from the
+        # PREVIOUS cluster can never land as this one's namespace list (switching
+        # back and forth used to race exactly that way). _ns_discovering drives
+        # the sidebar's "loading…" annotation; _ns_discovery_failed remembers a
+        # failed listing so a later good refresh can retry it.
+        self._discover_gen = 0
+        self._ns_discovering = False
+        self._ns_discovery_failed = False
+        self._last_discovery_error = ""
         self._discovered_contexts: list[str] = []
         # Selectable profile names for the sidebar dropdown (discovered once;
         # profiles don't change on disk mid-session).
@@ -704,10 +714,7 @@ class TopApp(App):
 
         # Discover cluster namespaces live and repopulate the
         # sidebar list. Guarded off for --self-test so no kubectl is shelled out.
-        if self._discover_namespaces:
-            self.run_worker(
-                self._discover_ns_worker, thread=True, exclusive=False, group="ns"
-            )
+        self._start_ns_discovery()
 
         if self._interval_deprecated:
             self._interval_deprecated = False
@@ -788,12 +795,42 @@ class TopApp(App):
         return base
 
     # ── namespace discovery worker ─────────────────────────────────────────────
-    def _discover_ns_worker(self) -> None:
+    def _start_ns_discovery(self, *, reset_discovered: bool = False) -> None:
+        """Kick a namespace/context discovery pass for the CURRENT scope.
+
+        Bumps :attr:`_discover_gen` so any in-flight pass from an older scope is
+        discarded when it returns, marks the sidebar as loading, and (on a scope
+        switch) drops the previous cluster's discovered namespaces so they can't
+        linger as tickable options that do not exist in the new cluster.
+        """
+        if not self._discover_namespaces:
+            return
+        self._discover_gen += 1
+        gen = self._discover_gen
+        if reset_discovered:
+            self._discovered_ns = []
+            self._sync_sidebar_ns()
+        self._ns_discovering = True
+        self._set_ns_status("loading…")
+        self.run_worker(
+            lambda: self._discover_ns_worker(gen),
+            thread=True, exclusive=False, group="ns",
+        )
+
+    def _set_ns_status(self, status: str) -> None:
+        """Mirror the discovery state onto the sidebar NAMESPACES header."""
+        try:
+            self.query_one("#sidebar", SidebarPanel).set_ns_status(status)
+        except Exception:
+            pass
+
+    def _discover_ns_worker(self, gen: Optional[int] = None) -> None:
         """Thread worker: resolve the kube context name, list cluster
         namespaces, then repopulate the sidebar.
 
-        Falls back silently to the profile namespaces on any failure (the list
-        already shows them) so discovery never crashes the app. The context
+        Never crashes the app: a failed listing is reported back (rather than
+        silently leaving the old list in place, which made an unreachable
+        cluster look like a cluster with a single namespace). The context
         resolution lives here — and not in ``on_mount`` — because it shells out
         to kubectl and must never block the UI thread.
         """
@@ -806,10 +843,12 @@ class TopApp(App):
                 self.call_from_thread(self._set_resolved_context, ctx_name)
             except Exception:
                 pass
+        error = ""
         try:
             discovered = self.fetcher.list_namespaces()
-        except Exception:
+        except Exception as exc:
             discovered = []
+            error = " ".join(str(exc).split()) or exc.__class__.__name__
         if discovered:
             # Tell the fetcher how big the cluster is: the cluster-wide `-A`
             # consolidation is only a win when the watched scope is a large
@@ -824,7 +863,10 @@ class TopApp(App):
             pass
         # always repopulate so the CONTEXT dropdown refreshes even if the ns list
         # came back empty
-        self.call_from_thread(self._populate_ns_list, discovered)
+        try:
+            self.call_from_thread(self._populate_ns_list, discovered, gen, error)
+        except Exception:
+            pass
 
     def _set_resolved_context(self, name: str) -> None:
         """UI-thread callback: adopt the kubectl-resolved context name and let
@@ -832,14 +874,24 @@ class TopApp(App):
         self._resolved_context = name
         self._sync_sidebar_state()
 
-    def _populate_ns_list(self, discovered: list[str]) -> None:
+    def _populate_ns_list(self, discovered: list[str],
+                          gen: Optional[int] = None, error: str = "") -> None:
         """Rebuild the sidebar NAMESPACE checkboxes + CONTEXT dropdown from live
         discovery.
 
         Keeps the currently-ticked namespaces ticked (and ensures every selected
         namespace stays present even if discovery omits it), and refills the
-        context Select from the now-discovered kubeconfig contexts.
+        context Select from the now-discovered kubeconfig contexts. A result
+        from a superseded scope (``gen``) is dropped, and a FAILED listing is
+        announced instead of silently leaving the previous list on screen.
         """
+        if gen is not None and gen != self._discover_gen:
+            return  # listed under an older context: not this cluster's answer
+        self._ns_discovering = False
+        self._ns_discovery_failed = not discovered
+        self._set_ns_status("unavailable" if not discovered else "")
+        if not discovered and error:
+            self._notify_discovery_failure(error)
         try:
             sidebar = self.query_one("#sidebar", SidebarPanel)
         except Exception:
@@ -853,6 +905,17 @@ class TopApp(App):
         sidebar.rebuild_contexts(
             self._sidebar_context_options(), self._display_context()
         )
+
+    def _notify_discovery_failure(self, error: str) -> None:
+        """Say once why the namespace list is empty — the sidebar would
+        otherwise show only the watched namespaces, which reads as 'this
+        cluster has one namespace' rather than 'the listing failed'."""
+        detail = error if len(error) <= 90 else error[:89] + "…"
+        if detail == self._last_discovery_error:
+            return
+        self._last_discovery_error = detail
+        self.notify(f"namespace list unavailable: {detail}",
+                    severity="warning", timeout=6)
 
     # ── background fetch worker ────────────────────────────────────────────────
     def refresh_snapshot(self) -> None:
@@ -1124,6 +1187,12 @@ class TopApp(App):
             self._last_good_refresh = monotonic()
             self._render()
             self._clear_pods_stale()
+            # The cluster is answering again: a namespace listing that failed
+            # earlier (slow API at launch, VPN not up yet) is worth one more
+            # try, so the sidebar fills in without the user switching contexts
+            # back and forth to force it.
+            if self._ns_discovery_failed and not self._ns_discovering:
+                self._start_ns_discovery()
 
     @staticmethod
     def _recount_pod_summary(snap: Snapshot) -> None:
@@ -1928,6 +1997,12 @@ class TopApp(App):
                 self._sync_sidebar_ns()
             self._request_refresh()
             self._adopt_triggered_refresh = True
+            if context_changed:
+                # A new cluster has its own namespaces: re-list them at once
+                # (both the sidebar CONTEXT picker and the Options modal reach
+                # this branch) and drop the previous cluster's list, which is
+                # not tickable here any more.
+                self._start_ns_discovery(reset_discovered=True)
         elif probes_changed:
             # The scope is unchanged, so nothing above refetches — but alerts
             # and health come from the HEAVY cycle only. Without this an edited
@@ -1997,8 +2072,7 @@ class TopApp(App):
         # When the cache is empty, kick the discovery worker so a reopened
         # modal has the list.
         if not self._discovered_contexts and self._discover_namespaces:
-            self.run_worker(self._discover_ns_worker, thread=True,
-                            exclusive=False, group="ns")
+            self._start_ns_discovery()
         # hand the modal a copy so a cancelled edit can't half-mutate live state;
         # apply_config() adopts the working copy on every change anyway. The
         # discovered namespace list powers the multi-select.
@@ -2647,10 +2721,7 @@ class TopApp(App):
         _log.info("context switch: %r -> %r", self.context or "", name)
         cfg = copy.deepcopy(self.cfg)
         cfg.context = name
-        self._adopt_config(cfg, persist=True)
-        if self._discover_namespaces:
-            self.run_worker(self._discover_ns_worker, thread=True,
-                            exclusive=False, group="ns")
+        self._adopt_config(cfg, persist=True)   # re-discovers the new cluster
         self.notify(f"context: {name or 'current'}")
 
     def _remember_current_profile(self) -> None:

@@ -118,7 +118,8 @@ class SidebarPanel(Vertical):
                 id="side_context",
                 allow_blank=False,
             )
-            yield Label("NAMESPACES", classes="side_section side_section_spaced")
+            yield Label("NAMESPACES", id="side_ns_title",
+                        classes="side_section side_section_spaced")
             with VerticalScroll(id="side_ns_box"):
                 yield from self._ns_checkboxes()
             yield Label("SORT", classes="side_section side_section_spaced")
@@ -234,6 +235,24 @@ class SidebarPanel(Vertical):
         for ns in self._ns_options:
             yield Checkbox(ns, value=ns in self._selected, name=ns,
                            classes=self.NS_CLASS, compact=True)
+
+    def set_ns_status(self, status: str = "") -> None:
+        """Annotate the NAMESPACES header with the live discovery state.
+
+        ``""`` restores the plain header. Anything else is appended after a
+        separator ("NAMESPACES · loading…"), so a cluster that is slow to list
+        its namespaces — or cannot be listed at all — never looks like a
+        cluster that simply has one namespace.
+        """
+        try:
+            label = self.query_one("#side_ns_title", Label)
+        except Exception:
+            return
+        text = Text("NAMESPACES")
+        if status:
+            text.append(" · ", style="dim")
+            text.append(status, style="dim")
+        label.update(text)
 
     def rebuild_namespaces(self, ns_options: list[str], selected: list[str]) -> None:
         """Repopulate the namespace checkbox list (live discovery / config sync).
