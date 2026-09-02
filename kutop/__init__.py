@@ -1,3 +1,3 @@
 """kutop - a btop-like Kubernetes TUI dashboard for cluster triage."""
 
-__version__ = "0.5.4"
+__version__ = "0.6.0"
