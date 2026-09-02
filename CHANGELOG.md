@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-09-02
+
 ### Fixed
 
 - **Sidebar CONTEXT switch now takes effect on the first pick.** A sidebar sync
