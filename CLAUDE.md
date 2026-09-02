@@ -37,7 +37,9 @@ layer is deliberately UI-free and workload-free; the renderer applies Profile-dr
 presentation (ordering, timezone, thresholds).
 
 - **`model.py`** — domain dataclasses (`Pod`, `Node`, `PVC`, `Event`, `Alert`, `HealthResult`,
-  `Summary`, `Snapshot`) and unit helpers (`to_mcpu`, `to_mi`, `fmt_*`, `age_seconds`). The
+  `Summary`, `Snapshot`) and unit helpers (`to_mcpu`, `to_mi`, `fmt_*`, `parse_timestamp`,
+  `age_seconds`). `parse_timestamp` normalises RFC3339 fractions (Go emits 1-9 digits; Python
+  < 3.11 accepts only 3 or 6) — every timestamp parse in the app must go through it. The
   single source of truth for shape. `to_mcpu`/`to_mi` clamp negative quantities to 0 (honoring
   the 'garbage yields 0' contract — Kubernetes never emits negatives). Carries **no** workload-specific
   knowledge (no namespace names, pod prefixes, or priorities).
@@ -54,6 +56,9 @@ presentation (ordering, timezone, thresholds).
   True)` lets the profile's namespaces/thresholds/probes win over the persisted file, and
   `save_config` does not persist those profile-owned fields — so a per-context profile (the
   `profiles_by_context` recall map) is not shadowed by, nor leaks into, the shared config file.
+  Scalars are read as `x.get(k) or default` (a YAML key with no value is `None`, never the
+  string "None"); `load_profile` coerces null/mis-typed sections and raises only `ValueError`;
+  `save_config` writes the temp file `0600` and preserves an existing target's mode.
   Which fields count as "profile-owned" is defined once in `_profile_owned_sections()`
   (thresholds always; timezone/namespaces/context/probes only when the profile supplies them) —
   `_profile_layer`, `_strip_profile_owned`, and `_config_for_persist` all derive from it.
@@ -84,7 +89,20 @@ presentation (ordering, timezone, thresholds).
   cluster-wide `-A` list (filtered client-side) instead of one call per namespace; a forbidden `-A`
   records the resource in `_all_ns_blocked` and falls back to the per-namespace fan-out (remembered
   for the session, cleared on scope switch). Pod usage is keyed by `(namespace, name)` so the same
-  map serves the scoped `top` and the `top -A` paths.
+  map serves the scoped `top` and the `top -A` paths. A `-A` list that **times out** falls back
+  the same way as a forbidden one for that cycle (`_note_all_ns_failure`: forbidden pins the
+  resource to scoped lists at once, `_ALL_NS_TIMEOUTS_TO_BLOCK=2` consecutive timeouts do), and
+  on a large cluster (`total_namespaces >= _ALL_NS_FRACTION_MIN_TOTAL=40`, set by the app's
+  discovery worker) `-A` additionally requires the watched set to be `_ALL_NS_MIN_FRACTION=15%`
+  of it. `_node_summaries`
+  is scoped to the nodes hosting a watched pod (`_nodes_to_summarize`; lossless because a
+  kubelet reports its own pods' volumes only). `_parse_pod` aggregates regular + init +
+  ephemeral container statuses via `_scan_container_statuses` (init failures surface as
+  `Init:<reason>` while the pod is not Running; `status.reason` such as Evicted is used when no
+  container reason exists). Heavy-cycle caches carry a `_cache_scope` tag and a light cycle
+  re-attaches them only when the tag matches the live scope. `kubectl top pods --containers`
+  is retried without the flag only when the server rejects it (`_top_pods`). All subprocess
+  output is decoded UTF-8 with `errors="replace"`.
 - **`render/`** — split along class seams. **`app.py`** (`TopApp`) owns keybindings
   (`_BINDING_SPECS` is the single source of truth for keys), sorting, filtering, grouping,
   Options-modal wiring, and the pod actions (logs `l`, describe `d`, YAML `y`, shell `t`, delete `x`,
@@ -125,7 +143,19 @@ presentation (ordering, timezone, thresholds).
   profile-owned fields are correctly stripped. Fetch lifecycle: `_fetch_gen` is a scope
   token bumped on every namespace/context/profile switch so an in-flight old-scope result is
   dropped; scope changes/manual refresh go through `_request_refresh()` (queued if a fetch is
-  in flight), timer ticks through `refresh_snapshot()` (skipped if in flight). Textual PRIVATE
+  in flight), timer ticks through `refresh_snapshot()` (skipped if in flight); `_force_heavy`
+  is read-and-cleared under `_cadence_lock`. When the pod list fails outright (`errors` carry a
+  `pods:`/`get pods` entry) but nodes succeed, the previous pods are carried over (summary
+  counters recounted via `_recount_pod_summary`) with a distinct toast; while pods are carried
+  or after a full failure the main panel title becomes `PODS · stale Ns` (`_last_good_refresh`
+  only advances on a genuinely good frame). The CLI
+  passes `reload_overrides` (base/CLI layers + `profile_authoritative`) so `R` re-runs the
+  identical layering; `set_profile` takes timezone/alertmanager/probes from the profile only
+  when it supplies them, else from the profile-free user layer. The kube context name is
+  resolved on the discovery worker (never on the UI thread at mount). Event rows use
+  content-derived keys resolved through `_event_rows`. Modal headers, the event detail modal,
+  the confirm modal body and the health-probe option list render cluster/user text as
+  `rich.text.Text`, never markup. Textual PRIVATE
   imports live only in `render/_compat.py` — never import `textual.widgets._*` elsewhere.
 - **`plugins/`** — optional, domain-specific features behind a tiny duck-typed seam
   (`KutopPlugin` Protocol: `panel_id`, `is_enabled(config)`, `fetch(fetcher, snapshot)`,
@@ -142,7 +172,15 @@ presentation (ordering, timezone, thresholds).
   the exact kubectl context it would mutate, and only an exact `y`/`yes` answer runs the
   cluster-mutating `kubectl apply`.
 - **`probes.py`** — fetches `/`-prefixed profile URLs via `kubectl get --raw` through the
-  API-server proxy (no port-forward), reusing kubeconfig auth.
+  API-server proxy (no port-forward), reusing kubeconfig auth. Direct URLs must be `http(s)`
+  (any other scheme yields no data) and bodies are capped at 4 MiB. Field regexes are
+  compiled through `regexsafe.safe_compile` (a rejected pattern skips just that field).
+- **`regexsafe.py`** — the single backtracking screen (`safe_compile`, `has_nested_quantifier`,
+  `looks_like_regex`) shared by the pod-name filter in `render/app.py` and probe field
+  regexes. Any new user/profile-supplied regex must go through it.
+- **`snapshot.py`** returns a `SnapshotResult` (an `int` exit code carrying `synthetic` and
+  `error`) and keeps a partially-failed live frame; only an exception or a frame with no
+  data at all falls back to the synthetic cluster, and the CLI says so when it does.
 - **`cli.py`** — argparse entrypoint (textual stays lazily imported; see invariants). Validates
   `--sort`/`--summary-style` via argparse choices against the public `SORTABLE_KEYS`/
   `SUMMARY_STYLES` tuples; accepts-but-ignores the deprecated positional interval (stderr note
@@ -161,8 +199,9 @@ presentation (ordering, timezone, thresholds).
   `--self-test` stay cheap and cluster-free.
 - **Network/kubectl only when asked.** Empty alertmanager/health-probe config means those paths
   never touch the network — this is what keeps `--self-test` kubectl- and network-free.
-- **Pinned deps:** `textual==8.2.8`, `rich==15.0.0`. Targets Python **3.9+** (CI matrix is 3.9
-  and 3.12) — avoid 3.10+-only syntax in runtime code. See `tests/conftest.py` for the 3.9
+- **Pinned deps:** `textual==8.2.8`, `rich==15.0.0`; dev extras pin `ruff==0.16.5` and the
+  lint rule set is explicit in `[tool.ruff.lint]` (`E`, `F`, `W`, `B`). Targets Python
+  **3.9+** (CI matrix is 3.9 and 3.12) — avoid 3.10+-only syntax in runtime code. See `tests/conftest.py` for the 3.9
   event-loop shim that keeps synchronous Textual widget tests portable.
 - **`storage_used_mi`/`used_mi` use `None` to mean "unknown"** (rendered `-`), distinct from a
   known `0`. Preserve that distinction.

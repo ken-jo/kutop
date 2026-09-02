@@ -763,6 +763,11 @@ class TrendGraph(Vertical):
         spark_width = max(10, width - 5)
         spark_values = self._fit_history(history, spark_width)
         text = Text()
+        # never wrap (same reason as SummaryBar): the widget is a fixed number
+        # of rows, so a wrapped "now" line at a narrow width (10..18 cells, where
+        # the 10-cell minimum bar can exceed the room left) pushed the last heat
+        # row out of view.
+        text.no_wrap = True
         self._append_now_line(text, cur, detail, width)
         text.append("\n")
         text.append("heat ", style="dim")
@@ -863,7 +868,10 @@ class ConfirmModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm_box"):
             yield Label(self._title, id="confirm_title")
-            yield Label(self._body, id="confirm_body")
+            # Text(), not markup: the body names the live target (context /
+            # namespace / pod / rollout), so a bracket in any of those must
+            # render literally instead of being parsed as a style tag.
+            yield Label(Text(self._body), id="confirm_body")
             with Horizontal(id="confirm_btns"):
                 yield Button(f"{self._confirm_label} (y)", variant="error", id="confirm_yes")
                 yield Button("Cancel (n)", variant="default", id="confirm_no")

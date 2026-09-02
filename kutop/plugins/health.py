@@ -98,25 +98,33 @@ class HealthPlugin:
     def fetch(self, fetcher: Any, snapshot: Any) -> None:
         """Scrape the configured probes onto ``snapshot.health`` (best effort).
 
-        Runs inside the core's existing off-UI-thread fetch worker. Never raises:
-        any failure leaves ``snapshot.health`` as the empty default. Uses the
-        fetcher's ``_probe_body`` getter so ``/``-prefixed probe URLs route
-        through the Kubernetes API-server proxy (kubeconfig auth, no port-forward).
+        Runs inside the core's existing off-UI-thread fetch worker. Never raises.
+        A malformed probe entry is reported IN the panel rather than silently
+        yielding an empty health list — a user who mistyped their profile would
+        otherwise see "no probes configured" and assume the feature is off.
+        Uses the fetcher's ``_probe_body`` getter so ``/``-prefixed probe URLs
+        route through the Kubernetes API-server proxy (kubeconfig auth, no
+        port-forward).
         """
         from ..config import HealthProbe
+        from ..model import HealthResult
 
-        # The fetcher exposes the live probes (set by the app from the unified
-        # Config); normalise each via the single shared coercion helper.
-        probes = [HealthProbe.from_any(p)
-                  for p in getattr(fetcher, "health_probes", None) or []]
-        if not probes:
+        raw = getattr(fetcher, "health_probes", None) or []
+        if not raw:
             return
         try:
+            # The fetcher exposes the live probes (set by the app from the
+            # unified Config); normalise each via the shared coercion helper —
+            # inside the guard, since a bad entry raises here, not in the scrape.
+            probes = [HealthProbe.from_any(p) for p in raw]
+            if not probes:
+                return
             from ..probes import scrape_probes
             getter = getattr(fetcher, "_probe_body", None)
             snapshot.health = scrape_probes(probes, getter=getter)
         except Exception:
-            snapshot.health = []
+            snapshot.health = [HealthResult(name="probes", ok=False,
+                                            error="invalid probe config")]
 
     def make_panel(self) -> Any:
         """Construct the health panel widget the app mounts."""

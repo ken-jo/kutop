@@ -40,11 +40,25 @@ class ResizableDataTable(DataTable):
         # content-x of the column's LEFT edge captured at drag start (so the new
         # width = mouse_content_x - left, independent of scroll during the drag).
         self._resize_left = 0
+        # True once a mouse MOVE actually changed the width during this drag; a
+        # plain click on the boundary must not rewrite (and persist) the width.
+        self._drag_moved = False
 
     # ── geometry helpers ────────────────────────────────────────────────────
     def _content_x(self, event_x: int) -> int:
-        """Convert a widget-relative mouse x to table CONTENT x (adds scroll_x)."""
-        return int(event_x) + int(self.scroll_x)
+        """Convert a widget-relative mouse x to table CONTENT x.
+
+        ``event.x`` is widget-relative and therefore includes the left border +
+        padding gutter, while ``_get_column_region`` reports content/virtual
+        coordinates — so the gutter has to come off before ``scroll_x`` goes on,
+        or every hit-test and every dragged width lands a gutter-width to the
+        right of the cursor. Mirrors ``DualThresholdSlider._content_event_x``.
+        """
+        try:
+            gutter_left = int(self.content_region.x - self.region.x)
+        except Exception:
+            gutter_left = 0
+        return int(event_x) - gutter_left + int(self.scroll_x)
 
     def _resize_boundary_x(self) -> Optional[int]:
         """Content-x of the resize column's RIGHT edge (None if unavailable)."""
@@ -75,6 +89,7 @@ class ResizableDataTable(DataTable):
         region = self._get_column_region(self.RESIZE_COLUMN_INDEX)
         self._resize_left = region.x
         self._resizing = True
+        self._drag_moved = False
         try:
             self.capture_mouse()
         except Exception:
@@ -91,6 +106,7 @@ class ResizableDataTable(DataTable):
         # width that Config.name_width represents.
         raw = self._content_x(event.x) - self._resize_left - 2 * self.cell_padding
         new_width = clamp_name_width(raw)
+        self._drag_moved = True
         self._set_name_width_live(new_width)
         event.stop()
         event.prevent_default()
@@ -103,9 +119,13 @@ class ResizableDataTable(DataTable):
             self.release_mouse()
         except Exception:
             pass
-        # commit the final width to the app config + persist (survives relaunch)
+        # Commit the final width to the app config + persist (survives relaunch)
+        # — but ONLY after a real drag. A bare click on the boundary produced no
+        # move, so committing there wrote the column's CURRENT (possibly
+        # auto-sized) width into the config and pinned it forever.
+        moved, self._drag_moved = self._drag_moved, False
         app = self.app
-        if app is not None and hasattr(app, "commit_name_width"):
+        if moved and app is not None and hasattr(app, "commit_name_width"):
             try:
                 col = self.ordered_columns[self.RESIZE_COLUMN_INDEX]
                 app.commit_name_width(int(col.width))  # type: ignore[attr-defined]

@@ -35,8 +35,9 @@ def test_crash_message_really_is_markup_hostile() -> None:
     parsing, otherwise 'no crash' proves nothing."""
     import pytest
     from textual.content import Content
+    from textual.markup import MarkupError
 
-    with pytest.raises(Exception):
+    with pytest.raises(MarkupError):
         Content.from_markup(f"refresh degraded: {_CRASH_MSG}")
     # ...while plain (markup-off) content of the same text is always fine
     Content(f"refresh degraded: {_CRASH_MSG}")

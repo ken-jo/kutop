@@ -13,6 +13,7 @@ from typing import Optional
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import Button, Checkbox, Label, Select, Static
 
 from ..config import REFRESH_INTERVAL_SECS, SORTABLE_KEYS
@@ -240,6 +241,15 @@ class SidebarPanel(Vertical):
         Mounts a fresh Checkbox per namespace inside ``#side_ns_box`` reflecting
         the given ticked ``selected`` set. Best effort: silently no-ops if the
         container is not mounted yet (first synchronous compose handles that).
+
+        The removal is AWAITED before the mount. ``Widget.remove()`` only
+        schedules the prune, so the old "remove then mount immediately" pair
+        left both generations in the DOM until the next frame — and any
+        :meth:`ns_checkbox_state` read in that window returned the OLD ticked
+        namespaces UNIONED with the new ones, which the app then adopted as the
+        watched scope. The swap runs as one ``call_next`` callback so the
+        intermediate state is never observable: a read before it lands sees the
+        old set, a read after sees the new one, never a mixture.
         """
         self._ns_options = list(ns_options)
         self._selected = set(selected)
@@ -247,9 +257,19 @@ class SidebarPanel(Vertical):
             box = self.query_one("#side_ns_box", VerticalScroll)
         except Exception:
             return
-        for existing in list(box.query(Checkbox)):
-            existing.remove()
-        box.mount(*self._ns_checkboxes())
+
+        async def _swap() -> None:
+            await box.remove_children(Checkbox)
+            await box.mount(*self._ns_checkboxes())
+
+        if self.is_running:
+            self.call_next(_swap)
+        else:
+            # no message pump to drain the swap (headless construction): fall
+            # back to the direct, best-effort rebuild
+            for existing in list(box.query(Checkbox)):
+                existing.remove()
+            box.mount(*self._ns_checkboxes())
 
     def rebuild_contexts(self, options: list[str], current: str) -> None:
         """Repopulate the CONTEXT Select from discovered kubeconfig contexts.
@@ -379,14 +399,12 @@ class SidebarPanel(Vertical):
             self._set_checkbox("chk_group", self._group_by_node)
             self._set_checkbox("chk_allow_delete", self._allow_delete)
             self._set_checkbox("chk_remember_profile", self._remember_profile)
-            try:
-                self.query_one("#side_sort", Select).value = self._sort_key
-            except Exception:
-                pass
-            try:
-                self.query_one("#side_profile", Select).value = self._profile_name
-            except Exception:
-                pass
+            # Same treatment as _apply_context_to_select / _set_checkbox: a
+            # programmatic write posts a QUEUED Select.Changed that is dispatched
+            # after the synchronous _syncing reset, so prevent() (not the flag)
+            # is what actually keeps set_sort_key/set_profile from re-firing.
+            self._set_select("side_sort", self._sort_key)
+            self._set_select("side_profile", self._profile_name)
             # Funnel the context Select through the SAME helper rebuild_contexts
             # uses, so the widget options and the desired value can never diverge
             # (avoids a stale display or an InvalidSelectValueError when the live
@@ -401,10 +419,26 @@ class SidebarPanel(Vertical):
             # the programmatic Select writes above drains while still guarded.
             self._disarm_syncing_next_frame()
 
+    def _set_select(self, widget_id: str, value: str) -> None:
+        """Write a Select value programmatically, suppressing the Changed echo."""
+        try:
+            sel = self.query_one(f"#{widget_id}", Select)
+            if sel.value != value:
+                with sel.prevent(Select.Changed):
+                    sel.value = value
+        except Exception:
+            pass
+
     def _render_keys_panel(self) -> None:
-        box = self.query_one("#side_keys_box", Vertical)
-        title = self.query_one("#side_keys_title", Label)
-        body = self.query_one("#side_keys_body", Static)
+        # update_state runs on every 5s refresh and can race a teardown/rebuild
+        # where these ids are momentarily absent; a NoMatches here would abort
+        # the whole state sync (leaving the status text and controls stale).
+        try:
+            box = self.query_one("#side_keys_box", Vertical)
+            title = self.query_one("#side_keys_title", Label)
+            body = self.query_one("#side_keys_body", Static)
+        except NoMatches:
+            return
         box.set_class(not self._show_keys, "-hidden")
         title.set_class(not self._show_keys, "-hidden")
         body.set_class(not self._show_keys, "-hidden")
@@ -504,10 +538,17 @@ class SidebarPanel(Vertical):
     def on_select_changed(self, event: Select.Changed) -> None:
         if self._syncing or not self._ready_for_input:
             return
+        # Idempotency guards (same rationale as side_context below): a Changed
+        # echo that slips past prevent()/_syncing carries the value we just
+        # wrote, so acting on it would re-enter set_sort_key/set_profile —
+        # and set_profile reloads the config and re-syncs the sidebar, i.e. a
+        # feedback loop.
         if event.select.id == "side_sort" and event.value is not Select.BLANK:
-            self.app.set_sort_key(str(event.value))  # type: ignore[attr-defined]
+            if str(event.value) != self._sort_key:
+                self.app.set_sort_key(str(event.value))  # type: ignore[attr-defined]
         elif event.select.id == "side_profile" and event.value is not Select.BLANK:
-            self.app.set_profile(str(event.value))  # type: ignore[attr-defined]
+            if str(event.value) != self._profile_name:
+                self.app.set_profile(str(event.value))  # type: ignore[attr-defined]
         elif event.select.id == "side_context" and event.value is not Select.BLANK:
             # Idempotency guard: only act on a real change. set_options() resets the
             # Select to its first option and posts a Changed echo; if that echo ever

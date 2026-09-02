@@ -18,28 +18,44 @@ Robustness contracts (mirroring fetch.py):
 from __future__ import annotations
 
 import json
-import re
+import urllib.parse
 import urllib.request
 from typing import Optional
 
 from .model import Alert, HealthResult
+from .regexsafe import safe_compile
 
 _DEFAULT_TIMEOUT = 3.0   # short — never block the refresh cycle for long
+#: Schemes urllib would otherwise happily open (``file://``, ``ftp://``, …) can
+#: read local files or reach unintended services from a hand-edited profile, so
+#: only real HTTP endpoints are allowed.
+_ALLOWED_SCHEMES = ("http", "https")
+#: Cap on how much of a probe/alert response is read into memory. A hostile or
+#: broken endpoint streaming gigabytes must not exhaust the fetch worker.
+_MAX_BODY_BYTES = 4 * 1024 * 1024   # 4 MiB
 
 
 def _http_get(url: str, timeout: float) -> Optional[str]:
     """GET ``url`` and return the body text, or ``None`` on any failure.
 
     Never raises: connection refused, DNS failure, timeout, non-200 — all map
-    to ``None`` so an unreachable/unset endpoint simply yields no data.
+    to ``None`` so an unreachable/unset endpoint simply yields no data. Only
+    ``http``/``https`` URLs are opened, and at most ``_MAX_BODY_BYTES`` of the
+    response body is read.
     """
     try:
+        if urllib.parse.urlsplit(url).scheme.lower() not in _ALLOWED_SCHEMES:
+            return None
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             status = getattr(resp, "status", 200) or 200  # unknown -> treat as OK
             if status >= 400:
                 return None
-            raw = resp.read()
+            raw = resp.read(_MAX_BODY_BYTES + 1)
+        if len(raw) > _MAX_BODY_BYTES:
+            # an over-size body is reported as unreachable rather than handed
+            # over truncated (a cut JSON would silently read as "no alerts")
+            return None
         return raw.decode("utf-8", errors="ignore")
     except Exception:
         return None
@@ -124,6 +140,11 @@ def scrape_probe(name: str, url: str, fields: dict,
     ``HealthResult(ok=False, error=…)``; a reachable endpoint with no field
     matches yields ``ok=True`` and an empty ``fields`` dict.
 
+    Every field pattern is screened by :func:`~kutop.regexsafe.safe_compile`
+    first: an invalid or catastrophic-backtracking pattern from a hand-edited
+    profile would otherwise hang the fetch worker for good, so such a field is
+    skipped instead of matched.
+
     ``getter(url, timeout)`` overrides the fetch (see :func:`fetch_alerts`); a
     ``/``-prefixed url then goes through the API-server proxy via kubectl.
     """
@@ -134,10 +155,10 @@ def scrape_probe(name: str, url: str, fields: dict,
         return HealthResult(name=name, ok=False, error="unreachable")
     extracted: dict = {}
     for label, pattern in (fields or {}).items():
-        try:
-            m = re.search(str(pattern), body)
-        except re.error:
-            continue
+        rx = safe_compile(str(pattern))
+        if rx is None:
+            continue  # invalid / unbounded-backtracking pattern -> skip the field
+        m = rx.search(body)
         if m:
             # group 1 if the pattern captured, else the whole match
             extracted[label] = m.group(1) if m.groups() else m.group(0)

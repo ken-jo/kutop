@@ -31,9 +31,20 @@ def _parse_size(spec: str):
     return (int(w), int(h))
 
 
+def _default_out() -> str:
+    """A private, unpredictable default output path.
+
+    A fixed ``/tmp/kutop.svg`` is trivially pre-created or symlinked by another
+    user on a shared machine; mkstemp picks an unpredictable name and creates it
+    0600, so the rendered frame is not world-readable either.
+    """
+    fd, path = tempfile.mkstemp(suffix=".svg", prefix="kutop-")
+    os.close(fd)
+    return path
+
+
 def main() -> int:
-    out = (sys.argv[1] if len(sys.argv) > 1
-           else os.path.join(tempfile.gettempdir(), "kutop.svg"))
+    out = sys.argv[1] if len(sys.argv) > 1 else _default_out()
     detail = os.environ.get("KUTOP_SNAPSHOT_DETAIL", "")
     if detail and detail not in SNAPSHOT_DETAIL_LEVELS:
         detail = ""
@@ -72,8 +83,16 @@ def main() -> int:
     code = render_snapshot(out, size=size, namespaces=namespaces,
                            profile=profile, config=config, view=view)
     if code == 0:
-        print(f"[snapshot] wrote {out}")
-    return code
+        try:
+            os.chmod(out, 0o600)
+        except OSError:
+            pass
+        suffix = " (synthetic frame: no cluster data)" \
+            if getattr(code, "synthetic", False) else ""
+        print(f"[snapshot] wrote {out}{suffix}")
+        if not suffix and getattr(code, "error", ""):
+            print(f"[snapshot] note: partial data — {code.error}", file=sys.stderr)
+    return int(code)
 
 
 if __name__ == "__main__":

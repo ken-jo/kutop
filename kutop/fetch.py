@@ -13,7 +13,12 @@ Key robustness contracts:
   * PVC usage is sourced from the kubelet summary API per node
     (``/api/v1/nodes/<node>/proxy/stats/summary``) because metrics-server does
     NOT expose PVC usage. A single node's summary failure never aborts the
-    refresh — other nodes' results are preserved.
+    refresh — other nodes' results are preserved. Only nodes that actually host
+    one of the snapshot's pods are queried (a kubelet reports the volumes of
+    its OWN pods only, so narrowing is lossless).
+  * Every kubectl subprocess decodes as UTF-8 with ``errors="replace"``: event
+    messages carry arbitrary bytes and a non-UTF-8 locale must never turn a
+    refresh into a UnicodeDecodeError.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from . import model
 from .model import Node, Pod, PVC, Event, Summary, Snapshot
@@ -57,7 +62,22 @@ _NODE_SUMMARY_TTL = 30.0
 # because a single `-A` would pull the WHOLE cluster's objects (a much larger
 # payload) to show only a few namespaces. A user without cluster-wide list RBAC
 # falls back to per-namespace automatically (remembered for the session).
+#
+# The threshold alone is not enough on a BIG cluster: watching 4 of 200
+# namespaces would pull all 200 namespaces' objects to render 4. So when the
+# total namespace count is known (``Fetcher.total_namespaces``, set by the
+# app's discovery worker) AND the cluster is large (at least
+# _ALL_NS_FRACTION_MIN_TOTAL namespaces), `-A` additionally requires the
+# watched set to be at least _ALL_NS_MIN_FRACTION of the cluster. On a
+# small/medium cluster the threshold alone decides, exactly as in 0.5.3 — the
+# guard only rejects the "thin slice of a huge cluster" case.
 _ALL_NS_THRESHOLD = 4
+_ALL_NS_FRACTION_MIN_TOTAL = 40
+_ALL_NS_MIN_FRACTION = 0.15
+# A cluster-wide list that TIMES OUT falls back to the scoped lists for that
+# cycle; only this many consecutive timeouts pin the resource to the scoped
+# path for the session (one 6s blip must not disable the consolidation).
+_ALL_NS_TIMEOUTS_TO_BLOCK = 2
 
 
 def current_context_name(context: Optional[str] = None) -> str:
@@ -74,6 +94,8 @@ def current_context_name(context: Optional[str] = None) -> str:
         proc = subprocess.run(
             ["kubectl", "config", "current-context"],
             capture_output=True, text=True, timeout=_KUBECTL_TIMEOUT,
+            # explicit codec: a non-UTF-8 locale must not raise on decode
+            encoding="utf-8", errors="replace",
         )
     except Exception:
         return ""
@@ -127,11 +149,28 @@ class Fetcher:
         self._last_pvcs: "list[PVC]" = []
         self._last_alerts: list = []
         self._last_health: list = []
+        # Scope the cached lists above were fetched under —
+        # ``(tuple(namespaces), context)`` captured at the START of the heavy
+        # enrich that produced them. ``None`` = no cached lists at all. A light
+        # cycle only re-attaches them when the tag still matches the live scope
+        # (see enrich_snapshot); this closes the race where a heavy enrich in
+        # flight during invalidate_caches() re-caches the OLD scope's lists.
+        self._cache_scope: Optional[tuple] = None
         # Resources whose cluster-wide `-A` list returned a forbidden/RBAC error
         # this session — fall back to per-namespace for them (remembered so we
         # don't pay the forbidden round-trip every refresh). Cleared on a scope
         # switch (context change may grant different RBAC).
         self._all_ns_blocked: "set[str]" = set()
+        # consecutive `-A` timeouts per resource (see _note_all_ns_failure)
+        self._all_ns_timeouts: "dict[str, int]" = {}
+        # Total namespaces in the cluster, when the app/CLI knows it (from
+        # list_namespaces()). None = unknown -> the `-A` decision uses the
+        # watched-count threshold alone, i.e. unchanged legacy behaviour.
+        self.total_namespaces: Optional[int] = None
+        # Learned once per session: this server's `kubectl top pods` rejects
+        # --containers, so the flag is dropped instead of paying a failed call
+        # plus a retry on every namespace of every refresh.
+        self._top_containers_unsupported = False
 
     def cancel(self) -> None:
         """Abort any in-flight (and future) kubectl calls. Idempotent, thread-safe.
@@ -159,14 +198,48 @@ class Fetcher:
         self._last_pvcs = []
         self._last_alerts = []
         self._last_health = []
+        self._cache_scope = None
         # a context switch may grant different RBAC — re-probe `-A` next time
         self._all_ns_blocked = set()
+        self._all_ns_timeouts = {}
+        # the next discovery re-counts the new cluster's namespaces
+        self.total_namespaces = None
+        # a different server may accept `top pods --containers` again
+        self._top_containers_unsupported = False
 
     def _use_all_namespaces(self, resource: str) -> bool:
         """True when one cluster-wide ``-A`` list should replace the per-namespace
-        fan-out for ``resource`` this cycle (see :data:`_ALL_NS_THRESHOLD`)."""
-        return (len(self.namespaces) >= _ALL_NS_THRESHOLD
-                and resource not in self._all_ns_blocked)
+        fan-out for ``resource`` this cycle (see :data:`_ALL_NS_THRESHOLD`).
+
+        Two conditions: enough watched namespaces for the fan-out to hurt, AND —
+        when :attr:`total_namespaces` is known — a watched set large enough that
+        one `-A` payload is not mostly objects we immediately discard.
+        """
+        if resource in self._all_ns_blocked:
+            return False
+        watched = len(self.namespaces)
+        if watched < _ALL_NS_THRESHOLD:
+            return False
+        total = self.total_namespaces
+        if (total and total >= _ALL_NS_FRACTION_MIN_TOTAL
+                and watched < total * _ALL_NS_MIN_FRACTION):
+            return False  # thin slice of a big cluster: scoped lists are cheaper
+        return True
+
+    def _note_all_ns_failure(self, resource: str, msg: str) -> None:
+        """Record a failed `-A` list that is being retried as scoped lists.
+
+        RBAC (forbidden) is a deterministic property of the session, so it
+        blocks the resource at once. A timeout is transient: only
+        :data:`_ALL_NS_TIMEOUTS_TO_BLOCK` consecutive ones block it.
+        """
+        if self._looks_forbidden(msg):
+            self._all_ns_blocked.add(resource)
+            return
+        n = self._all_ns_timeouts.get(resource, 0) + 1
+        self._all_ns_timeouts[resource] = n
+        if n >= _ALL_NS_TIMEOUTS_TO_BLOCK:
+            self._all_ns_blocked.add(resource)
 
     @staticmethod
     def _looks_forbidden(msg: str) -> bool:
@@ -174,6 +247,34 @@ class Fetcher:
         should fall back to per-namespace) rather than a transient error?"""
         low = msg.lower()
         return "forbidden" in low or "cannot list" in low
+
+    @classmethod
+    def _should_fall_back_to_scoped(cls, msg: str) -> bool:
+        """True when a failed cluster-wide ``-A`` list should be retried as the
+        per-namespace fan-out instead of blanking the panel.
+
+        Two cases: missing cluster-wide RBAC (``forbidden``), and a TIMEOUT —
+        one `-A` list on a large cluster can easily exceed ``_KUBECTL_TIMEOUT``
+        while the much smaller scoped lists each return in time. Treating the
+        timeout as a hard failure showed an empty table for a cluster the user
+        can perfectly well list.
+        """
+        return cls._looks_forbidden(msg) or "timed out" in msg.lower()
+
+    @staticmethod
+    def _containers_flag_rejected(msg: str) -> bool:
+        """Did `top pods` fail because the server rejected ``--containers``?
+
+        Only such a failure justifies the extra pod-level retry; a missing
+        metrics-server or an RBAC error must not trigger a second call.
+        """
+        # kubectl's own wording: "unknown flag: --containers" / "unknown
+        # shorthand flag". Deliberately NOT a bare "containers" substring — a
+        # transient error that merely mentions containers would otherwise
+        # disable per-container accounting for the rest of the session.
+        low = msg.lower()
+        return ("unknown flag" in low or "unknown shorthand" in low
+                or "flag provided but not defined" in low)
 
     # ── low-level kubectl ────────────────────────────────────────────────────
     def _base(self) -> list[str]:
@@ -202,6 +303,12 @@ class Fetcher:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                # Decode explicitly instead of following the ambient locale: an
+                # event message may contain arbitrary non-ASCII bytes, and under
+                # a non-UTF-8 locale the implicit decode raises
+                # UnicodeDecodeError, failing the whole refresh over one event.
+                encoding="utf-8",
+                errors="replace",
             )
             with self._procs_lock:
                 self._procs.add(proc)
@@ -227,7 +334,7 @@ class Fetcher:
                 # Raise a concise message instead of TimeoutExpired, whose str()
                 # dumps the whole kubectl argv ("Command '[...]' timed out") —
                 # ugly in the error toast and full of brackets.
-                raise RuntimeError(f"timed out after {timeout}s")
+                raise RuntimeError(f"timed out after {timeout}s") from None
             finally:
                 with self._procs_lock:
                     self._procs.discard(proc)
@@ -292,6 +399,47 @@ class Fetcher:
         finally:
             self._tl.sink = prev
 
+    def _run_optional_ok(
+        self, *args: str, timeout: int = _KUBECTL_TIMEOUT
+    ) -> "tuple[str, bool]":
+        """:meth:`_run_optional` that also reports whether the call SUCCEEDED.
+
+        Returns ``(stdout, True)`` on success and ``(error_message, False)`` on
+        failure — an optional call swallows its error, so without this seam an
+        empty result is indistinguishable from a failed one and callers end up
+        retrying calls that simply had nothing to report.
+        """
+        prev = getattr(self._tl, "sink", None)
+        sink: "list[str]" = []
+        self._tl.sink = sink
+        try:
+            out = self._run_safe(*args, timeout=timeout)
+        finally:
+            self._tl.sink = prev
+        if sink:
+            return (sink[0], False)
+        return (out, True)
+
+    def _top_pods(self, *scope: str) -> str:
+        """``kubectl top pods <scope> --no-headers`` output ('' when unavailable).
+
+        Adds ``--containers`` (per-container rows sum to a pod total) unless
+        this session already learned the server rejects the flag. The pod-level
+        retry costs a WHOLE extra kubectl round trip per namespace per refresh,
+        so it fires only when the first call actually failed BECAUSE of the flag
+        — never when the namespace is simply empty or metrics-server is absent,
+        both of which yield an empty body rather than a failure.
+        """
+        base = ("top", "pods") + tuple(scope) + ("--no-headers",)
+        if not self._top_containers_unsupported:
+            out, ok = self._run_optional_ok(*(base + ("--containers",)))
+            if ok:
+                return out
+            if not self._containers_flag_rejected(out):
+                return ""  # real failure (no metrics-server, RBAC, …): no retry
+            self._top_containers_unsupported = True  # remembered for the session
+        return self._run_optional(*base)
+
     def current_context_name(self) -> str:
         """Best-effort active kube context name for display ('' if unknown).
 
@@ -313,7 +461,13 @@ class Fetcher:
           /api/v1/namespaces/monitoring/services/<svc>:9093/proxy/api/v2/alerts
         """
         if url.startswith("/"):
-            return self._run_optional("get", "--raw", url, timeout=_STATS_TIMEOUT) or None
+            # honour the caller's budget (probes.py passes the profile's own
+            # timeout); fall back to the stats default when it is unset, and
+            # never below 1s, which subprocess treats as "give up immediately".
+            # never below the stats default: the call includes a process spawn
+            # (+ exec credential plugin), so a caller may lengthen, not shrink it
+            secs = max(int(timeout or 0), _STATS_TIMEOUT)
+            return self._run_optional("get", "--raw", url, timeout=secs) or None
         from .probes import _http_get
         return _http_get(url, timeout)
 
@@ -411,7 +565,22 @@ class Fetcher:
         keeping the storage column current cheaply. ``invalidate_caches()`` clears
         the re-attach state on a scope switch so a light cycle can never show
         another cluster's data.
+
+        The cached lists carry the scope they were fetched under. A light cycle
+        re-attaches them ONLY while that tag still matches the live scope;
+        otherwise it is promoted to a heavy cycle for those lists. Without the
+        tag, a heavy enrich still in flight when ``invalidate_caches()`` runs
+        would re-cache the OLD scope's events/PVCs after the clear, and the next
+        light cycle would re-attach another namespace set's data.
         """
+        # captured at the START: this is the scope the lists below are fetched
+        # under, even if self.namespaces/context change while we run.
+        scope = (tuple(self.namespaces), self.context)
+        # A None tag means "no cached lists" (fresh fetcher / just invalidated):
+        # re-attaching those empties is correct and costs nothing. Only a tag
+        # from a DIFFERENT scope forces the light cycle to re-list.
+        stale_cache = self._cache_scope is not None and self._cache_scope != scope
+        heavy = heavy or stale_cache
         if heavy:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 events_future = pool.submit(self._fetch_events)
@@ -441,7 +610,7 @@ class Fetcher:
         # and never crashes the refresh (PVC usage stays None / pod storage None).
         if snap.nodes and (snap.pvcs or snap.pods):
             try:
-                summaries = self._node_summaries([n.name for n in snap.nodes])
+                summaries = self._node_summaries(self._nodes_to_summarize(snap))
             except Exception:
                 summaries = {}
             if snap.pvcs:
@@ -507,6 +676,7 @@ class Fetcher:
             self._last_pvcs = list(snap.pvcs)
             self._last_alerts = list(snap.alerts)
             self._last_health = list(snap.health)
+            self._cache_scope = scope
         else:
             snap.alerts = list(self._last_alerts)
             snap.health = list(self._last_health)
@@ -626,10 +796,7 @@ class Fetcher:
         """Build Pod objects for one namespace."""
         pods: list[Pod] = []
         # usage map: (ns, pod) -> (cpu_mcpu, mem_mi) summed across containers
-        tp = self._run_optional("top", "pods", "-n", ns, "--no-headers", "--containers")
-        if not tp:
-            # fall back to pod-level top if --containers unsupported
-            tp = self._run_optional("top", "pods", "-n", ns, "--no-headers")
+        tp = self._top_pods("-n", ns)
         usage: "dict[tuple, tuple]" = {}
         for line in tp.splitlines():
             parts = line.split()
@@ -661,20 +828,17 @@ class Fetcher:
     def _fetch_pods_all(self) -> "Optional[list[Pod]]":
         """One cluster-wide pods fetch (`top pods -A` + `get pods -A`), filtered
         to the watched namespaces. Returns the pod list, or ``None`` when the
-        cluster-wide list is RBAC-forbidden (the caller then falls back to the
-        per-namespace fan-out)."""
+        cluster-wide list is RBAC-forbidden OR timed out (the caller then falls
+        back to the per-namespace fan-out, which may well succeed)."""
         watched = set(self.namespaces)
-        tp = self._run_optional("top", "pods", "-A", "--no-headers", "--containers")
-        if not tp:
-            tp = self._run_optional("top", "pods", "-A", "--no-headers")
-        usage = self._pod_usage_all_ns(tp)
+        usage = self._pod_usage_all_ns(self._top_pods("-A"))
 
         try:
             gj = self._run("get", "pods", "-A", "-o", "json")
         except Exception as exc:
-            if self._looks_forbidden(str(exc)):
-                self._all_ns_blocked.add("pods")
-                return None  # fall back to per-namespace (scoped RBAC)
+            if self._should_fall_back_to_scoped(str(exc)):
+                self._note_all_ns_failure("pods", str(exc))
+                return None  # fall back to per-namespace (scoped RBAC / timeout)
             self._record_fetch_error(f"get pods -A: {exc}")
             return []
         try:
@@ -682,6 +846,7 @@ class Fetcher:
         except Exception:
             self._record_fetch_error("get pods -A: unparseable kubectl output")
             return []
+        self._all_ns_timeouts.pop("pods", None)
         pods: list[Pod] = []
         for item in data.get("items", []):
             ns = (item.get("metadata", {}) or {}).get("namespace", "")
@@ -693,7 +858,7 @@ class Fetcher:
         return pods
 
     def _parse_pod(
-        self, item: dict, ns: str, usage: dict[str, tuple[int, int]]
+        self, item: dict, ns: str, usage: "dict[tuple, tuple]"
     ) -> Optional[Pod]:
         meta = item.get("metadata", {})
         name = meta.get("name", "")
@@ -764,14 +929,19 @@ class Fetcher:
             or ""
         )
 
-        # container names in spec order (first = kubectl's default target)
+        # Container names in spec order, REGULAR containers first (index 0 stays
+        # kubectl's default log/exec target), then init containers so the log
+        # viewer can also pick an init container's logs — exactly where the
+        # evidence lives when a pod is stuck in Init:CrashLoopBackOff.
+        spec_containers = spec.get("containers", []) or []
+        spec_init = spec.get("initContainers", []) or []
         pod.container_names = [
-            str(c.get("name", "")) for c in spec.get("containers", []) or []
+            str(c.get("name", "")) for c in list(spec_containers) + list(spec_init)
             if c.get("name")
         ]
 
         # requests/limits summed across all containers
-        for c in spec.get("containers", []) or []:
+        for c in spec_containers:
             res = c.get("resources", {}) or {}
             req = res.get("requests", {}) or {}
             lim = res.get("limits", {}) or {}
@@ -780,53 +950,55 @@ class Fetcher:
             pod.mem_req_mi += model.to_mi(str(req.get("memory", "0")))
             pod.mem_cap_mi += model.to_mi(str(lim.get("memory", "0")))
 
-        # container statuses: ready count, restarts, oom/crashloop detection
+        # ── container statuses ───────────────────────────────────────────────
+        # Restarts / OOM / backoff are aggregated over REGULAR + INIT +
+        # EPHEMERAL containers (kubectl does the same): a pod wedged in
+        # Init:CrashLoopBackOff or an OOMKilled init container is otherwise
+        # invisible — it has no regular container status at all.
         cstatuses = status.get("containerStatuses", []) or []
-        ready_n = 0
-        total_n = len(cstatuses)
-        restarts = 0
-        oomkilled = False
-        crashloop = False
-        last_reason = ""
-        last_exit: Optional[int] = None
-        for cs in cstatuses:
-            if cs.get("ready"):
-                ready_n += 1
-            restarts += int(cs.get("restartCount", 0) or 0)
-            last = (cs.get("lastState", {}) or {}).get("terminated", {}) or {}
-            if last.get("reason") == "OOMKilled":
-                oomkilled = True
-            cur = (cs.get("state", {}) or {}).get("terminated", {}) or {}
-            if cur.get("reason") == "OOMKilled":
-                oomkilled = True
-            waiting = (cs.get("state", {}) or {}).get("waiting", {}) or {}
-            wreason = waiting.get("reason", "")
-            if wreason in ("CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull"):
-                crashloop = True
-            # Capture the most relevant container reason for the optional
-            # "last_reason" column: current waiting/terminated reason wins, else
-            # the previous termination reason.
-            last_reason = (
-                last_reason
-                or cur.get("reason", "")
-                or wreason
-                or last.get("reason", "")
-            )
-            # exit code paired with the reason above: current termination wins,
-            # else the previous one (crashloop forensics in the log viewer)
-            if last_exit is None:
-                code = cur.get("exitCode")
-                if code is None:
-                    code = last.get("exitCode")
-                if code is not None:
-                    try:
-                        last_exit = int(code)
-                    except (TypeError, ValueError):
-                        last_exit = None
-        pod.ready = f"{ready_n}/{total_n}" if total_n else "0/0"
-        pod.restarts = restarts
-        pod.oomkilled = oomkilled
-        pod.crashloop = crashloop
+        istatuses = status.get("initContainerStatuses", []) or []
+        estatuses = status.get("ephemeralContainerStatuses", []) or []
+
+        c_scan = _scan_container_statuses(cstatuses)
+        i_scan = _scan_container_statuses(istatuses)
+        e_scan = _scan_container_statuses(estatuses)
+        # An init container that finished cleanly reports terminated
+        # "Completed"/exit 0 on EVERY healthy pod, so its reason must never
+        # become the pod's last-failure reason — rescan only the unfinished /
+        # failed ones for the reason+exit code.
+        i_failed = _scan_container_statuses(
+            [cs for cs in istatuses if not _terminated_ok(cs)]
+        )
+
+        # READY counts REGULAR containers only, like kubectl's READY column.
+        # A Pending pod has no containerStatuses yet: kubectl still shows
+        # 0/<spec containers> ("0/2"), not the meaningless 0/0.
+        ready_n = c_scan.ready
+        total_n = len(cstatuses) if cstatuses else len(spec_containers)
+
+        last_reason = c_scan.reason
+        last_exit = c_scan.exit_code
+        if not last_reason and i_failed.reason:
+            # kubectl's STATUS column prefixes an init-phase failure with
+            # "Init:" (Init:CrashLoopBackOff, Init:Error) — but only while the
+            # pod has not reached Running, after which the init phase is history.
+            last_reason = (i_failed.reason if pod.phase == "Running"
+                           else "Init:" + i_failed.reason)
+        if not last_reason and e_scan.reason:
+            last_reason = e_scan.reason
+        if not last_reason:
+            # Pod-level reason (Evicted / NodeLost / Shutdown / …): the only
+            # signal when the failure killed the pod before any container
+            # status could record it.
+            last_reason = status.get("reason", "") or ""
+        if last_exit is None:
+            last_exit = (i_failed.exit_code if i_failed.exit_code is not None
+                         else e_scan.exit_code)
+
+        pod.ready = f"{ready_n}/{total_n}"
+        pod.restarts = c_scan.restarts + i_scan.restarts + e_scan.restarts
+        pod.oomkilled = c_scan.oomkilled or i_scan.oomkilled or e_scan.oomkilled
+        pod.crashloop = c_scan.backoff or i_scan.backoff or e_scan.backoff
         pod.last_terminated_reason = last_reason
         pod.last_exit_code = last_exit
 
@@ -840,16 +1012,30 @@ class Fetcher:
     # ── events ───────────────────────────────────────────────────────────────
     @staticmethod
     def _event_from_item(item: dict) -> Event:
+        """One :class:`Event` from a core/v1 OR events.k8s.io API item.
+
+        The newer events.k8s.io shape carries repetition in ``series``
+        (``series.count`` / ``series.lastObservedTime``) instead of the core/v1
+        ``count`` / ``lastTimestamp``; reading only the core fields showed every
+        repeated event as a single occurrence stamped with its FIRST sighting.
+        """
         obj = item.get("involvedObject", {}) or {}
+        series = item.get("series") or {}
+        count = item.get("count") or series.get("count") or 1
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            count = 1
         return Event(
-            ts_utc=item.get("lastTimestamp")
+            ts_utc=series.get("lastObservedTime")
+            or item.get("lastTimestamp")
             or item.get("eventTime")
             or item.get("firstTimestamp")
             or "",
             name=obj.get("name", "") or "",
             reason=item.get("reason", "") or "",
             message=(item.get("message", "") or "").replace("\n", " "),
-            count=int(item.get("count", 1) or 1),
+            count=count,
             type=item.get("type", "Normal") or "Normal",
         )
 
@@ -880,14 +1066,15 @@ class Fetcher:
 
     def _fetch_events_all(self) -> "Optional[list[Event]]":
         """One cluster-wide events fetch filtered to the watched namespaces, or
-        ``None`` when `-A` is RBAC-forbidden (caller falls back to per-namespace)."""
+        ``None`` when `-A` is RBAC-forbidden or timed out (caller falls back to
+        per-namespace)."""
         watched = set(self.namespaces)
         try:
             gj = self._run("get", "events", "-A",
                            "--sort-by=.lastTimestamp", "-o", "json")
         except Exception as exc:
-            if self._looks_forbidden(str(exc)):
-                self._all_ns_blocked.add("events")
+            if self._should_fall_back_to_scoped(str(exc)):
+                self._note_all_ns_failure("events", str(exc))
                 return None
             self._record_fetch_error(f"get events -A: {exc}")
             return []
@@ -896,6 +1083,7 @@ class Fetcher:
         except Exception:
             self._record_fetch_error("get events -A: unparseable kubectl output")
             return []
+        self._all_ns_timeouts.pop("events", None)
         events = [
             self._event_from_item(item)
             for item in data.get("items", [])
@@ -944,13 +1132,14 @@ class Fetcher:
 
     def _fetch_pvcs_all(self) -> "Optional[list[PVC]]":
         """One cluster-wide PVC fetch filtered to the watched namespaces, or
-        ``None`` when `-A` is RBAC-forbidden (caller falls back to per-namespace)."""
+        ``None`` when `-A` is RBAC-forbidden or timed out (caller falls back to
+        per-namespace)."""
         watched = set(self.namespaces)
         try:
             gj = self._run("get", "pvc", "-A", "-o", "json")
         except Exception as exc:
-            if self._looks_forbidden(str(exc)):
-                self._all_ns_blocked.add("pvc")
+            if self._should_fall_back_to_scoped(str(exc)):
+                self._note_all_ns_failure("pvc", str(exc))
                 return None
             self._record_fetch_error(f"get pvc -A: {exc}")
             return []
@@ -959,6 +1148,7 @@ class Fetcher:
         except Exception:
             self._record_fetch_error("get pvc -A: unparseable kubectl output")
             return []
+        self._all_ns_timeouts.pop("pvc", None)
         pvcs: list[PVC] = []
         for item in data.get("items", []):
             ns = (item.get("metadata", {}) or {}).get("namespace", "")
@@ -968,6 +1158,30 @@ class Fetcher:
             if pvc is not None:
                 pvcs.append(pvc)
         return pvcs
+
+    @staticmethod
+    def _nodes_to_summarize(snap: Snapshot) -> "list[str]":
+        """Node names whose kubelet ``/stats/summary`` can contribute to ``snap``.
+
+        Narrowing this to the nodes that HOST one of the snapshot's pods is
+        lossless: a kubelet only reports the volumes of the pods scheduled on
+        it, so a node running none of ``snap.pods`` cannot carry storage for any
+        pod or PVC we render — querying it is a pure cost (one API-server proxy
+        call each). Watching a few namespaces on a 200-node cluster therefore
+        costs a handful of proxy calls instead of 200.
+
+        Fallback: when no watched pod is scheduled anywhere (no pods at all, or
+        all Pending) but PVCs exist, the owning pods are unknown, so every node
+        is queried — a PVC panel with no watched pods is rare and small.
+        Documented trade-off: a PVC whose ONLY consumer is currently unscheduled
+        (Pending, no node) shows '-' until that pod lands — no kubelet could
+        report its usage anyway, so nothing real is lost.
+        """
+        known = [n.name for n in snap.nodes if n.name]
+        hosting = {p.node for p in snap.pods if p.node}
+        if not hosting:
+            return known if snap.pvcs else []
+        return [name for name in known if name in hosting]
 
     def _node_summaries(self, node_names: list[str]) -> "dict[str, dict]":
         """Fetch each node's kubelet ``/stats/summary`` payload once, in parallel.
@@ -1129,6 +1343,78 @@ class Fetcher:
         s.warn_events = sum(1 for e in snap.events if e.type == "Warning")
         s.alerts_firing = len(snap.alerts)
         return s
+
+
+# ── container-status helpers ─────────────────────────────────────────────────
+# Waiting reasons that mean "this container is failing to start", whether it is
+# a regular, init or ephemeral container.
+_BACKOFF_REASONS = frozenset(("CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull"))
+
+
+class _ContainerScan(NamedTuple):
+    """Aggregate of one container-status list (see :func:`_scan_container_statuses`)."""
+    ready: int = 0
+    restarts: int = 0
+    oomkilled: bool = False
+    backoff: bool = False
+    reason: str = ""
+    exit_code: Optional[int] = None
+
+
+def _scan_container_statuses(statuses: list) -> _ContainerScan:
+    """Aggregate one ``*ContainerStatuses`` list.
+
+    Shared by the regular, init and ephemeral lists so an init container's
+    restarts, OOM kills and backoff states are diagnosed exactly like a regular
+    container's. ``reason``/``exit_code`` describe the FIRST container with
+    something to report: its current terminated/waiting reason wins, else the
+    previous termination's.
+    """
+    ready = 0
+    restarts = 0
+    oomkilled = False
+    backoff = False
+    reason = ""
+    exit_code: Optional[int] = None
+    for cs in statuses or []:
+        if not isinstance(cs, dict):
+            continue
+        if cs.get("ready"):
+            ready += 1
+        count = _as_int(cs.get("restartCount"))
+        restarts += count if count and count > 0 else 0
+        state = cs.get("state") or {}
+        cur = state.get("terminated") or {}
+        waiting = state.get("waiting") or {}
+        last = (cs.get("lastState") or {}).get("terminated") or {}
+        if cur.get("reason") == "OOMKilled" or last.get("reason") == "OOMKilled":
+            oomkilled = True
+        wreason = waiting.get("reason", "") or ""
+        if wreason in _BACKOFF_REASONS:
+            backoff = True
+        if not reason:
+            # latch reason AND exit code from the SAME container so the pair
+            # shown in the LAST REASON column ("OOMKilled(137)") really existed
+            cur_reason = cur.get("reason", "") or ""
+            if cur_reason:
+                reason, exit_code = cur_reason, _as_int(cur.get("exitCode"))
+            elif wreason:
+                reason, exit_code = wreason, _as_int(last.get("exitCode"))
+            elif last.get("reason"):
+                reason, exit_code = last.get("reason", ""), _as_int(last.get("exitCode"))
+    return _ContainerScan(ready, restarts, oomkilled, backoff, reason, exit_code)
+
+
+def _terminated_ok(cs: dict) -> bool:
+    """True when a container's CURRENT state is a clean termination (exit 0).
+
+    Every healthy pod's init containers sit in exactly this state ("Completed",
+    exit 0), so they must not contribute the pod's last-failure reason.
+    """
+    if not isinstance(cs, dict):
+        return False
+    term = (cs.get("state") or {}).get("terminated") or {}
+    return bool(term) and _as_int(term.get("exitCode")) == 0
 
 
 # ── parsing helpers ──────────────────────────────────────────────────────────

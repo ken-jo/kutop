@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -140,29 +141,57 @@ def load_profile(name_or_path: Optional[str]) -> Profile:
         try:
             raw = yaml.safe_load(fh) or {}
         except yaml.YAMLError as exc:
-            raise ValueError(f"invalid profile YAML {path}: {exc}")
+            raise ValueError(f"invalid profile YAML {path}: {exc}") from exc
     if not isinstance(raw, dict):
         raise ValueError(f"invalid profile {path}: top level must be a mapping")
 
+    # A hand-written profile routinely carries a key with no value (``thresholds:``)
+    # or the wrong shape (``namespaces: prod`` instead of a list). Coerce those
+    # here so the CLI's one-line "cannot load profile" ValueError is the ONLY
+    # failure mode — never a raw AttributeError/TypeError traceback.
     try:
-        ordering = [(o["prefix"], int(o["weight"])) for o in raw.get("ordering", [])]
+        ordering = [(o["prefix"], int(o["weight"]))
+                    for o in raw.get("ordering") or []]
         probes = [
             HealthProbe(name=p["name"], url=p["url"], fields=p.get("fields", {}))
-            for p in raw.get("health_probes", [])
+            for p in raw.get("health_probes") or []
         ]
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"invalid profile {path}: {exc}")
-    th = raw.get("thresholds", {})
+        raise ValueError(f"invalid profile {path}: {exc}") from exc
+
+    th = raw.get("thresholds") or {}
+    if not isinstance(th, dict):
+        raise ValueError(f"invalid profile {path}: thresholds must be a mapping")
+
+    def _th(key: str, default: int) -> int:
+        val = th.get(key, default)
+        if val is None:
+            return default
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"invalid profile {path}: thresholds.{key} must be a number, "
+                f"got {val!r}") from None
+
+    namespaces = raw.get("namespaces") or []
+    if isinstance(namespaces, str):
+        namespaces = [namespaces]          # ``namespaces: prod`` -> ["prod"]
+    if not isinstance(namespaces, (list, tuple)):
+        raise ValueError(f"invalid profile {path}: namespaces must be a list")
+    namespaces = [str(n) for n in namespaces if str(n).strip()]
+
     return Profile(
-        name=raw.get("name", os.path.splitext(os.path.basename(path))[0]),
+        name=str(raw.get("name")
+                 or os.path.splitext(os.path.basename(path))[0]),
         ordering=ordering,
-        namespaces=raw.get("namespaces", []),
-        context=str(raw.get("context", "") or ""),
-        timezone=raw.get("timezone", ""),
-        cpu_warn=th.get("cpu_warn", 75), cpu_crit=th.get("cpu_crit", 90),
-        mem_warn=th.get("mem_warn", 80), mem_crit=th.get("mem_crit", 92),
-        pvc_warn=th.get("pvc_warn", 75), pvc_crit=th.get("pvc_crit", 90),
-        alertmanager_url=raw.get("alertmanager_url", ""),
+        namespaces=namespaces,
+        context=str(raw.get("context") or ""),
+        timezone=str(raw.get("timezone") or ""),
+        cpu_warn=_th("cpu_warn", 75), cpu_crit=_th("cpu_crit", 90),
+        mem_warn=_th("mem_warn", 80), mem_crit=_th("mem_crit", 92),
+        pvc_warn=_th("pvc_warn", 75), pvc_crit=_th("pvc_crit", 90),
+        alertmanager_url=str(raw.get("alertmanager_url") or ""),
         health_probes=probes,
     )
 
@@ -769,8 +798,12 @@ def _config_from_dict(d: dict) -> Config:
     # sort_mode would otherwise be shadowed. Resolution: take sort_key, but if
     # it is still the default 'priority' while a non-default sort_mode is set,
     # honour the legacy sort_mode. Both are kept in sync downstream.
-    sort_key = str(view.get("sort_key", "priority"))
-    legacy_mode = str(view.get("sort_mode", "priority"))
+    # NOTE: every scalar below reads ``x.get(k) or default`` rather than
+    # ``x.get(k, default)`` — a YAML key written with no value (``context:``)
+    # yields None, and ``str(None)`` would persist the literal string "None" as
+    # the user's context/theme/filter.
+    sort_key = str(view.get("sort_key") or "priority")
+    legacy_mode = str(view.get("sort_mode") or "priority")
     if sort_key == "priority" and legacy_mode != "priority":
         sort_key = legacy_mode
     if sort_key not in SORTABLE_KEYS:
@@ -782,7 +815,7 @@ def _config_from_dict(d: dict) -> Config:
 
     theme = str(view.get("theme", "textual-dark") or "textual-dark")
     panel_backgrounds = _coerce_bool(view.get("panel_backgrounds"), True)
-    summary_style = str(view.get("summary_style", "compact"))
+    summary_style = str(view.get("summary_style") or "compact")
     if summary_style not in SUMMARY_STYLES:
         summary_style = "compact"
     group_by_node = _coerce_bool(view.get("group_by_node"), False)
@@ -826,7 +859,7 @@ def _config_from_dict(d: dict) -> Config:
             return default
 
     return Config(
-        timezone=str(view.get("timezone", "")),
+        timezone=str(view.get("timezone") or ""),
         sort_mode=sort_mode,
         sort_key=sort_key,
         sort_desc=sort_desc,
@@ -835,11 +868,11 @@ def _config_from_dict(d: dict) -> Config:
         summary_style=summary_style,
         group_by_node=group_by_node,
         name_width=name_width,
-        name_filter=str(filters.get("name_filter", "")),
+        name_filter=str(filters.get("name_filter") or ""),
         hide_completed=_coerce_bool(filters.get("hide_completed"), True),
         only_problems=_coerce_bool(filters.get("only_problems"), False),
         namespaces=list(ns) or ["default"],
-        context=str(cluster.get("context", "")),
+        context=str(cluster.get("context") or ""),
         cpu_warn=_int(th, "cpu_warn", 75), cpu_crit=_int(th, "cpu_crit", 90),
         mem_warn=_int(th, "mem_warn", 80), mem_crit=_int(th, "mem_crit", 92),
         pvc_warn=_int(th, "pvc_warn", 75), pvc_crit=_int(th, "pvc_crit", 90),
@@ -854,7 +887,7 @@ def _config_from_dict(d: dict) -> Config:
         alertmanager_url=str(probes.get("alertmanager_url", "") or ""),
         health_probes=health_probes,
         columns=columns,
-        profile_name=str(d.get("profile", "generic")),
+        profile_name=str(d.get("profile") or "generic"),
         remember_profile_per_context=_coerce_bool(
             view.get("remember_profile_per_context"), False),
         profiles_by_context=profiles_by_context,
@@ -1133,14 +1166,25 @@ def save_config(cfg: Config, path: Optional[str] = None,
     Profile-owned fields are not persisted while a profile is active — pass the
     live ``profile`` so only the fields it really supplies are reset (see
     :func:`_config_for_persist`).
+
+    The temp file is created 0600 (the config can carry an alertmanager URL and
+    context names, and ``os.replace`` would otherwise hand the target whatever
+    the umask allowed). When the target already exists its current mode is
+    copied onto the temp file first, so an operator's deliberate ``chmod`` on
+    ``config.yaml`` survives every save.
     """
     target = path or CONFIG_PATH
     os.makedirs(os.path.dirname(target), exist_ok=True)
     text = dump_config_yaml(_config_for_persist(cfg, profile))
     tmp = f"{target}.{os.getpid()}.tmp"
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
+        try:
+            os.chmod(tmp, stat.S_IMODE(os.stat(target).st_mode))
+        except OSError:
+            pass  # no existing target (fresh save) -> keep the 0600 above
         os.replace(tmp, target)
     finally:
         if os.path.exists(tmp):

@@ -28,6 +28,30 @@ from .config import (
 )
 
 
+#: Upper bound for ``--log-tail``. ``kubectl logs --tail`` is happy with any
+#: number, but the viewer holds every line in memory, so an accidental
+#: ``--log-tail 100000000`` must be rejected up front rather than exhausting RAM.
+_LOG_TAIL_MAX = 100000
+
+
+def _log_tail_arg(value: str) -> int:
+    """argparse type for ``--log-tail``: ``-1`` (all) or 1..``_LOG_TAIL_MAX``.
+
+    ``0`` and negative values other than ``-1`` would silently produce an empty
+    or unbounded log view, so they are rejected with a clean parser error.
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"invalid int value: {value!r} (use -1 for all, or 1-{_LOG_TAIL_MAX})"
+        ) from None
+    if n == -1 or 1 <= n <= _LOG_TAIL_MAX:
+        return n
+    raise argparse.ArgumentTypeError(
+        f"must be -1 (all) or between 1 and {_LOG_TAIL_MAX}, got {n}")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog=_prog_name(),
@@ -85,8 +109,9 @@ def _build_parser() -> argparse.ArgumentParser:
                          "still confirm-gated)")
     ap.add_argument("--no-metrics-bootstrap", action="store_true",
                     help="skip the interactive Metrics Server preflight/install prompt")
-    ap.add_argument("--log-tail", type=int, default=150,
-                    help="lines of history for the live log viewer (default: 150)")
+    ap.add_argument("--log-tail", type=_log_tail_arg, default=150, metavar="N",
+                    help="lines of history for the live log viewer "
+                         "(1-100000, or -1 for all; default: 150)")
     ap.add_argument("--self-test", action="store_true",
                     help="run headlessly with a synthetic snapshot and exit (CI smoke test)")
     ap.add_argument("--snapshot", default=None, metavar="PATH",
@@ -288,7 +313,13 @@ def _recall_startup_profile(args, profile, cfg, base_over, cli_over):
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    # An empty --snapshot path would render to '' and fail deep inside Textual;
+    # reject it where the user can still see a parser error.
+    if args.snapshot is not None and not args.snapshot.strip():
+        parser.error("--snapshot requires a path")
 
     # The stderr note is covered by the fullscreen TUI almost immediately, so
     # the fact that it fired also travels to TopApp for an in-app toast.
@@ -332,16 +363,24 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Layer the unified config: defaults -> profile -> user file -> CLI flags.
     base_over = _base_overrides(args)
     cli_over = _cli_overrides(args)
+    profile_authoritative = bool(args.profile)
     cfg = load_config(
         profile=profile,
         user_path=args.config,
         base_overrides=base_over,
         cli_overrides=cli_over,
-        profile_authoritative=bool(args.profile),
+        profile_authoritative=profile_authoritative,
     )
 
-    if args.profile is None and not (args.self_test or args.snapshot):
-        profile, cfg = _recall_startup_profile(args, profile, cfg, base_over, cli_over)
+    # Recall is a live-path convenience and may shell out to kubectl for the
+    # current context, so the cluster-free modes (--self-test / --snapshot /
+    # --dump-config) all skip it.
+    if args.profile is None and not (args.self_test or args.snapshot or args.dump_config):
+        recalled, cfg = _recall_startup_profile(args, profile, cfg, base_over, cli_over)
+        if recalled is not profile:
+            # a recalled profile was loaded authoritatively (see the helper)
+            profile_authoritative = True
+        profile = recalled
 
     apply_detail_preset(cfg, args.detail)
 
@@ -372,6 +411,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         auto_refresh=not (args.self_test or args.snapshot),
         force_color=bool(args.snapshot),
         config_path=args.config,
+        # Everything the in-app hot reload (R) needs to re-run the IDENTICAL
+        # layering the CLI just did (defaults -> profile -> file -> CLI flags),
+        # so a reload can never quietly drop the CLI layer.
+        reload_overrides={
+            "base_overrides": base_over,
+            "cli_overrides": cli_over,
+            "profile_authoritative": profile_authoritative,
+        },
     )
 
     if args.self_test:
@@ -391,8 +438,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             view=args.snapshot_view,
         )
         if code == 0:
-            print(f"wrote snapshot SVG -> {args.snapshot}")
-        return code
+            # Never let a synthetic fallback frame pass for the real cluster.
+            if getattr(code, "synthetic", False):
+                print(f"wrote snapshot SVG -> {args.snapshot} "
+                      "(synthetic frame: no cluster data)")
+            else:
+                print(f"wrote snapshot SVG -> {args.snapshot}")
+                if getattr(code, "error", ""):
+                    sys.stderr.write(f"note: partial data — {code.error}\n")
+        return int(code)
 
     if not args.no_metrics_bootstrap:
         from .metrics import maybe_bootstrap_metrics_server
