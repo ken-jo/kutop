@@ -67,6 +67,13 @@
   outcome, and context/namespace/profile switches — so a misbehaving live
   session can be diagnosed after the fact.
 
+### Removed
+
+- The startup notice about `HTTPS_PROXY` / `HTTP_PROXY`. Whether to route
+  through a proxy is the user's own environment decision, not something the
+  dashboard should comment on. A proxy that actually breaks a call still shows
+  up as the real kubectl error (klog noise stripped) and in `--log-file`.
+
 ### Changed
 
 - **Lighter refresh on large clusters.** Kubelet `/stats/summary` is queried

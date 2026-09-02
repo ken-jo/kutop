@@ -681,9 +681,7 @@ The detail presets are one-shot column layouts:
   namespaces, pods/events/PVCs are listed with a single cluster-wide `-A` call
   (filtered locally) instead of one call per namespace — falling back to
   per-namespace if you lack cluster-wide list permission. A scope switch or
-  manual refresh (`r`) forces an immediate full refresh. If `HTTPS_PROXY`/
-  `HTTP_PROXY` is set, kutop shows an in-app notice that kubectl may use it
-  unless the API host matches `NO_PROXY`.
+  manual refresh (`r`) forces an immediate full refresh.
 * PVC usage comes from the kubelet summary API
   (`/api/v1/nodes/<node>/proxy/stats/summary`) because metrics-server does not
   expose it — a node whose summary call fails is skipped, others still report.

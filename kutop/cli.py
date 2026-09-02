@@ -420,11 +420,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         sys.stdout.write(dump_config_yaml(cfg))
         return 0
 
-    if not (args.self_test or args.snapshot):
-        proxy_note = _proxy_env_note()
-        if proxy_note:
-            cfg.load_warnings.append(proxy_note)
-
     # Lazy import so --version / --help / --dump-config don't require textual.
     from .render.app import TopApp
 
@@ -486,25 +481,6 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     app.run()
     return 0
-
-
-def _proxy_env_note() -> Optional[str]:
-    """Return a live-startup notice when a proxy environment variable is set.
-
-    Every kutop data read shells out to ``kubectl``, so each call honors
-    ``HTTPS_PROXY`` / ``HTTP_PROXY`` unless the API host matches ``NO_PROXY``.
-    The notice is shown inside the fullscreen app rather than written to stderr,
-    which would flash briefly before Textual takes over the terminal.
-    """
-    proxied = [name for name in ("HTTPS_PROXY", "https_proxy",
-                                 "HTTP_PROXY", "http_proxy")
-               if os.environ.get(name)]
-    if not proxied:
-        return None
-    return (
-        f"{proxied[0]} is set; kubectl may use that proxy unless the Kubernetes "
-        "API host matches NO_PROXY"
-    )
 
 
 if __name__ == "__main__":
