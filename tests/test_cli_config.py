@@ -220,10 +220,11 @@ def test_main_wires_flags_and_namespaces_into_topapp(monkeypatch, tmp_path: Path
     assert bootstraps == ["prod"]
 
 
-def test_live_main_routes_proxy_notice_to_app_without_stderr(
+def test_live_main_emits_no_proxy_warning(
         monkeypatch, tmp_path: Path, capsys) -> None:
-    """Proxy diagnostics belong inside the fullscreen app, not the terminal
-    frame that the TUI immediately overwrites."""
+    """Proxy configuration is the user's own environment decision — kutop must
+    not comment on it, on stderr or as an in-app warning. A proxy that really
+    breaks a call surfaces as the kubectl error it causes."""
     from kutop import cli
 
     captured: list[dict] = []
@@ -237,9 +238,8 @@ def test_live_main_routes_proxy_notice_to_app_without_stderr(
 
     monkeypatch.setattr(cli.shutil, "which", lambda cmd: "/usr/bin/kubectl")
     monkeypatch.setattr("kutop.render.app.TopApp", FakeApp)
-    for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
-        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.local:3128")
+    monkeypatch.setenv("NO_PROXY", "")
 
     assert cli.main([
         "--no-metrics-bootstrap",
@@ -248,7 +248,8 @@ def test_live_main_routes_proxy_notice_to_app_without_stderr(
 
     assert capsys.readouterr().err == ""
     warnings = captured[0]["config"].load_warnings
-    assert len([warning for warning in warnings if "HTTPS_PROXY" in warning]) == 1
+    assert not [w for w in warnings if "PROXY" in w.upper()]
+    assert not hasattr(cli, "_proxy_env_note")
 
 
 def test_persist_state_surfaces_save_failure(monkeypatch) -> None:

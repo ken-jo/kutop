@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 from typing import Optional
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
@@ -434,13 +435,17 @@ class OptionsModal(ModalScreen):
             for i, hp in enumerate(probes):
                 name = str(hp.get("name", "") or "?")
                 url = str(hp.get("url", "") or "?")
-                ol.add_option(Option(f"{name} -> {url}", id=f"hp::{i}"))
+                # Text(), not a markup str: probe names/URLs are user- and
+                # cluster-supplied, and a stray '[' or '[/]' in one would be
+                # eaten by (or crash) the Textual markup parser during layout.
+                ol.add_option(Option(Text(f"{name} -> {url}"), id=f"hp::{i}"))
         if sel is not None and sel < ol.option_count:
             ol.highlighted = sel
 
     def _hp_notice(self, msg: str) -> None:
         try:
-            self.query_one("#opt_hp_notice", Label).update(msg)
+            # msg embeds a probe name -> keep it literal (see _rebuild_health_probes)
+            self.query_one("#opt_hp_notice", Label).update(Text(msg))
         except Exception:
             pass
 
@@ -609,11 +614,18 @@ class OptionsModal(ModalScreen):
         self._consume_input(event.input)
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        # Intentionally NOT a live-apply seam. The alertmanager URL used to
+        # apply (and persist, and rewire the Fetcher) on every keystroke, so
+        # typing one URL fired a dozen half-typed configs. Text inputs commit on
+        # Enter (Input.Submitted) or on blur (on_input_blurred) instead.
+        return
+
+    def on_input_blurred(self, event: "Input.Blurred") -> None:
+        """Commit a text input when focus leaves it (the no-Enter path)."""
         if not self._ready_for_input:
             return
         if (event.input.id or "") in self._HP_ADD_INPUTS:
             return  # staged, not a live-config edit
-        # apply numeric/text inputs on change (validated/coerced in app)
         self._consume_input(event.input)
 
     def _consume_input(self, inp: Input) -> None:
@@ -621,7 +633,12 @@ class OptionsModal(ModalScreen):
         val = inp.value
         try:
             if iid == "opt_alertmanager_url":
-                self._cfg.alertmanager_url = val.strip()
+                new = val.strip()
+                if new == self._cfg.alertmanager_url:
+                    return  # blur/Enter on an untouched field: no-op
+                self._cfg.alertmanager_url = new
+            else:
+                return
             # thresholds are edited via DualThresholdSlider (Thresholds tab),
             # not numeric inputs — see on_dual_threshold_slider_threshold_changed.
         except (TypeError, ValueError):
@@ -717,6 +734,12 @@ class OptionsModal(ModalScreen):
                 event.stop()
 
     def action_close(self) -> None:
+        # Text inputs commit on Enter/blur; flush the still-focused one so
+        # closing straight from the field does not silently drop the edit.
+        try:
+            self._consume_input(self.query_one("#opt_alertmanager_url", Input))
+        except Exception:
+            pass
         self._restore_theme_preview()
         self.dismiss()
 

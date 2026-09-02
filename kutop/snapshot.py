@@ -106,7 +106,14 @@ def synthetic_snapshot() -> Snapshot:
 
 
 def _live_snapshot(namespaces, context=None, profile=None) -> Optional[Snapshot]:
-    """Best-effort live cluster fetch (incl. profile-linked probes). None on fail."""
+    """Best-effort live cluster fetch (incl. profile-linked probes). None on fail.
+
+    A partial failure (``snap.error`` set, e.g. metrics-server missing or one
+    namespace forbidden) still returns the frame as long as it carries ANY real
+    data — throwing away a mostly-good live frame in favour of a synthetic one
+    would silently misrepresent the cluster. Only an exception or a frame with
+    no data at all falls through to the synthetic fallback.
+    """
     from .fetch import Fetcher
     am = getattr(profile, "alertmanager_url", "") if profile else ""
     probes = getattr(profile, "health_probes", []) if profile else []
@@ -117,7 +124,7 @@ def _live_snapshot(namespaces, context=None, profile=None) -> Optional[Snapshot]
         ).fetch()
     except Exception:
         return None
-    if snap is None or snap.error:
+    if snap is None:
         return None
     if not (snap.nodes or snap.pods or snap.pvcs or snap.events):
         return None
@@ -136,10 +143,31 @@ _SNAPSHOT_OPTION_TABS = {
 SNAPSHOT_VIEWS = ("main", *_SNAPSHOT_OPTION_TABS.keys())
 
 
+class SnapshotResult(int):
+    """The exit code of :func:`render_snapshot`, plus what it actually rendered.
+
+    Subclasses ``int`` so every existing caller comparing/returning the exit
+    code keeps working, while a caller that cares can inspect ``synthetic``
+    (True when no live cluster data was available and the generic synthetic
+    frame was drawn instead) and ``error`` (the live frame's partial-failure
+    message, ``""`` when the fetch was clean).
+    """
+
+    synthetic: bool
+    error: str
+
+    def __new__(cls, code: int, synthetic: bool = False, error: str = ""):
+        self = super().__new__(cls, code)
+        self.synthetic = bool(synthetic)
+        self.error = error or ""
+        return self
+
+
 async def _render(out: str, size, namespaces, context, profile, app=None,
-                  config=None, view: str = "main") -> None:
-    snap = _live_snapshot(namespaces, context=context, profile=profile) \
-        or synthetic_snapshot()
+                  config=None, view: str = "main") -> "tuple[bool, str]":
+    """Render one frame; return ``(synthetic, error)`` describing the source."""
+    live = _live_snapshot(namespaces, context=context, profile=profile)
+    snap = live or synthetic_snapshot()
 
     # Build the app if one wasn't supplied (CLI passes a pre-built app so the
     # snapshot reflects the user's full layered config; tools/ builds its own).
@@ -183,6 +211,7 @@ async def _render(out: str, size, namespaces, context, profile, app=None,
         except Exception:
             pass
         await pilot.exit(None)
+    return (live is None, str(getattr(live, "error", "") or "") if live else "")
 
 
 def render_snapshot(
@@ -194,23 +223,28 @@ def render_snapshot(
     app=None,
     config=None,
     view: str = "main",
-) -> int:
+) -> SnapshotResult:
     """Render ONE frame headlessly to ``out`` (SVG) and return an exit code.
 
     Reuses the live cluster snapshot when reachable; otherwise a synthetic one.
-    Returns 0 on success, 1 on an unexpected rendering failure (the artifact is
-    still attempted). Safe to call from ``kutop --snapshot`` or the tools harness.
-    An optional ``config`` lets a caller pick the visible column set (e.g. the
-    tools harness loading a temp config to surface an opt-in column).
+    Returns a :class:`SnapshotResult` — an ``int`` exit code (0 on success, 1 on
+    an unexpected rendering failure; the artifact is still attempted) that also
+    reports whether the SYNTHETIC fallback was drawn and, for a live frame, any
+    partial-failure ``error``, so the caller can say so instead of presenting a
+    made-up frame as if it were the cluster. Safe to call from
+    ``kutop --snapshot`` or the tools harness. An optional ``config`` lets a
+    caller pick the visible column set (e.g. the tools harness loading a temp
+    config to surface an opt-in column).
     """
     nslist = namespaces or ["default"]
     try:
         if view not in SNAPSHOT_VIEWS:
             view = "main"
-        asyncio.run(_render(out, size, nslist, context, profile, app=app,
-                            config=config, view=view))
-        return 0
+        synthetic, error = asyncio.run(
+            _render(out, size, nslist, context, profile, app=app,
+                    config=config, view=view))
+        return SnapshotResult(0, synthetic=synthetic, error=error)
     except Exception as exc:  # pragma: no cover - defensive
         import sys
         print(f"[snapshot] render failed: {exc}", file=sys.stderr)
-        return 1
+        return SnapshotResult(1, synthetic=True, error=str(exc))

@@ -58,7 +58,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "textual==8.2.7",
+    "textual==8.2.8",
     "rich==15.0.0",
     "pyyaml>=6",
 ]
@@ -70,7 +70,13 @@ Issues = "https://github.com/ken-jo/kutop/issues"
 
 [project.optional-dependencies]
 profiles = []
-test = ["pytest>=8,<9", "ruff>=0.5"]
+# pytest 9 requires Python >= 3.10, but runtime code targets 3.9 (see the CI
+# matrix), so the 3.9 leg keeps the last series that supports it.
+test = [
+    "pytest>=9,<10; python_version >= '3.10'",
+    "pytest>=8.4,<9; python_version < '3.10'",
+    "ruff==0.16.5",
+]
 
 [project.scripts]
 kutop = "kutop.cli:main"
@@ -87,3 +93,9 @@ kutop = ["profiles/*.yaml", "render/*.tcss"]
 # flag 3.10+-only syntax instead of letting it slip through to release.
 target-version = "py39"
 line-length = 100
+
+[tool.ruff.lint]
+# Explicit rule set so `ruff check` means the same thing on every ruff release
+# (defaults widened in 0.16; the pin in [test] extras plus this list keep CI
+# deterministic). E/F/W = pyflakes + pycodestyle, B = bugbear.
+select = ["E4", "E7", "E9", "F", "W", "B"]

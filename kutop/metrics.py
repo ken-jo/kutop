@@ -23,6 +23,8 @@ METRICS_SERVER_COMPONENTS_URL = (
 )
 METRICS_SERVER_DOCS_URL = "https://kubernetes-sigs.github.io/metrics-server/"
 METRICS_SERVER_HELM_REPO = "https://kubernetes-sigs.github.io/metrics-server/"
+#: Wall-clock cap on the one cluster-mutating ``kubectl apply``.
+_INSTALL_TIMEOUT_SECS = 180
 
 
 @dataclass(frozen=True)
@@ -67,16 +69,23 @@ def _proc_text(proc: subprocess.CompletedProcess) -> str:
 
 def _looks_missing_metrics_api(text: str) -> bool:
     lower = text.lower()
-    return any(
+    if any(
         marker in lower
         for marker in (
             "metrics api not available",
             "the server could not find the requested resource",
             "no matches for kind",
             "server doesn't have a resource type",
-            "notfound",
         )
-    )
+    ):
+        return True
+    # A bare "notfound" appears in plenty of unrelated kubectl errors (a missing
+    # namespace or node, for instance) and must not be read as "Metrics Server
+    # is absent" — which would offer to mutate the cluster for the wrong reason.
+    # Only the API-server's own ``Error from server (NotFound)`` shape, or a
+    # message that also names metrics.k8s.io, counts.
+    return "notfound" in lower and (
+        "metrics.k8s.io" in lower or "(notfound)" in lower)
 
 
 def check_metrics_preflight(context: Optional[str] = None, timeout: int = 6) -> MetricsPreflight:
@@ -119,6 +128,21 @@ def _install_review_text() -> str:
     )
 
 
+#: Values that mean "off" for a boolean environment variable. Anything else
+#: (including "1"/"true"/"yes") counts as set.
+_FALSY_ENV = ("", "0", "false", "no", "off")
+
+
+def _env_flag(name: str) -> bool:
+    """True when ``name`` is set to something other than an explicit off value.
+
+    ``KUTOP_NO_METRICS_BOOTSTRAP=0`` reads as "do NOT skip the bootstrap" to a
+    user, so a bare ``os.environ.get`` truthiness check would do the opposite of
+    what they asked.
+    """
+    return os.environ.get(name, "").strip().lower() not in _FALSY_ENV
+
+
 def _is_interactive(input_stream: TextIO, output_stream: TextIO) -> bool:
     return bool(
         getattr(input_stream, "isatty", lambda: False)()
@@ -147,7 +171,7 @@ def maybe_bootstrap_metrics_server(
     both the manifest and Helm paths so the operator can choose deliberately.
     """
 
-    if os.environ.get("KUTOP_NO_METRICS_BOOTSTRAP"):
+    if _env_flag("KUTOP_NO_METRICS_BOOTSTRAP"):
         return MetricsPreflight("skipped", "KUTOP_NO_METRICS_BOOTSTRAP is set")
 
     input_stream = input_stream or sys.stdin
@@ -197,8 +221,15 @@ def maybe_bootstrap_metrics_server(
         if _answer_is_yes(input_stream.readline()):
             cmd = _kubectl_cmd(context, "apply", "-f", METRICS_SERVER_COMPONENTS_URL)
             print(f"[kutop] running: {shlex.join(cmd)}", file=output_stream)
-            proc = subprocess.run(cmd, text=True, check=False)
-            if proc.returncode == 0:
+            try:
+                # The apply downloads a manifest and talks to the API server; an
+                # unreachable endpoint would otherwise hang the launch forever.
+                proc = subprocess.run(cmd, text=True, check=False,
+                                      timeout=_INSTALL_TIMEOUT_SECS)
+                rc = proc.returncode
+            except subprocess.TimeoutExpired:
+                rc = 124
+            if rc == 0:
                 print(
                     "[kutop] Metrics Server manifest applied. It may take a minute before kubectl top returns data.",
                     file=output_stream,
@@ -206,7 +237,7 @@ def maybe_bootstrap_metrics_server(
             else:
                 print("[kutop] Metrics Server install failed; review manual options below.", file=output_stream)
                 print(_install_review_text(), file=output_stream)
-            return MetricsPreflight("installed" if proc.returncode == 0 else "install-failed", result.message)
+            return MetricsPreflight("installed" if rc == 0 else "install-failed", result.message)
 
     print("[kutop] Metrics Server was not installed automatically.", file=output_stream)
     print(_install_review_text(), file=output_stream)

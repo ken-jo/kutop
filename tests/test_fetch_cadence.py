@@ -158,25 +158,6 @@ def test_run_caps_concurrent_kubectl_processes(monkeypatch) -> None:
     assert state["peak"] >= 2  # the cap actually allowed parallelism
 
 
-# ── proxy startup notice ──────────────────────────────────────────────────────
-
-
-def test_proxy_env_note_is_optional_and_does_not_overstate_routing(monkeypatch) -> None:
-    from kutop.cli import _proxy_env_note
-
-    for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY"):
-        monkeypatch.delenv(var, raising=False)
-
-    assert _proxy_env_note() is None
-
-    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.local:3128")
-    note = _proxy_env_note()
-    assert note is not None
-    assert "HTTPS_PROXY" in note and "NO_PROXY" in note
-    assert "may use" in note
-    assert "every kubectl/API call traverses" not in note
-
-
 # ── app wiring: scope change forces a heavy cycle + clears caches ──────────────
 
 

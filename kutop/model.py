@@ -8,12 +8,14 @@ be reused by both the fetcher and the renderer.
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
 __all__ = [
-    "to_mcpu", "to_mi", "fmt_cpu", "fmt_mem", "pct", "age_seconds", "fmt_age",
+    "to_mcpu", "to_mi", "fmt_cpu", "fmt_mem", "pct", "parse_timestamp", "age_seconds", "fmt_age",
     "Pod", "Node", "PVC", "Event", "Alert", "HealthResult", "Summary", "Snapshot",
 ]
 
@@ -25,21 +27,26 @@ def to_mcpu(v: str) -> int:
 
     Also accepts the rarer but valid 'n' (nano) / 'u' (micro) suffixes and
     exponent forms ('1e3' cores). Garbage yields 0 — including a negative
-    quantity, which Kubernetes never emits for a resource amount.
+    quantity, which Kubernetes never emits for a resource amount, and any
+    non-finite value ('inf', 'nan', or an overflowing literal like '1e400',
+    whose int() raises OverflowError rather than ValueError).
     """
     if not v or v in ("-", "<none>"):
         return 0
     v = v.strip()
     try:
         if v.endswith("n"):
-            result = int(float(v[:-1]) / 1_000_000)
+            num = float(v[:-1]) / 1_000_000
         elif v.endswith("u"):
-            result = int(float(v[:-1]) / 1000)
+            num = float(v[:-1]) / 1000
         elif v.endswith("m"):
-            result = int(float(v[:-1]))
+            num = float(v[:-1])
         else:
-            result = int(float(v) * 1000)
-    except ValueError:
+            num = float(v) * 1000
+        if not math.isfinite(num):
+            return 0
+        result = int(num)
+    except (ValueError, OverflowError):
         return 0
     return max(0, result)
 
@@ -63,7 +70,9 @@ def to_mi(v: str) -> int:
     Handles binary (Ki/Mi/Gi/Ti/Pi/Ei) and decimal (k/M/G/T/P/E) suffixes plus
     bare-byte values — including exponent forms like "1e9", which the API
     preserves verbatim in ``kubectl get -o json``. Garbage yields 0 — including
-    a negative quantity, which Kubernetes never emits for a resource amount.
+    a negative quantity, which Kubernetes never emits for a resource amount,
+    and any non-finite value ('inf', 'nan', or an overflowing literal like
+    '1e400', whose int() raises OverflowError rather than ValueError).
     """
     if not v or v in ("-", "<none>"):
         return 0
@@ -71,13 +80,18 @@ def to_mi(v: str) -> int:
     for suffix, scale in _MEM_SUFFIXES:
         if v.endswith(suffix):
             try:
-                num = float(v[: -len(suffix)].strip())
-            except ValueError:
+                num = float(v[: -len(suffix)].strip()) * scale / _MI_BYTES
+                if not math.isfinite(num):
+                    return 0
+                return max(0, int(num))
+            except (ValueError, OverflowError):
                 return 0
-            return max(0, int(num * scale / _MI_BYTES))
     try:
-        return max(0, int(float(v) / _MI_BYTES))
-    except ValueError:
+        num = float(v) / _MI_BYTES
+        if not math.isfinite(num):
+            return 0
+        return max(0, int(num))
+    except (ValueError, OverflowError):
         return 0
 
 
@@ -101,21 +115,49 @@ def pct(used: int, cap: int) -> int:
     return int(round(used * 100 / cap)) if cap else 0
 
 
+# RFC3339 fractional seconds of any length (Go's RFC3339Nano emits 1-9 digits
+# and trims trailing zeros; Alertmanager startsAt, events.k8s.io eventTime).
+# Python < 3.11 fromisoformat accepts exactly 3 or 6 digits only, so the
+# fraction is normalised to 6 digits before parsing.
+_FRACTION_RE = re.compile(r"(\.\d+)(?=(?:[+-]\d\d:?\d\d|Z)?$)")
+
+
+def parse_timestamp(ts: str) -> Optional[datetime]:
+    """Parse an RFC3339/ISO8601 timestamp into an aware ``datetime``.
+
+    Tolerates a trailing ``Z``, any fractional-second precision (1-9 digits,
+    normalised to microseconds), and a missing offset (assumed UTC). Returns
+    ``None`` for an empty or unparseable value; never raises.
+    """
+    if not ts or not isinstance(ts, str):
+        return None
+    s = ts.strip()
+    if s.endswith("Z") or s.endswith("z"):
+        s = s[:-1] + "+00:00"
+
+    def _fix(m: "re.Match") -> str:
+        digits = m.group(1)[1:]
+        return "." + (digits + "000000")[:6]
+
+    s = _FRACTION_RE.sub(_fix, s, count=1)
+    try:
+        dt = datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def age_seconds(start_time: str, now: Optional[datetime] = None) -> Optional[int]:
     """Seconds elapsed since an ISO8601 ``start_time`` (e.g. a creationTimestamp).
 
     Returns ``None`` when ``start_time`` is empty or unparseable so callers can
     render a placeholder. ``now`` is injectable for deterministic tests.
     """
-    if not start_time:
+    dt = parse_timestamp(start_time)
+    if dt is None:
         return None
-    try:
-        s = start_time.strip().replace("Z", "+00:00")
-        dt = datetime.fromisoformat(s)
-    except (ValueError, TypeError):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
     ref = now or datetime.now(timezone.utc)
     if ref.tzinfo is None:
         ref = ref.replace(tzinfo=timezone.utc)
@@ -173,7 +215,11 @@ class Pod:
     # None = the pod mounts no PVC / usage is unknown -> rendered as '-' so a
     # stateless pod is visually distinct from a 0%-used one.
     storage_used_mi: Optional[int] = None
-    storage_cap_mi: int = 0
+    # Capacity of those same PVC volumes. Optional[int] because the fetcher
+    # assigns None when a counted volume's capacityBytes was unparseable
+    # (unknown, not a known 0). Renderer semantics are unchanged: both None and
+    # 0 are falsy and render as '-'.
+    storage_cap_mi: Optional[int] = 0
     terminating: bool = False           # has a deletionTimestamp (being deleted)
     pvc_claims: list = field(default_factory=list)  # PVC claim names this pod mounts
     weight: int = 900                  # ordering weight injected from Profile

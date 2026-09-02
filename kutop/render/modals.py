@@ -76,7 +76,10 @@ class LogViewerModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="log_box"):
-            yield Label(self._header_text(), id="log_hdr")
+            # Text(), never a markup str: the header embeds cluster-controlled
+            # names (pod / namespace / container) inside literal '[...]', which
+            # the Textual markup parser would eat or choke on.
+            yield Label(Text(self._header_text()), id="log_hdr")
             yield RichLog(id="log_content", highlight=True, max_lines=2000)
 
     async def on_mount(self) -> None:
@@ -104,16 +107,35 @@ class LogViewerModal(ModalScreen):
             log.write(f"[error] {exc}")
 
     async def _restart_stream(self) -> None:
-        """Stop the running kubectl and stream again with the new mode/target."""
-        if self.log_task:
-            self.log_task.cancel()
-        if self.proc:
+        """Stop the running kubectl and stream again with the new mode/target.
+
+        The old task is cancelled AND awaited, and the old process terminated
+        AND reaped, before ``_stream`` overwrites ``self.proc`` — otherwise the
+        superseded ``kubectl logs -f`` kept running as an orphan with nothing
+        left holding its handle. ``self.proc`` is only cleared once the process
+        really exited, so a failed terminate never drops the reference.
+        """
+        task, self.log_task = self.log_task, None
+        if task is not None:
+            task.cancel()
             try:
-                self.proc.terminate()
+                await task
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 pass
+        proc = self.proc
+        if proc is not None:
+            try:
+                if proc.returncode is None:
+                    proc.terminate()
+                await proc.wait()
+            except Exception:
+                pass
+            if proc.returncode is not None:
+                self.proc = None
         try:
-            self.query_one("#log_hdr", Label).update(self._header_text())
+            self.query_one("#log_hdr", Label).update(Text(self._header_text()))
             self.query_one("#log_content", RichLog).clear()
         except Exception:
             pass
@@ -134,16 +156,36 @@ class LogViewerModal(ModalScreen):
             self._container_idx += 1
             await self._restart_stream()
 
-    async def _close(self) -> None:
+    def _teardown(self) -> None:
+        """Synchronous half of the close path: cancel the reader, kill kubectl.
+
+        Safe to call from ``on_unmount`` (which runs while the app is tearing
+        down and cannot await), and idempotent so ``_close`` -> unmount runs it
+        twice without effect.
+        """
         if self.log_task:
             self.log_task.cancel()
-        if self.proc:
+        proc = self.proc
+        if proc is not None and proc.returncode is None:
             try:
-                self.proc.terminate()
-                await self.proc.wait()
+                proc.terminate()
+            except Exception:
+                pass
+
+    async def _close(self) -> None:
+        self._teardown()
+        proc = self.proc
+        if proc is not None:
+            try:
+                await proc.wait()
             except Exception:
                 pass
         self.dismiss()
+
+    def on_unmount(self) -> None:
+        # Quitting the app with the modal open dismisses nothing, so without
+        # this the `kubectl logs -f` child outlived kutop.
+        self._teardown()
 
 
 class DescribeModal(ModalScreen):
@@ -157,12 +199,16 @@ class DescribeModal(ModalScreen):
         self.context = context
         # e.g. "StatefulSet/<name>" — surfaced in the header when known.
         self.owner = owner
+        self._proc = None
 
     def compose(self) -> ComposeResult:
         owner_suffix = f" ({self.owner})" if self.owner else ""
         with Vertical(id="desc_box"):
+            # Text(), not markup: '[{ns}]' must survive verbatim (see
+            # LogViewerModal.compose).
             yield Label(
-                f"Describe: {self.pod_name}{owner_suffix} [{self.ns}] — ESC/q to close",
+                Text(f"Describe: {self.pod_name}{owner_suffix} "
+                     f"[{self.ns}] — ESC/q to close"),
                 id="desc_hdr",
             )
             yield RichLog(id="desc_content", highlight=True)
@@ -175,12 +221,12 @@ class DescribeModal(ModalScreen):
             cmd += ["--context", self.context]
         cmd += ["describe", "pod", self.pod_name, "-n", self.ns]
         try:
-            proc = await asyncio.create_subprocess_exec(
+            self._proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            out, err = await proc.communicate()
+            out, err = await self._proc.communicate()
             log.clear()
             if out:
                 log.write(out.decode("utf-8", errors="ignore"))
@@ -189,10 +235,25 @@ class DescribeModal(ModalScreen):
         except Exception as exc:
             log.write(f"[error] {exc}")
 
+    def _kill_proc(self) -> None:
+        """Don't leave kubectl running after an early close — terminate the
+        in-flight process so communicate() returns and the orphan exits.
+        Mirrors :meth:`YamlViewModal._kill_proc`."""
+        proc = self._proc
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
     def on_key(self, event) -> None:
         if event.key in ("escape", "q"):
             event.stop()  # see LogViewerModal.on_key: never leak the close key
+            self._kill_proc()
             self.dismiss()
+
+    def on_unmount(self) -> None:
+        self._kill_proc()
 
 
 class YamlViewModal(ModalScreen):
@@ -226,7 +287,7 @@ class YamlViewModal(ModalScreen):
         # rule. Only one of these modals is ever on screen at a time.
         with Vertical(id="desc_box"):
             yield Label(
-                f"YAML: {self.pod_name} [{self.ns}] — ESC/q to close",
+                Text(f"YAML: {self.pod_name} [{self.ns}] — ESC/q to close"),
                 id="desc_hdr",
             )
             yield RichLog(id="desc_content", highlight=True)
@@ -284,11 +345,24 @@ class EventDetailModal(ModalScreen):
             yield Label("Event detail — ESC/q to close", id="ev_hdr")
             yield RichLog(id="ev_content")
 
+    @staticmethod
+    def _field(label: str, value: str) -> Text:
+        """One `label: value` line, styled without a markup round-trip.
+
+        Event names/reasons/messages are cluster-controlled text: a message like
+        ``unable to mount volume [/data/pvc-1]`` fed through
+        ``Text.from_markup`` raises MarkupError ("nothing to close").
+        """
+        line = Text()
+        line.append(label, style="bold yellow")
+        line.append(value)
+        return line
+
     def on_mount(self) -> None:
         log = self.query_one("#ev_content", RichLog)
-        log.write(Text.from_markup(f"[bold yellow]Object:[/]  {self._name}"))
-        log.write(Text.from_markup(f"[bold yellow]Reason:[/]  {self._reason}"))
-        log.write(Text.from_markup(f"[bold yellow]Message:[/]\n{self._message}"))
+        log.write(self._field("Object:  ", self._name))
+        log.write(self._field("Reason:  ", self._reason))
+        log.write(self._field("Message:\n", self._message))
 
     def on_key(self, event) -> None:
         if event.key in ("escape", "q"):

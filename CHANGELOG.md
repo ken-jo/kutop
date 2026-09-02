@@ -2,6 +2,143 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Sidebar CONTEXT switch now takes effect on the first pick.** A sidebar sync
+  triggered by the closing dropdown's focus change could land between the pick
+  and its dispatch and drop it, so the switch only worked when a different
+  context was chosen and then the intended one again. User `Select` picks are
+  no longer gated on the internal sync flag (programmatic writes are already
+  suppressed with `prevent()`).
+- **Launching with no kubectl current-context no longer looks like a crash.**
+  kubectl's klog noise (`E0902 15:28:25.409307 13950 memcache.go:265] …`) is
+  stripped from refresh errors so the real reason survives the toast, the
+  start-up guidance rows say `no kube context selected` with the fix (`b` →
+  CONTEXT, or `kubectl config use-context`), and failures before the first
+  frame go to those rows only instead of stacking `refresh failed` toasts.
+- **Crash and data-loss fixes in the TUI.** The event detail modal no longer
+  crashes the app on messages containing bracketed paths (`[/data/pvc-1]`);
+  the Logs/Describe/YAML headers, the health-probe option list, and the
+  destructive-action confirm body now render cluster-controlled text literally
+  (the `[namespace]` used to vanish as markup). The YAML modal is centred like
+  the others and the sidebar KEYS panel no longer clips the `X Restart` hint.
+- **Init containers are now diagnosed.** Restarts, OOM kills and
+  CrashLoop/ImagePull back-off in `initContainerStatuses` (and ephemeral
+  containers) count toward the pod's status, the LAST REASON column shows
+  `Init:CrashLoopBackOff`-style reasons while the pod has not reached Running,
+  pod-level `status.reason` (Evicted, NodeLost, …) is surfaced, init container
+  names are selectable in the log viewer, and Pending pods report `0/N` like
+  kubectl instead of `0/0`.
+- **Profiles can no longer read local files or hang the fetcher.** Probe URLs
+  must be `http(s)` (a `file://` probe used to display local file contents in
+  the HEALTH panel), response bodies are capped at 4 MiB, and probe regexes go
+  through the same backtracking screen as the pod-name filter (`kutop.regexsafe`)
+  so a `(a+)+$` pattern can no longer freeze every future refresh.
+- `--snapshot` keeps a partially-failed live frame (e.g. namespace-scoped RBAC)
+  instead of silently rendering the synthetic demo cluster; a synthetic fallback
+  is now announced on the command line, and a partial-data note goes to stderr.
+- A YAML key with no value (`context:`) no longer loads as the string `"None"`
+  (which turned every kubectl call into `--context None`); a profile with an
+  empty `thresholds:` section or a bare `namespaces: prod` string loads cleanly,
+  and any other malformed profile fails with one clear line instead of a
+  traceback.
+- Hot reload (`R`) re-applies the CLI's own `--profile`/`--context`/`-n` layer
+  instead of letting the saved file override it; switching profiles from the
+  sidebar keeps the user's timezone/alertmanager/probes when the new profile
+  does not supply them, and no longer triggers two consecutive fetches.
+- Alert `SINCE` ages and event times parse Alertmanager/events.k8s.io
+  nanosecond timestamps on Python 3.9/3.10 (they rendered as `-`).
+- The alertmanager URL field in Options applies on Enter/blur instead of
+  writing the config file and rewiring the fetcher on every keystroke.
+- Describe/log modals terminate their `kubectl` child on early close or app
+  exit; the log viewer reaps the superseded stream before restarting one.
+- `KUTOP_NO_METRICS_BOOTSTRAP=0`/`false` no longer counts as "set"; the
+  Metrics Server `kubectl apply` has a 180s timeout; `--snapshot ""` and
+  out-of-range `--log-tail` values are rejected up front; `--dump-config` never
+  shells out to kubectl even with per-context profile recall enabled.
+- The saved config file is created `0600` (probe URLs can embed tokens) and an
+  existing file's mode is preserved; `tools/snapshot.py` no longer writes to a
+  fixed world-readable `/tmp` name.
+
+### Added
+
+- `--log-file PATH` (or `KUTOP_LOG_FILE=PATH`) appends a debug log — every
+  failed kubectl call with its cleaned error, each refresh cycle's scope and
+  outcome, and context/namespace/profile switches — so a misbehaving live
+  session can be diagnosed after the fact.
+
+### Fixed
+
+- **The CONTEXT picker no longer claims a cluster the app is not using.**
+  Launching without a kubectl current-context showed the first *discovered*
+  context (e.g. `local`) as if it were active while every read still went to
+  kubectl's default `localhost:8080` — and because the displayed value equalled
+  the one the user would pick, selecting it posted no change event, so that
+  context could not be selected at all and its namespaces never loaded. The
+  picker now shows `(no context)` until one is really active, making the first
+  pick take effect.
+- **The sidebar NAMESPACES list now tracks the selected context.** A namespace
+  listing carries the scope token it started under, so a slow listing from the
+  previous cluster can no longer land as the new one's list (switching contexts
+  back and forth used to race exactly that way). A context change — from the
+  sidebar or the Options modal — re-lists immediately and drops the previous
+  cluster's namespaces instead of leaving them tickable.
+- **Watched namespaces are now remembered per kube context.** A namespace only
+  means something inside the cluster that has it, so switching contexts used to
+  leave the previous cluster's selection ticked (`calico-system` still watched
+  under an EKS context, showing nothing). Each context's selection is now parked
+  under its own key in `namespaces_by_context` and restored when you come back to
+  it; a context you have never watched starts at the default scope. On top of
+  that, the first successful namespace listing of a cluster drops any watched
+  namespace the cluster does not actually have (falling back to `default`, or to
+  the first listed namespace, rather than to an empty scope). A failed listing
+  never prunes, and namespaces named on the command line always win.
+- **A failed namespace listing is no longer silent.** It used to leave the
+  sidebar showing only the watched namespaces, which reads as "this cluster has
+  one namespace" rather than "the listing failed". The NAMESPACES header now
+  says `loading…` while listing and `unavailable` when it failed, the reason is
+  toasted once (but not before the first frame, where the startup guidance rows
+  already name the reason), and the next good refresh retries the listing on its
+  own — so a cluster that was slow at launch fills the list in without the user
+  switching contexts to force it.
+
+### Removed
+
+- The startup notice about `HTTPS_PROXY` / `HTTP_PROXY`. Whether to route
+  through a proxy is the user's own environment decision, not something the
+  dashboard should comment on. A proxy that actually breaks a call still shows
+  up as the real kubectl error (klog noise stripped) and in `--log-file`.
+
+### Changed
+
+- **Lighter refresh on large clusters.** Kubelet `/stats/summary` is queried
+  only for nodes that host a watched pod (lossless: a kubelet reports its own
+  pods' volumes only), so watching a few namespaces on a 200-node cluster no
+  longer costs 200 proxy calls per 30s. A cluster-wide `-A` list that times out
+  now falls back to per-namespace lists for that cycle (two consecutive
+  timeouts pin the scoped path for the session, a forbidden list pins it at
+  once), and on a large cluster (40+ namespaces) `-A` is only chosen when the
+  watched namespaces are a meaningful share (15%+) of it — small and medium
+  clusters keep the 0.5.3 behaviour.
+  `kubectl top pods` is retried without `--containers` only when the server
+  actually rejects the flag, not on every empty result.
+- When the pod list fails outright but nodes succeed, the previous pods stay on
+  screen (summary counters recounted from them) with a `pods list failed —
+  showing previous pods` toast; while that or a full refresh failure persists
+  the panel title reads `PODS · stale 12s` until data returns.
+- Refresh caches are tagged with the scope they were fetched under, closing a
+  race where a scope switch mid-refresh could re-attach the previous
+  namespace set's events/PVCs; the heavy-cycle flag is now lock-protected.
+- kubectl output is decoded as UTF-8 (`errors="replace"`) regardless of locale;
+  events.k8s.io `series.count`/`lastObservedTime` are honoured; the kube
+  context name is resolved on the discovery worker instead of blocking the
+  first paint.
+- Dependencies: Textual 8.2.8, pytest 9 (8.4 on the Python 3.9 leg, where
+  pytest 9 does not install), ruff pinned to 0.16.5 with an explicit
+  rule set (`E`, `F`, `W`, `B`) so `ruff check` is deterministic across releases.
+  The unreachable `kubetop/__main__.py` was removed (`python -m kubetop` already
+  runs kutop's entry point).
+
 ## 0.5.4 - 2026-07-15
 
 ### Fixed

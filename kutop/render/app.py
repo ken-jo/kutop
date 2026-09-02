@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import os
 import re
 import subprocess
+import threading
 from collections import deque
-from datetime import datetime, timezone
 from time import monotonic
 from typing import Optional
 
@@ -56,6 +57,13 @@ from ..config import (
 )
 from ..fetch import Fetcher
 from ..model import Pod, Snapshot, fmt_age, age_seconds
+from ..regexsafe import (
+    REGEX_MAX_LEN,
+    REGEX_META,
+    has_nested_quantifier,
+    looks_like_regex,
+    safe_compile,
+)
 from .header import MetricsIndicator, ThemeHeader, ThemeHeaderIcon
 from .modals import DescribeModal, EventDetailModal, LogViewerModal, YamlViewModal
 from .sidebar import SidebarPanel, SidebarState
@@ -82,6 +90,13 @@ __all__ = [
 
 _HISTORY = 120
 _HIDDEN_THEMES = {"ansi-dark", "ansi-light"}
+# Toast detail used when the pod list failed but the previous one is kept on
+# screen — the table is deliberately NOT empty, so say why.
+_PODS_CARRIED_DETAIL = "pods list failed — showing previous pods"
+_log = logging.getLogger("kutop.app")
+# kubectl's built-in default server when kubeconfig has NO current-context:
+# every call then dials localhost:8080 and fails with "connection refused".
+_NO_CONTEXT_MARKER = "localhost:8080"
 
 
 _BINDING_SPECS = [
@@ -216,14 +231,19 @@ def _resolve_tz(tz_name: str):
 
 
 def _fmt_event_ts(ts_utc: str, tz) -> str:
-    """Format an ISO/UTC event timestamp as HH:MM:SS in the target tz."""
+    """Format an ISO/UTC event timestamp as HH:MM:SS in the target tz.
+
+    Parsing goes through :func:`model.parse_timestamp`, which tolerates the
+    shapes kubectl actually emits (trailing ``Z``, 1-9 fractional digits from
+    Go's RFC3339Nano / events.k8s.io, a missing offset) on every supported
+    Python — ``datetime.fromisoformat`` alone rejects nanoseconds before 3.11.
+    """
     if not ts_utc:
         return "-"
+    dt = model.parse_timestamp(ts_utc)
+    if dt is None:
+        return ts_utc[11:19] if len(ts_utc) >= 19 else ts_utc
     try:
-        s = ts_utc.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
         dt = dt.astimezone(tz) if tz else dt.astimezone()
         return dt.strftime("%H:%M:%S")
     except Exception:
@@ -285,6 +305,7 @@ class TopApp(App):
         auto_refresh: bool = True,
         force_color: bool = False,
         config_path: Optional[str] = None,
+        reload_overrides: Optional[dict] = None,
     ) -> None:
         no_color = os.environ.pop("NO_COLOR", None) if force_color else None
         try:
@@ -348,6 +369,11 @@ class TopApp(App):
         )
         # remember the path the config was loaded from for hot-reload (R)
         self._config_path = config_path
+        # The CLI's own layering arguments (base_overrides / cli_overrides /
+        # profile_authoritative), so a hot-reload (R) re-runs the SAME layered
+        # load the CLI did instead of dropping --profile/--context/-n back to
+        # whatever the user file happens to say.
+        self._reload_overrides = dict(reload_overrides or {})
         self.snapshot: Snapshot = Snapshot()
         self.cpu_hist: deque[int] = deque(maxlen=_HISTORY)
         self.mem_hist: deque[int] = deque(maxlen=_HISTORY)
@@ -365,6 +391,19 @@ class TopApp(App):
         self._filter_cache: "tuple[str, object, bool]" = ("", None, False)
         # Namespaces discovered live on the cluster (for the Options multi-select).
         self._discovered_ns: list[str] = []
+        # Discovery lifecycle. Like the fetch path's _fetch_gen, _discover_gen is
+        # a scope token bumped on every context switch so a slow listing from the
+        # PREVIOUS cluster can never land as this one's namespace list (switching
+        # back and forth used to race exactly that way). _ns_discovering drives
+        # the sidebar's "loading…" annotation; _ns_discovery_failed remembers a
+        # failed listing so a later good refresh can retry it.
+        self._discover_gen = 0
+        self._ns_discovering = False
+        self._ns_discovery_failed = False
+        self._last_discovery_error = ""
+        # per-context namespace recall runs once per session, on the first
+        # successful listing (see _maybe_restore_remembered_namespaces)
+        self._ns_recall_done = False
         self._discovered_contexts: list[str] = []
         # Selectable profile names for the sidebar dropdown (discovered once;
         # profiles don't change on disk mid-session).
@@ -397,6 +436,19 @@ class TopApp(App):
         self._cycle = 0
         self._heavy_every = max(1, int(HEAVY_REFRESH_EVERY))
         self._force_heavy = True
+        # _force_heavy is set on the UI thread (scope switch / manual refresh)
+        # and read-and-cleared on the fetch thread: guard both sides so a flag
+        # raised between the read and the clear cannot be swallowed.
+        self._cadence_lock = threading.Lock()
+        # monotonic timestamp of the last snapshot that actually applied; drives
+        # the 'PODS · stale Ns' border title while refreshes keep failing.
+        self._last_good_refresh = 0.0
+        # set by _adopt_config when it already kicked a refresh, so callers
+        # (set_profile) don't fire a second, redundant one
+        self._adopt_triggered_refresh = False
+        # rendered event rows keyed by their stable content key, so a click
+        # resolves the event that was DRAWN even if the snapshot moved on
+        self._event_rows: "dict[str, object]" = {}
         # First-run orientation toast: shown at most once per session, when the
         # FIRST successful snapshot applies on an out-of-the-box generic config.
         self._shown_first_run_hint = False
@@ -624,10 +676,10 @@ class TopApp(App):
         return opts
 
     def on_mount(self) -> None:
-        if self._auto_refresh:
-            # resolve the real kube context name once so the sidebar shows it
-            # instead of a generic "current" (skipped in --self-test)
-            self._resolved_context = self.fetcher.current_context_name()
+        # NOTE: no kubectl here. Resolving the context name is a blocking
+        # subprocess; on a slow/unreachable cluster it froze the whole mount
+        # before the first frame painted. It is resolved in
+        # _discover_ns_worker (a thread) and pushed back via call_from_thread.
         self.apply_theme_chrome()
         self.query_one("#summary_bar", SummaryBar).set_style_mode(self.cfg.summary_style)
 
@@ -665,10 +717,7 @@ class TopApp(App):
 
         # Discover cluster namespaces live and repopulate the
         # sidebar list. Guarded off for --self-test so no kubectl is shelled out.
-        if self._discover_namespaces:
-            self.run_worker(
-                self._discover_ns_worker, thread=True, exclusive=False, group="ns"
-            )
+        self._start_ns_discovery()
 
         if self._interval_deprecated:
             self._interval_deprecated = False
@@ -749,32 +798,103 @@ class TopApp(App):
         return base
 
     # ── namespace discovery worker ─────────────────────────────────────────────
-    def _discover_ns_worker(self) -> None:
-        """Thread worker: list cluster namespaces, then repopulate the sidebar.
+    def _start_ns_discovery(self, *, reset_discovered: bool = False) -> None:
+        """Kick a namespace/context discovery pass for the CURRENT scope.
 
-        Falls back silently to the profile namespaces on any failure (the list
-        already shows them) so discovery never crashes the app.
+        Bumps :attr:`_discover_gen` so any in-flight pass from an older scope is
+        discarded when it returns, marks the sidebar as loading, and (on a scope
+        switch) drops the previous cluster's discovered namespaces so they can't
+        linger as tickable options that do not exist in the new cluster.
+        """
+        if not self._discover_namespaces:
+            return
+        self._discover_gen += 1
+        gen = self._discover_gen
+        if reset_discovered:
+            self._discovered_ns = []
+            self._sync_sidebar_ns()
+        self._ns_discovering = True
+        self._set_ns_status("loading…")
+        self.run_worker(
+            lambda: self._discover_ns_worker(gen),
+            thread=True, exclusive=False, group="ns",
+        )
+
+    def _set_ns_status(self, status: str) -> None:
+        """Mirror the discovery state onto the sidebar NAMESPACES header."""
+        try:
+            self.query_one("#sidebar", SidebarPanel).set_ns_status(status)
+        except Exception:
+            pass
+
+    def _discover_ns_worker(self, gen: Optional[int] = None) -> None:
+        """Thread worker: resolve the kube context name, list cluster
+        namespaces, then repopulate the sidebar.
+
+        Never crashes the app: a failed listing is reported back (rather than
+        silently leaving the old list in place, which made an unreachable
+        cluster look like a cluster with a single namespace). The context
+        resolution lives here — and not in ``on_mount`` — because it shells out
+        to kubectl and must never block the UI thread.
         """
         try:
-            discovered = self.fetcher.list_namespaces()
+            ctx_name = self.fetcher.current_context_name()
         except Exception:
+            ctx_name = ""
+        if ctx_name:
+            try:
+                self.call_from_thread(self._set_resolved_context, ctx_name)
+            except Exception:
+                pass
+        error = ""
+        try:
+            discovered = self.fetcher.list_namespaces()
+        except Exception as exc:
             discovered = []
+            error = " ".join(str(exc).split()) or exc.__class__.__name__
+        if discovered:
+            # Tell the fetcher how big the cluster is: the cluster-wide `-A`
+            # consolidation is only a win when the watched scope is a large
+            # fraction of it. Plain attribute, safe to set from this thread.
+            try:
+                self.fetcher.total_namespaces = len(discovered)
+            except Exception:
+                pass
         try:
             self._context_options()  # fill the _discovered_contexts cache (kubectl)
         except Exception:
             pass
         # always repopulate so the CONTEXT dropdown refreshes even if the ns list
         # came back empty
-        self.call_from_thread(self._populate_ns_list, discovered)
+        try:
+            self.call_from_thread(self._populate_ns_list, discovered, gen, error)
+        except Exception:
+            pass
 
-    def _populate_ns_list(self, discovered: list[str]) -> None:
+    def _set_resolved_context(self, name: str) -> None:
+        """UI-thread callback: adopt the kubectl-resolved context name and let
+        the sidebar/confirm modals show it instead of a generic 'current'."""
+        self._resolved_context = name
+        self._sync_sidebar_state()
+
+    def _populate_ns_list(self, discovered: list[str],
+                          gen: Optional[int] = None, error: str = "") -> None:
         """Rebuild the sidebar NAMESPACE checkboxes + CONTEXT dropdown from live
         discovery.
 
         Keeps the currently-ticked namespaces ticked (and ensures every selected
         namespace stays present even if discovery omits it), and refills the
-        context Select from the now-discovered kubeconfig contexts.
+        context Select from the now-discovered kubeconfig contexts. A result
+        from a superseded scope (``gen``) is dropped, and a FAILED listing is
+        announced instead of silently leaving the previous list on screen.
         """
+        if gen is not None and gen != self._discover_gen:
+            return  # listed under an older context: not this cluster's answer
+        self._ns_discovering = False
+        self._ns_discovery_failed = not discovered
+        self._set_ns_status("unavailable" if not discovered else "")
+        if not discovered and error:
+            self._notify_discovery_failure(error)
         try:
             sidebar = self.query_one("#sidebar", SidebarPanel)
         except Exception:
@@ -782,12 +902,35 @@ class TopApp(App):
         if discovered:
             # remember the full cluster ns list for the Options multi-select
             self._discovered_ns = list(discovered)
+            # now that this cluster's real list is known: adopt the scope it was
+            # last watched with, then drop anything it does not actually have
+            self._maybe_restore_remembered_namespaces()
+            self._prune_namespaces_to_cluster(discovered)
             sidebar.rebuild_namespaces(
                 self._sidebar_ns_options(discovered), list(self.namespaces)
             )
         sidebar.rebuild_contexts(
             self._sidebar_context_options(), self._display_context()
         )
+
+    def _notify_discovery_failure(self, error: str) -> None:
+        """Say once why the namespace list is empty — the sidebar would
+        otherwise show only the watched namespaces, which reads as 'this
+        cluster has one namespace' rather than 'the listing failed'.
+
+        Silent before the first frame: the startup guidance rows already name
+        the same failure (and name it better, e.g. 'no kube context selected'),
+        so a toast there only stacks noise on a launch that has not reached a
+        cluster yet.
+        """
+        if not self._loaded:
+            return
+        detail = error if len(error) <= 90 else error[:89] + "…"
+        if detail == self._last_discovery_error:
+            return
+        self._last_discovery_error = detail
+        self.notify(f"namespace list unavailable: {detail}",
+                    severity="warning", timeout=6)
 
     # ── background fetch worker ────────────────────────────────────────────────
     def refresh_snapshot(self) -> None:
@@ -820,7 +963,8 @@ class TopApp(App):
         re-listed immediately rather than waiting for the next heavy tick.
         """
         self._refresh_pending = True
-        self._force_heavy = True
+        with self._cadence_lock:
+            self._force_heavy = True
         self.refresh_snapshot()
 
     def _bump_fetch_gen(self) -> None:
@@ -831,7 +975,8 @@ class TopApp(App):
         events/PVCs or serve a stale node summary.
         """
         self._fetch_gen += 1
-        self._force_heavy = True
+        with self._cadence_lock:
+            self._force_heavy = True
         try:
             self.fetcher.invalidate_caches()
         except Exception:
@@ -841,7 +986,8 @@ class TopApp(App):
         try:
             if not self._loaded:
                 # first paint is always heavy so every panel populates at once
-                self._force_heavy = False
+                with self._cadence_lock:
+                    self._force_heavy = False
                 snap = self.fetcher.fetch_core()
                 try:
                     # first paint gets a COPY: enrich_snapshot below keeps
@@ -858,9 +1004,12 @@ class TopApp(App):
                 # cadence split (issue #12): core every tick, heavy panels every
                 # Nth tick (or when forced by a scope switch / manual refresh)
                 self._cycle += 1
-                forced = self._force_heavy
+                # atomic read-and-clear: a _force_heavy raised by the UI thread
+                # between a separate read and clear would otherwise be lost and
+                # the scope switch would render a light (stale-panel) cycle.
+                with self._cadence_lock:
+                    forced, self._force_heavy = self._force_heavy, False
                 heavy = forced or (self._cycle % self._heavy_every == 0)
-                self._force_heavy = False
                 snap = self.fetcher.fetch_core()
                 if gen != self._fetch_gen:
                     return
@@ -985,8 +1134,17 @@ class TopApp(App):
             return  # fetched under an old namespace/context scope: drop it
         if snap.error and not snap.nodes and not snap.pods:
             # full failure: keep previous frame, surface error
-            self._notify_refresh_error(snap.error, full=True, errors=snap.errors)
+            _log.warning("refresh failed: %s", "; ".join(snap.errors or [snap.error]))
+            if self._loaded:
+                self._notify_refresh_error(snap.error, full=True, errors=snap.errors)
+            # the frame on screen is now older than one cycle: say so on the
+            # panel border, and keep the age ticking on every failed retry
+            self._mark_pods_stale()
             if not self._loaded:
+                # Before the first frame the guidance rows carry the SAME
+                # detail persistently; a toast per retry (whose text changes as
+                # the core and heavy cycles add sources) just stacks up and
+                # makes a plain "no context selected yet" look like a crash.
                 # no previous frame exists yet: a 4s toast alone would leave
                 # the bare Loading row sitting there forever. The guidance row
                 # carries the SAME aggregated detail as the toast so a
@@ -995,12 +1153,32 @@ class TopApp(App):
                 self._render_startup_guidance(
                     self._refresh_error_detail(snap.error, snap.errors))
             return
-        if snap.error:
+        # A pods-only outage (nodes still answered) used to blank the whole
+        # table: the pod list is the screen's payload, so carry the previous
+        # one instead of showing an empty cluster that isn't empty. Never on
+        # the first load — there is nothing to carry and the startup guidance
+        # rows are the honest answer there.
+        carried_pods = False
+        if (not snap.pods and self._loaded and self.snapshot.pods
+                and self._pods_source_failed(snap.error, snap.errors)):
+            snap.pods = list(self.snapshot.pods)
+            carried_pods = True
+
+        if carried_pods:
+            # The summary bar was computed by the fetcher from the EMPTY list;
+            # recount from the carried pods so it can't read "0 / 0 / 0" above
+            # a table full of them.
+            self._recount_pod_summary(snap)
+            self._notify_refresh_error(_PODS_CARRIED_DETAIL, full=False)
+        elif snap.error:
             # partial failure: apply what we have, but say what is missing
             self._notify_refresh_error(snap.error, full=False, errors=snap.errors)
         else:
             self._last_refresh_error = ""
         first_load = not self._loaded
+        _log.debug("snapshot applied: nodes=%d pods=%d events=%d pvcs=%d errors=%s",
+                   len(snap.nodes), len(snap.pods), len(snap.events), len(snap.pvcs),
+                   "; ".join(snap.errors) or "-")
         self.snapshot = snap
         self._loaded = True
         # Only the live fetch path passes a generation token; synthetic frames
@@ -1015,7 +1193,72 @@ class TopApp(App):
             s = snap.summary
             self._append_trend(self.cpu_hist, s.cpu_used_mcpu, s.cpu_cap_mcpu)
             self._append_trend(self.mem_hist, s.mem_used_mi, s.mem_cap_mi)
-        self._render()
+        if carried_pods:
+            # not a good refresh: keep the stale clock running and the marker
+            # on — the deduped toast fires once, the title keeps counting.
+            self._render()
+            self._mark_pods_stale()
+        else:
+            self._last_good_refresh = monotonic()
+            self._render()
+            self._clear_pods_stale()
+            # The cluster is answering again: a namespace listing that failed
+            # earlier (slow API at launch, VPN not up yet) is worth one more
+            # try, so the sidebar fills in without the user switching contexts
+            # back and forth to force it.
+            if self._ns_discovery_failed and not self._ns_discovering:
+                self._start_ns_discovery()
+
+    @staticmethod
+    def _recount_pod_summary(snap: Snapshot) -> None:
+        """Recompute the pod-derived summary counters from ``snap.pods``."""
+        s = snap.summary
+        s.pods_running = s.pods_pending = s.pods_failed = 0
+        s.restarts_total = s.oomkilled_total = 0
+        for pod in snap.pods:
+            if pod.phase == "Running":
+                s.pods_running += 1
+            elif pod.phase == "Pending":
+                s.pods_pending += 1
+            elif pod.phase == "Failed":
+                s.pods_failed += 1
+            s.restarts_total += pod.restarts
+            if pod.oomkilled:
+                s.oomkilled_total += 1
+
+    @staticmethod
+    def _pods_source_failed(error: str, errors: "Optional[list]" = None) -> bool:
+        """True when a recorded failure came from the pod list itself.
+
+        The fetcher labels its failures by source (``pods: ...`` /
+        ``get pods -n <ns>: ...``), so an empty pod list paired with one of
+        those is an outage rather than an actually-empty scope.
+        """
+        for msg in [error] + list(errors or []):
+            text = str(msg or "").strip()
+            if text.startswith("pods:") or text.startswith("get pods"):
+                return True
+        return False
+
+    def _mark_pods_stale(self) -> None:
+        """Label the main panel with the age of the frame still on screen."""
+        if not self._loaded:
+            return  # nothing was ever painted: the guidance rows say it better
+        try:
+            mt = self.query_one("#main_table", DataTable)
+        except Exception:
+            return
+        age = int(max(0.0, monotonic() - self._last_good_refresh))
+        mt.border_title = f"PODS · stale {age}s"
+
+    def _clear_pods_stale(self) -> None:
+        """Restore the plain panel title once a refresh lands again."""
+        try:
+            mt = self.query_one("#main_table", DataTable)
+        except Exception:
+            return
+        if mt.border_title != "PODS":
+            mt.border_title = "PODS"
 
     def _maybe_show_first_run_hint(self) -> None:
         """Orient a first-time user once: name the core affordances via one toast.
@@ -1111,13 +1354,31 @@ class TopApp(App):
         short = " ".join((error or "unknown error").split())
         if len(short) > 140:
             short = short[:139] + "…"
+        pad = ["-"] * (len(self.cfg.visible_columns()) - 1)
+        mt.clear()
+        if self._looks_like_no_context(error):
+            # Not an outage: kubeconfig simply has no current-context, so
+            # kubectl dialled its localhost:8080 default. Say that, and where
+            # to fix it, instead of "cluster unreachable".
+            mt.add_row(
+                Text("no kube context selected — kubectl has no current-context",
+                     style="bold yellow"),
+                *pad, key="startup_error",
+            )
+            mt.add_row(
+                Text(f"press {_binding_key('toggle_sidebar')} and pick one under "
+                     "CONTEXT, or run: kubectl config use-context <name>",
+                     style="bold yellow"),
+                *pad, key="startup_hint",
+            )
+            mt.add_row(Text(f"retrying every {self.interval:g}s...", style="dim"),
+                       *pad, key="startup_retry")
+            return
         # Name the kube context on the first row so a beginner can tell "right
         # cluster, unreachable" from "wrong context" (resolved exactly as the
         # sidebar/confirm modals display it; '' -> 'current' like _display_context
         # callers).
         ctx = self._display_context() or "current"
-        pad = ["-"] * (len(self.cfg.visible_columns()) - 1)
-        mt.clear()
         mt.add_row(
             Text(f"cluster unreachable (context: {ctx}): {short}", style="bold red"),
             *pad, key="startup_error",
@@ -1126,6 +1387,12 @@ class TopApp(App):
                    *pad, key="startup_hint")
         mt.add_row(Text(f"retrying every {self.interval:g}s...", style="dim"),
                    *pad, key="startup_retry")
+
+    def _looks_like_no_context(self, error: str) -> bool:
+        """True when the failure is kubectl dialling its localhost:8080 default —
+        i.e. no context is selected — rather than a real cluster outage."""
+        return (not self.context and not self._resolved_context
+                and _NO_CONTEXT_MARKER in (error or ""))
 
     def _repopulate_unloaded_table(self, mt: DataTable) -> None:
         """A column rebuild clears every row; before the first snapshot the
@@ -1244,12 +1511,11 @@ class TopApp(App):
         so lowercasing the displayed term would only mislead (e.g. ``[A-Z]``)."""
         return (self._search_term or "").strip()
 
-    # Characters that, when present in a term, make us attempt a regex match.
-    _REGEX_META = frozenset(r".^$*+?[]{}|()\\")
-    # Cap a term's length before treating it as a regex; together with the
-    # nested-quantifier guard this bounds catastrophic backtracking that would
-    # otherwise freeze the render thread (Python's re has no match timeout).
-    _REGEX_MAX_LEN = 200
+    # The screening rules themselves live in kutop.regexsafe, shared with the
+    # probe field matcher; these aliases and the wrappers below keep the
+    # historical TopApp API (used by callers and tests) pointing at it.
+    _REGEX_META = REGEX_META
+    _REGEX_MAX_LEN = REGEX_MAX_LEN
 
     @staticmethod
     def _has_nested_quantifier(pattern: str) -> bool:
@@ -1257,30 +1523,7 @@ class TopApp(App):
         to a group whose body already holds an unbounded quantifier (``(a+)+``,
         ``(.*)*``, ``(a{1,5})+``). Such a term is matched as a plain substring
         instead of being run, unbounded, on the UI thread."""
-        stack = [False]  # per open group: does its body hold an unbounded quant?
-        i, n = 0, len(pattern)
-        while i < n:
-            c = pattern[i]
-            if c == "\\":
-                i += 2
-                continue
-            if c == "(":
-                stack.append(False)
-            elif c == ")":
-                inner = stack.pop() if len(stack) > 1 else False
-                nxt = pattern[i + 1] if i + 1 < n else ""
-                # tuple membership, not `nxt in "*+{"` — an empty nxt (group at
-                # end of pattern) is a substring of every str and would wrongly
-                # flag a safe, unquantified group like ``(a+)``.
-                quantified = nxt in ("*", "+", "{")
-                if inner and quantified:
-                    return True
-                if quantified and stack:
-                    stack[-1] = True  # a quantified group bubbles up to its parent
-            elif c in ("*", "+", "{"):
-                stack[-1] = True
-            i += 1
-        return False
+        return has_nested_quantifier(pattern)
 
     @classmethod
     def _safe_regex(cls, term: str):
@@ -1288,16 +1531,9 @@ class TopApp(App):
         back to substring. Returns ``None`` for a plain term, an invalid
         pattern, an over-long term, or a catastrophic-backtracking shape — so
         the matcher can never raise or hang the render path."""
-        if not term or len(term) > cls._REGEX_MAX_LEN:
+        if not looks_like_regex(term):
             return None
-        if not any(ch in cls._REGEX_META for ch in term):
-            return None
-        if cls._has_nested_quantifier(term):
-            return None
-        try:
-            return re.compile(term, re.IGNORECASE)
-        except re.error:
-            return None
+        return safe_compile(term, re.IGNORECASE, max_len=cls._REGEX_MAX_LEN)
 
     @classmethod
     def _term_is_regex(cls, term: str) -> bool:
@@ -1558,14 +1794,21 @@ class TopApp(App):
         # warnings first, then most recent; show a manageable tail
         evs = sorted(self.snapshot.events,
                      key=lambda e: (e.type != "Warning", ), )
+        # Content-derived keys, plus the event objects that were actually
+        # drawn: a bare positional key resolved against a LATER snapshot (the
+        # list re-sorts every 5s) opened whatever event had drifted into that
+        # slot. The trailing index only disambiguates true duplicates.
+        self._event_rows = {}
         for i, ev in enumerate(evs[:30]):
             style = "bold yellow" if ev.type == "Warning" else "dim"
+            key = f"ev:{ev.ts_utc}|{ev.name}|{ev.reason}|{i}"
+            self._event_rows[key] = ev
             et.add_row(
                 _fmt_event_ts(ev.ts_utc, self.tz),
                 Text(ev.name[:24], style=style),
                 Text(ev.reason[:18], style=style),
                 str(ev.count),
-                key=f"ev:{i}",
+                key=key,
             )
         self._restore_row(et, saved, sx, sy)
 
@@ -1680,6 +1923,7 @@ class TopApp(App):
         prev_context = self.context or ""
         prev_alertmgr = self.cfg.alertmanager_url
         prev_probes = list(self.cfg.health_probes)
+        self._adopt_triggered_refresh = False
 
         if cfg.name_filter:
             self._search_term = str(cfg.name_filter).strip()
@@ -1699,7 +1943,9 @@ class TopApp(App):
 
         # probe (re)wiring: if the alertmanager URL or health probes changed,
         # update the fetcher so the next refresh picks them up live.
-        if cfg.alertmanager_url != prev_alertmgr or cfg.health_probes != prev_probes:
+        probes_changed = (cfg.alertmanager_url != prev_alertmgr
+                          or cfg.health_probes != prev_probes)
+        if probes_changed:
             self.fetcher.alertmanager_url = cfg.alertmanager_url
             self.fetcher.health_probes = self._probe_specs(cfg)
 
@@ -1756,6 +2002,15 @@ class TopApp(App):
 
         # namespace/context change -> refetch + re-sync the sidebar checkboxes so the
         # sidebar (primary control) and the Options modal never contradict.
+        if context_changed and list(cfg.namespaces) == prev_ns:
+            # The caller switched CLUSTER without naming namespaces, so the set
+            # on screen belongs to the cluster we are leaving. Park it under its
+            # own context and adopt whatever this cluster was last watching —
+            # carrying it over left namespaces listed (and ticked) that do not
+            # exist here at all.
+            self._remember_namespaces(prev_context, prev_ns)
+            cfg.namespaces = self._namespaces_for_context(cfg.context or "")
+
         if list(cfg.namespaces) != prev_ns or context_changed:
             self._reset_trend_history()
             self._bump_fetch_gen()  # drop any in-flight old-scope fetch result
@@ -1765,6 +2020,23 @@ class TopApp(App):
             if list(cfg.namespaces) != prev_ns:
                 self._sync_sidebar_ns()
             self._request_refresh()
+            self._adopt_triggered_refresh = True
+            if context_changed:
+                self._sync_sidebar_ns()   # the restored set may differ from cfg's
+                # A new cluster has its own namespaces: re-list them at once
+                # (both the sidebar CONTEXT picker and the Options modal reach
+                # this branch) and drop the previous cluster's list, which is
+                # not tickable here any more.
+                self._start_ns_discovery(reset_discovered=True)
+        elif probes_changed:
+            # The scope is unchanged, so nothing above refetches — but alerts
+            # and health come from the HEAVY cycle only. Without this an edited
+            # probe URL stays invisible until the next heavy tick. Bump the
+            # scope token too so an in-flight fetch made with the OLD probes
+            # can never land as the new configuration's alerts/health.
+            self._bump_fetch_gen()
+            self._request_refresh()
+            self._adopt_triggered_refresh = True
 
         if persist:
             try:
@@ -1825,8 +2097,7 @@ class TopApp(App):
         # When the cache is empty, kick the discovery worker so a reopened
         # modal has the list.
         if not self._discovered_contexts and self._discover_namespaces:
-            self.run_worker(self._discover_ns_worker, thread=True,
-                            exclusive=False, group="ns")
+            self._start_ns_discovery()
         # hand the modal a copy so a cancelled edit can't half-mutate live state;
         # apply_config() adopts the working copy on every change anyway. The
         # discovered namespace list powers the multi-select.
@@ -2039,16 +2310,35 @@ class TopApp(App):
                         severity="warning")
         self.apply_panel_visibility(persist=True)
 
+    def _user_layer_config(self) -> Config:
+        """The config as it would load with NO profile applied.
+
+        Used when switching to a profile that does not supply a
+        timezone/alertmanager URL/health probes: those must fall back to the
+        user's own values instead of lingering on the outgoing profile's.
+        Never raises — a broken/missing file degrades to plain defaults.
+        """
+        overrides = dict(self._reload_overrides)
+        overrides.pop("profile_authoritative", None)
+        try:
+            return load_config(user_path=self._config_path, **overrides)
+        except Exception:
+            return Config()
+
     def action_reload_config(self) -> None:
         """Re-read the user config file and apply it live.
 
-        Re-runs the same layered load the CLI used (defaults -> profile -> file)
-        so an edit to ``~/.config/kutop/config.yaml`` takes effect without a
-        restart. Robust: a missing/broken file falls back to defaults+profile and
-        the app keeps running. Shows a toast either way.
+        Re-runs the same layered load the CLI used — including the CLI's own
+        base/flag overrides (``--profile``/``--context``/``-n`` and friends,
+        carried in ``reload_overrides``) — so an edit to
+        ``~/.config/kutop/config.yaml`` takes effect without a restart and
+        without silently dropping the flags this session was launched with.
+        Robust: a missing/broken file falls back to defaults+profile and the
+        app keeps running. Shows a toast either way.
         """
         try:
-            cfg = load_config(profile=self.profile, user_path=self._config_path)
+            cfg = load_config(profile=self.profile, user_path=self._config_path,
+                              **self._reload_overrides)
         except Exception as exc:
             self.notify(f"reload failed: {exc}", severity="error")
             return
@@ -2235,7 +2525,9 @@ class TopApp(App):
             return
         if ns_list == list(self.namespaces):
             return
+        _log.info("namespace switch: %s -> %s", ",".join(self.namespaces), ",".join(ns_list))
         self.namespaces = ns_list
+        self._remember_namespaces(self._context_key(), ns_list)
         self._bump_fetch_gen()  # drop any in-flight old-scope fetch result
         self.fetcher.namespaces = ns_list
         self._reset_trend_history()
@@ -2382,17 +2674,30 @@ class TopApp(App):
 
         # Reassign BEFORE adopting so the 'priority' sort uses the new weights on
         # the very first re-render.
+        _log.info("profile switch: %r -> %r", self.cfg.profile_name, new_profile.name)
         self.profile = new_profile
         cfg = copy.deepcopy(self.cfg)
         cfg.profile_name = new_profile.name
-        cfg.timezone = new_profile.timezone
+        # Thresholds are ALWAYS profile-owned; timezone / alertmanager URL /
+        # health probes only when the profile actually supplies them — the same
+        # rule config._profile_owned_sections() applies to the file layering.
+        # A profile that supplies none of them (e.g. generic) must restore the
+        # USER's values, not keep the outgoing profile's, so they come from a
+        # profile-free reload of the user file.
         cfg.cpu_warn, cfg.cpu_crit = new_profile.cpu_warn, new_profile.cpu_crit
         cfg.mem_warn, cfg.mem_crit = new_profile.mem_warn, new_profile.mem_crit
         cfg.pvc_warn, cfg.pvc_crit = new_profile.pvc_warn, new_profile.pvc_crit
-        cfg.alertmanager_url = new_profile.alertmanager_url
+        user_cfg = self._user_layer_config()
+        cfg.timezone = (new_profile.timezone if new_profile.timezone
+                        else user_cfg.timezone)
+        cfg.alertmanager_url = (new_profile.alertmanager_url
+                                if new_profile.alertmanager_url
+                                else user_cfg.alertmanager_url)
         cfg.health_probes = [
             {"name": hp.name, "url": hp.url, "fields": dict(hp.fields)}
             for hp in new_profile.health_probes
+        ] if new_profile.health_probes else [
+            dict(probe) for probe in user_cfg.health_probes
         ]
         # The profile's namespaces win. A no-namespace profile (e.g. generic)
         # resets to the default scope rather than lingering on — and persisting —
@@ -2410,13 +2715,16 @@ class TopApp(App):
         # the namespace set is unchanged, so fetch immediately instead of waiting
         # for the next poll. Bump the scope token so an in-flight fetch made with
         # the OLD probes/ordering can't land as this profile's data, and queue
-        # the refresh if one is already running.
-        self._bump_fetch_gen()
-        self._request_refresh()
+        # the refresh if one is already running. Skipped when _adopt_config
+        # already did it — a second one only doubles the kubectl fan-out.
+        if not self._adopt_triggered_refresh:
+            self._bump_fetch_gen()
+            self._request_refresh()
         self.notify(f"profile: {new_profile.name}")
 
     def _context_key(self) -> str:
-        """The active kube context, used as the profiles_by_context map key.
+        """The active kube context: the profiles_by_context and
+        namespaces_by_context map key.
 
         The FULL resolved context name (e.g. an EKS ARN), not the truncated
         sidebar display. Empty when no context is resolved yet (e.g. headless
@@ -2437,13 +2745,105 @@ class TopApp(App):
         name = (name or "").strip()
         if name == (self.context or ""):
             return
+        _log.info("context switch: %r -> %r", self.context or "", name)
         cfg = copy.deepcopy(self.cfg)
         cfg.context = name
-        self._adopt_config(cfg, persist=True)
-        if self._discover_namespaces:
-            self.run_worker(self._discover_ns_worker, thread=True,
-                            exclusive=False, group="ns")
+        self._adopt_config(cfg, persist=True)   # re-discovers the new cluster
         self.notify(f"context: {name or 'current'}")
+
+    def _remember_namespaces(self, context: str, namespaces: "list[str]") -> None:
+        """Park ``namespaces`` as ``context``'s watched set.
+
+        Keyed by the FULL context name (an EKS ARN included). An empty context
+        (none selected) is not a cluster identity, so nothing is stored for it.
+        """
+        key = (context or "").strip()
+        values = [n for n in (namespaces or []) if n]
+        if not key or not values:
+            return
+        if self.cfg.namespaces_by_context.get(key) == values:
+            return
+        self.cfg.namespaces_by_context[key] = values
+
+    def _namespaces_for_context(self, context: str) -> "list[str]":
+        """The namespaces to watch when arriving at ``context``.
+
+        That cluster's own last selection when we have one, else the built-in
+        default scope — never the outgoing cluster's namespaces.
+        """
+        key = (context or "").strip()
+        remembered = self.cfg.namespaces_by_context.get(key) if key else None
+        if remembered:
+            return list(remembered)
+        return list(Config().namespaces)
+
+    def _adopt_watched_namespaces(self, ns_list: "list[str]") -> None:
+        """Adopt a namespace set decided by the app itself (not by a click).
+
+        Rewires the fetcher, refreshes, records the set under the active
+        context, and re-ticks the sidebar. Unlike :meth:`set_namespaces` this
+        takes no floor decision of its own — callers pass a non-empty set.
+        """
+        self.namespaces = list(ns_list)
+        self.fetcher.namespaces = list(ns_list)
+        self._remember_namespaces(self._context_key(), list(ns_list))
+        self._bump_fetch_gen()
+        self._persist_state()
+        self._sync_sidebar_ns()
+        self._request_refresh()
+
+    def _namespaces_given_on_cli(self) -> bool:
+        """True when this run named its namespaces explicitly (positional arg).
+
+        Such a run must keep what the user typed; the per-context recall only
+        fills in when the scope was left to kutop.
+        """
+        base = (self._reload_overrides or {}).get("base_overrides") or {}
+        return bool((base.get("cluster") or {}).get("namespaces"))
+
+    def _maybe_restore_remembered_namespaces(self) -> None:
+        """Once per session, adopt the active context's own remembered scope.
+
+        The persisted ``cluster.namespaces`` is a single global value, so it
+        holds whichever cluster was watched LAST — landing in another cluster
+        with a scope that belongs somewhere else. The per-context map is the
+        finer-grained version of the same preference, so it wins on the first
+        successful listing of a session.
+        """
+        if self._ns_recall_done:
+            return
+        self._ns_recall_done = True
+        if self._namespaces_given_on_cli():
+            return
+        remembered = self.cfg.namespaces_by_context.get(self._context_key())
+        if not remembered or list(remembered) == list(self.namespaces):
+            return
+        _log.info("restoring remembered namespaces for %s: %s",
+                  self._context_key(), ",".join(remembered))
+        self._adopt_watched_namespaces(list(remembered))
+
+    def _prune_namespaces_to_cluster(self, discovered: "list[str]") -> None:
+        """Drop watched namespaces the freshly listed cluster does not have.
+
+        Only ever called with a SUCCESSFUL listing (a failed one lists nothing
+        and must not be read as "this cluster has no namespaces"). Keeps the
+        order the user chose. The watched set must never be empty — the app
+        enforces that floor everywhere — so if nothing survives, watch
+        ``default`` when the cluster has it and otherwise its first namespace.
+        """
+        if not discovered:
+            return
+        watched = list(self.namespaces)
+        available = set(discovered)
+        kept = [ns for ns in watched if ns in available]
+        if kept == watched:
+            return
+        if not kept:
+            kept = ["default"] if "default" in available else [discovered[0]]
+        dropped = [ns for ns in watched if ns not in available]
+        _log.info("dropping namespaces absent from this cluster: %s",
+                  ",".join(dropped))
+        self._adopt_watched_namespaces(kept)
 
     def _remember_current_profile(self) -> None:
         """Persist the current context -> profile mapping when remembering is on.
@@ -2689,11 +3089,8 @@ class TopApp(App):
         kv = str(event.row_key.value or "")
         if not kv.startswith("ev:"):
             return
-        try:
-            idx = int(kv.split(":", 1)[1])
-        except ValueError:
-            return
-        evs = sorted(self.snapshot.events, key=lambda e: (e.type != "Warning",))
-        if 0 <= idx < len(evs):
-            ev = evs[idx]
+        # resolve against the rows as RENDERED, not a fresh re-sort of the
+        # current snapshot — the two disagree the moment a refresh lands
+        ev = self._event_rows.get(kv)
+        if ev is not None:
             self.push_screen(EventDetailModal(ev.name, ev.reason, ev.message))

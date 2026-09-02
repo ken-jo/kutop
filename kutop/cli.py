@@ -9,6 +9,7 @@ headlessly with a synthetic snapshot (no kubectl) for cluster-independent CI.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import shutil
 import sys
@@ -26,6 +27,30 @@ from .config import (
     load_profile,
     snapshot_detail_size,
 )
+
+
+#: Upper bound for ``--log-tail``. ``kubectl logs --tail`` is happy with any
+#: number, but the viewer holds every line in memory, so an accidental
+#: ``--log-tail 100000000`` must be rejected up front rather than exhausting RAM.
+_LOG_TAIL_MAX = 100000
+
+
+def _log_tail_arg(value: str) -> int:
+    """argparse type for ``--log-tail``: ``-1`` (all) or 1..``_LOG_TAIL_MAX``.
+
+    ``0`` and negative values other than ``-1`` would silently produce an empty
+    or unbounded log view, so they are rejected with a clean parser error.
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"invalid int value: {value!r} (use -1 for all, or 1-{_LOG_TAIL_MAX})"
+        ) from None
+    if n == -1 or 1 <= n <= _LOG_TAIL_MAX:
+        return n
+    raise argparse.ArgumentTypeError(
+        f"must be -1 (all) or between 1 and {_LOG_TAIL_MAX}, got {n}")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -83,10 +108,15 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="start with pod delete (x) and rollout restart (X) enabled "
                          "(seeds the in-app 'Allow delete/restart' sidebar toggle; "
                          "still confirm-gated)")
+    ap.add_argument("--log-file", metavar="PATH", default=None,
+                    help="append a debug log (kubectl failures, refresh cycles, "
+                         "context/namespace/profile switches) to PATH; also "
+                         "KUTOP_LOG_FILE=PATH")
     ap.add_argument("--no-metrics-bootstrap", action="store_true",
                     help="skip the interactive Metrics Server preflight/install prompt")
-    ap.add_argument("--log-tail", type=int, default=150,
-                    help="lines of history for the live log viewer (default: 150)")
+    ap.add_argument("--log-tail", type=_log_tail_arg, default=150, metavar="N",
+                    help="lines of history for the live log viewer "
+                         "(1-100000, or -1 for all; default: 150)")
     ap.add_argument("--self-test", action="store_true",
                     help="run headlessly with a synthetic snapshot and exit (CI smoke test)")
     ap.add_argument("--snapshot", default=None, metavar="PATH",
@@ -287,8 +317,40 @@ def _recall_startup_profile(args, profile, cfg, base_over, cli_over):
     return recalled, recalled_cfg
 
 
+def _setup_log_file(path: Optional[str]) -> Optional[str]:
+    """Attach a DEBUG file handler to the ``kutop`` logger; returns the path.
+
+    Opt-in only (``--log-file`` / ``KUTOP_LOG_FILE``): the TUI owns the
+    terminal, so this is the one place a user can see WHY a refresh failed or
+    when a scope switch happened. Never raises — an unwritable path is reported
+    on stderr and the app runs without a log.
+    """
+    target = (path or os.environ.get("KUTOP_LOG_FILE") or "").strip()
+    if not target:
+        return None
+    try:
+        handler = logging.FileHandler(os.path.expanduser(target), encoding="utf-8")
+    except OSError as exc:
+        sys.stderr.write(f"kutop: cannot open log file {target!r}: {exc}\n")
+        return None
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s %(threadName)s: %(message)s"))
+    logger = logging.getLogger("kutop")
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    logger.info("kutop %s starting; argv=%s", __version__, sys.argv[1:])
+    return target
+
+
 def main(argv: Optional[list[str]] = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    _setup_log_file(args.log_file)
+
+    # An empty --snapshot path would render to '' and fail deep inside Textual;
+    # reject it where the user can still see a parser error.
+    if args.snapshot is not None and not args.snapshot.strip():
+        parser.error("--snapshot requires a path")
 
     # The stderr note is covered by the fullscreen TUI almost immediately, so
     # the fact that it fired also travels to TopApp for an in-app toast.
@@ -332,16 +394,24 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Layer the unified config: defaults -> profile -> user file -> CLI flags.
     base_over = _base_overrides(args)
     cli_over = _cli_overrides(args)
+    profile_authoritative = bool(args.profile)
     cfg = load_config(
         profile=profile,
         user_path=args.config,
         base_overrides=base_over,
         cli_overrides=cli_over,
-        profile_authoritative=bool(args.profile),
+        profile_authoritative=profile_authoritative,
     )
 
-    if args.profile is None and not (args.self_test or args.snapshot):
-        profile, cfg = _recall_startup_profile(args, profile, cfg, base_over, cli_over)
+    # Recall is a live-path convenience and may shell out to kubectl for the
+    # current context, so the cluster-free modes (--self-test / --snapshot /
+    # --dump-config) all skip it.
+    if args.profile is None and not (args.self_test or args.snapshot or args.dump_config):
+        recalled, cfg = _recall_startup_profile(args, profile, cfg, base_over, cli_over)
+        if recalled is not profile:
+            # a recalled profile was loaded authoritatively (see the helper)
+            profile_authoritative = True
+        profile = recalled
 
     apply_detail_preset(cfg, args.detail)
 
@@ -349,11 +419,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.dump_config:
         sys.stdout.write(dump_config_yaml(cfg))
         return 0
-
-    if not (args.self_test or args.snapshot):
-        proxy_note = _proxy_env_note()
-        if proxy_note:
-            cfg.load_warnings.append(proxy_note)
 
     # Lazy import so --version / --help / --dump-config don't require textual.
     from .render.app import TopApp
@@ -372,6 +437,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         auto_refresh=not (args.self_test or args.snapshot),
         force_color=bool(args.snapshot),
         config_path=args.config,
+        # Everything the in-app hot reload (R) needs to re-run the IDENTICAL
+        # layering the CLI just did (defaults -> profile -> file -> CLI flags),
+        # so a reload can never quietly drop the CLI layer.
+        reload_overrides={
+            "base_overrides": base_over,
+            "cli_overrides": cli_over,
+            "profile_authoritative": profile_authoritative,
+        },
     )
 
     if args.self_test:
@@ -391,8 +464,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             view=args.snapshot_view,
         )
         if code == 0:
-            print(f"wrote snapshot SVG -> {args.snapshot}")
-        return code
+            # Never let a synthetic fallback frame pass for the real cluster.
+            if getattr(code, "synthetic", False):
+                print(f"wrote snapshot SVG -> {args.snapshot} "
+                      "(synthetic frame: no cluster data)")
+            else:
+                print(f"wrote snapshot SVG -> {args.snapshot}")
+                if getattr(code, "error", ""):
+                    sys.stderr.write(f"note: partial data — {code.error}\n")
+        return int(code)
 
     if not args.no_metrics_bootstrap:
         from .metrics import maybe_bootstrap_metrics_server
@@ -401,25 +481,6 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     app.run()
     return 0
-
-
-def _proxy_env_note() -> Optional[str]:
-    """Return a live-startup notice when a proxy environment variable is set.
-
-    Every kutop data read shells out to ``kubectl``, so each call honors
-    ``HTTPS_PROXY`` / ``HTTP_PROXY`` unless the API host matches ``NO_PROXY``.
-    The notice is shown inside the fullscreen app rather than written to stderr,
-    which would flash briefly before Textual takes over the terminal.
-    """
-    proxied = [name for name in ("HTTPS_PROXY", "https_proxy",
-                                 "HTTP_PROXY", "http_proxy")
-               if os.environ.get(name)]
-    if not proxied:
-        return None
-    return (
-        f"{proxied[0]} is set; kubectl may use that proxy unless the Kubernetes "
-        "API host matches NO_PROXY"
-    )
 
 
 if __name__ == "__main__":

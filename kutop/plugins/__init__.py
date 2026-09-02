@@ -28,6 +28,7 @@ name for its logic — it only iterates :func:`iter_plugins` / :func:`iter_enabl
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -66,6 +67,10 @@ class KutopPlugin(Protocol):
 # plugin module is absent (deleted) or fails to import, it is simply skipped so
 # the core keeps running. The core treats this list opaquely.
 _REGISTRY: "Optional[list[KutopPlugin]]" = None
+# The registry is read from the UI thread (render) AND the fetch worker thread,
+# so the lazy build is guarded: without it both threads can run _discover()
+# concurrently and import the same plugin modules twice.
+_REGISTRY_LOCK = threading.Lock()
 
 # Module paths of the built-in optional plugins. Each must expose ``PLUGIN``
 # (a KutopPlugin instance). Adding a plugin = appending its module path here.
@@ -99,7 +104,9 @@ def iter_plugins() -> "list[KutopPlugin]":
     """Return all discovered plugins (cached after the first call)."""
     global _REGISTRY
     if _REGISTRY is None:
-        _REGISTRY = _discover()
+        with _REGISTRY_LOCK:
+            if _REGISTRY is None:   # re-check: another thread may have built it
+                _REGISTRY = _discover()
     return list(_REGISTRY)
 
 
@@ -120,4 +127,5 @@ def iter_enabled(config: Any) -> "Iterable[KutopPlugin]":
 def reset_registry() -> None:
     """Forget the cached registry so the next call re-discovers (tests/hot-reload)."""
     global _REGISTRY
-    _REGISTRY = None
+    with _REGISTRY_LOCK:
+        _REGISTRY = None

@@ -169,6 +169,7 @@ def test_every_persistable_config_field_round_trips(tmp_path: Path) -> None:
         "columns": ["name", "namespace", "cpu", "age"],  # valid registry keys
         "profile_name": "round-trip-prof",
         "profiles_by_context": {"ctx-roundtrip": "round-trip-prof"},
+        "namespaces_by_context": {"ctx-roundtrip": ["team-a", "team-b"]},
     }
 
     defaults = Config()

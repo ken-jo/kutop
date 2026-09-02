@@ -176,7 +176,7 @@ uses your local `kubectl` and kubeconfig exactly as `kubectl` would.
 | Dependency | Required version / contract | Used for |
 |------------|-----------------------------|----------|
 | Python | 3.9+ | running the installed `kutop` package |
-| Textual / Rich | `textual==8.2.7`, `rich==15.0.0` | terminal UI rendering |
+| Textual / Rich | `textual==8.2.8`, `rich==15.0.0` | terminal UI rendering |
 | kubectl | installed on `PATH`; use a client within +/- 1 minor version of your cluster's kube-apiserver | all live cluster reads and actions |
 | kubeconfig | current context from `~/.kube/config`, `KUBECONFIG`, or `--context` | cluster auth and target selection |
 | Metrics Server | 0.6.x+ on Kubernetes 1.19+ recommended | `kubectl top` CPU/MEM metrics |
@@ -681,9 +681,7 @@ The detail presets are one-shot column layouts:
   namespaces, pods/events/PVCs are listed with a single cluster-wide `-A` call
   (filtered locally) instead of one call per namespace — falling back to
   per-namespace if you lack cluster-wide list permission. A scope switch or
-  manual refresh (`r`) forces an immediate full refresh. If `HTTPS_PROXY`/
-  `HTTP_PROXY` is set, kutop shows an in-app notice that kubectl may use it
-  unless the API host matches `NO_PROXY`.
+  manual refresh (`r`) forces an immediate full refresh.
 * PVC usage comes from the kubelet summary API
   (`/api/v1/nodes/<node>/proxy/stats/summary`) because metrics-server does not
   expose it — a node whose summary call fails is skipped, others still report.
