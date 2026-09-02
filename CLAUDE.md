@@ -62,6 +62,9 @@ presentation (ordering, timezone, thresholds).
   Which fields count as "profile-owned" is defined once in `_profile_owned_sections()`
   (thresholds always; timezone/namespaces/context/probes only when the profile supplies them) —
   `_profile_layer`, `_strip_profile_owned`, and `_config_for_persist` all derive from it.
+  `namespaces_by_context` (`{context: [ns, ...]}`) is the per-cluster watched-namespace recall
+  map; it is always kutop-owned and per-machine, never profile-owned, so it survives even while
+  a profile owns `cluster.namespaces`.
 - **`fetch.py`** — `Fetcher` runs blocking `subprocess.run` kubectl calls. MUST run off the UI
   thread (the app drives it via a `@work(thread=True)` worker, pushes results with
   `call_from_thread`). Robustness contract: any failure sets `Snapshot.error` and returns a
@@ -138,7 +141,13 @@ presentation (ordering, timezone, thresholds).
   rows (error + `kubectl get nodes` hint + retry cadence) instead of a bare loading row; no
   toast fires before the first frame (the rows carry the detail), and a `localhost:8080`
   failure with no context resolved renders as `no kube context selected` guidance
-  (`_looks_like_no_context`). Sidebar `Select` picks are never gated on `_syncing` —
+  (`_looks_like_no_context`). Watched namespaces are remembered per context: a context switch
+  parks the outgoing selection under its own key (`_remember_namespaces`) and adopts the
+  incoming cluster's (`_namespaces_for_context`, the default scope when unknown), and the first
+  successful listing of a cluster runs `_maybe_restore_remembered_namespaces` (session-once,
+  skipped when namespaces were named on the command line) then `_prune_namespaces_to_cluster`, which drops
+  watched namespaces the cluster does not have and never leaves the scope empty; a failed
+  listing never prunes. Sidebar `Select` picks are never gated on `_syncing` —
   programmatic writes are suppressed with `prevent()`, so a `Changed` that arrives is the
   user's.
   Refresh errors are surfaced via `_notify_refresh_error` (deduped per severity+text);

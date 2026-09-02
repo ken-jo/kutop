@@ -401,6 +401,9 @@ class TopApp(App):
         self._ns_discovering = False
         self._ns_discovery_failed = False
         self._last_discovery_error = ""
+        # per-context namespace recall runs once per session, on the first
+        # successful listing (see _maybe_restore_remembered_namespaces)
+        self._ns_recall_done = False
         self._discovered_contexts: list[str] = []
         # Selectable profile names for the sidebar dropdown (discovered once;
         # profiles don't change on disk mid-session).
@@ -899,6 +902,10 @@ class TopApp(App):
         if discovered:
             # remember the full cluster ns list for the Options multi-select
             self._discovered_ns = list(discovered)
+            # now that this cluster's real list is known: adopt the scope it was
+            # last watched with, then drop anything it does not actually have
+            self._maybe_restore_remembered_namespaces()
+            self._prune_namespaces_to_cluster(discovered)
             sidebar.rebuild_namespaces(
                 self._sidebar_ns_options(discovered), list(self.namespaces)
             )
@@ -1995,6 +2002,15 @@ class TopApp(App):
 
         # namespace/context change -> refetch + re-sync the sidebar checkboxes so the
         # sidebar (primary control) and the Options modal never contradict.
+        if context_changed and list(cfg.namespaces) == prev_ns:
+            # The caller switched CLUSTER without naming namespaces, so the set
+            # on screen belongs to the cluster we are leaving. Park it under its
+            # own context and adopt whatever this cluster was last watching —
+            # carrying it over left namespaces listed (and ticked) that do not
+            # exist here at all.
+            self._remember_namespaces(prev_context, prev_ns)
+            cfg.namespaces = self._namespaces_for_context(cfg.context or "")
+
         if list(cfg.namespaces) != prev_ns or context_changed:
             self._reset_trend_history()
             self._bump_fetch_gen()  # drop any in-flight old-scope fetch result
@@ -2006,6 +2022,7 @@ class TopApp(App):
             self._request_refresh()
             self._adopt_triggered_refresh = True
             if context_changed:
+                self._sync_sidebar_ns()   # the restored set may differ from cfg's
                 # A new cluster has its own namespaces: re-list them at once
                 # (both the sidebar CONTEXT picker and the Options modal reach
                 # this branch) and drop the previous cluster's list, which is
@@ -2510,6 +2527,7 @@ class TopApp(App):
             return
         _log.info("namespace switch: %s -> %s", ",".join(self.namespaces), ",".join(ns_list))
         self.namespaces = ns_list
+        self._remember_namespaces(self._context_key(), ns_list)
         self._bump_fetch_gen()  # drop any in-flight old-scope fetch result
         self.fetcher.namespaces = ns_list
         self._reset_trend_history()
@@ -2705,7 +2723,8 @@ class TopApp(App):
         self.notify(f"profile: {new_profile.name}")
 
     def _context_key(self) -> str:
-        """The active kube context, used as the profiles_by_context map key.
+        """The active kube context: the profiles_by_context and
+        namespaces_by_context map key.
 
         The FULL resolved context name (e.g. an EKS ARN), not the truncated
         sidebar display. Empty when no context is resolved yet (e.g. headless
@@ -2731,6 +2750,100 @@ class TopApp(App):
         cfg.context = name
         self._adopt_config(cfg, persist=True)   # re-discovers the new cluster
         self.notify(f"context: {name or 'current'}")
+
+    def _remember_namespaces(self, context: str, namespaces: "list[str]") -> None:
+        """Park ``namespaces`` as ``context``'s watched set.
+
+        Keyed by the FULL context name (an EKS ARN included). An empty context
+        (none selected) is not a cluster identity, so nothing is stored for it.
+        """
+        key = (context or "").strip()
+        values = [n for n in (namespaces or []) if n]
+        if not key or not values:
+            return
+        if self.cfg.namespaces_by_context.get(key) == values:
+            return
+        self.cfg.namespaces_by_context[key] = values
+
+    def _namespaces_for_context(self, context: str) -> "list[str]":
+        """The namespaces to watch when arriving at ``context``.
+
+        That cluster's own last selection when we have one, else the built-in
+        default scope — never the outgoing cluster's namespaces.
+        """
+        key = (context or "").strip()
+        remembered = self.cfg.namespaces_by_context.get(key) if key else None
+        if remembered:
+            return list(remembered)
+        return list(Config().namespaces)
+
+    def _adopt_watched_namespaces(self, ns_list: "list[str]") -> None:
+        """Adopt a namespace set decided by the app itself (not by a click).
+
+        Rewires the fetcher, refreshes, records the set under the active
+        context, and re-ticks the sidebar. Unlike :meth:`set_namespaces` this
+        takes no floor decision of its own — callers pass a non-empty set.
+        """
+        self.namespaces = list(ns_list)
+        self.fetcher.namespaces = list(ns_list)
+        self._remember_namespaces(self._context_key(), list(ns_list))
+        self._bump_fetch_gen()
+        self._persist_state()
+        self._sync_sidebar_ns()
+        self._request_refresh()
+
+    def _namespaces_given_on_cli(self) -> bool:
+        """True when this run named its namespaces explicitly (positional arg).
+
+        Such a run must keep what the user typed; the per-context recall only
+        fills in when the scope was left to kutop.
+        """
+        base = (self._reload_overrides or {}).get("base_overrides") or {}
+        return bool((base.get("cluster") or {}).get("namespaces"))
+
+    def _maybe_restore_remembered_namespaces(self) -> None:
+        """Once per session, adopt the active context's own remembered scope.
+
+        The persisted ``cluster.namespaces`` is a single global value, so it
+        holds whichever cluster was watched LAST — landing in another cluster
+        with a scope that belongs somewhere else. The per-context map is the
+        finer-grained version of the same preference, so it wins on the first
+        successful listing of a session.
+        """
+        if self._ns_recall_done:
+            return
+        self._ns_recall_done = True
+        if self._namespaces_given_on_cli():
+            return
+        remembered = self.cfg.namespaces_by_context.get(self._context_key())
+        if not remembered or list(remembered) == list(self.namespaces):
+            return
+        _log.info("restoring remembered namespaces for %s: %s",
+                  self._context_key(), ",".join(remembered))
+        self._adopt_watched_namespaces(list(remembered))
+
+    def _prune_namespaces_to_cluster(self, discovered: "list[str]") -> None:
+        """Drop watched namespaces the freshly listed cluster does not have.
+
+        Only ever called with a SUCCESSFUL listing (a failed one lists nothing
+        and must not be read as "this cluster has no namespaces"). Keeps the
+        order the user chose. The watched set must never be empty — the app
+        enforces that floor everywhere — so if nothing survives, watch
+        ``default`` when the cluster has it and otherwise its first namespace.
+        """
+        if not discovered:
+            return
+        watched = list(self.namespaces)
+        available = set(discovered)
+        kept = [ns for ns in watched if ns in available]
+        if kept == watched:
+            return
+        if not kept:
+            kept = ["default"] if "default" in available else [discovered[0]]
+        dropped = [ns for ns in watched if ns not in available]
+        _log.info("dropping namespaces absent from this cluster: %s",
+                  ",".join(dropped))
+        self._adopt_watched_namespaces(kept)
 
     def _remember_current_profile(self) -> None:
         """Persist the current context -> profile mapping when remembering is on.

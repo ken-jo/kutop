@@ -83,6 +83,16 @@
   back and forth used to race exactly that way). A context change — from the
   sidebar or the Options modal — re-lists immediately and drops the previous
   cluster's namespaces instead of leaving them tickable.
+- **Watched namespaces are now remembered per kube context.** A namespace only
+  means something inside the cluster that has it, so switching contexts used to
+  leave the previous cluster's selection ticked (`calico-system` still watched
+  under an EKS context, showing nothing). Each context's selection is now parked
+  under its own key in `namespaces_by_context` and restored when you come back to
+  it; a context you have never watched starts at the default scope. On top of
+  that, the first successful namespace listing of a cluster drops any watched
+  namespace the cluster does not actually have (falling back to `default`, or to
+  the first listed namespace, rather than to an empty scope). A failed listing
+  never prunes, and namespaces named on the command line always win.
 - **A failed namespace listing is no longer silent.** It used to leave the
   sidebar showing only the watched namespaces, which reads as "this cluster has
   one namespace" rather than "the listing failed". The NAMESPACES header now

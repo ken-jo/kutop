@@ -685,6 +685,14 @@ class Config:
     remember_profile_per_context: bool = False
     profiles_by_context: dict = field(default_factory=dict)
 
+    # Watched namespaces remembered per kube context: ``{context: [ns, ...]}``.
+    # A cluster's namespaces are meaningless in another cluster, so switching
+    # context restores that cluster's own last selection instead of carrying the
+    # previous one over (which left namespaces on screen that do not exist
+    # here). Always kutop-owned and per-machine — never profile-owned, so it
+    # persists even while a profile owns ``cluster.namespaces``.
+    namespaces_by_context: dict = field(default_factory=dict)
+
     # Runtime-only: problems collected while loading (e.g. an unparseable user
     # file) for the app to surface as toasts. Like name_filter's transient
     # search state this never persists — to_dict()/dump_config_yaml() skip it,
@@ -756,6 +764,9 @@ class Config:
             "columns": list(self.columns),
             "profile": self.profile_name,
             "profiles_by_context": dict(self.profiles_by_context),
+            "namespaces_by_context": {
+                k: list(v) for k, v in self.namespaces_by_context.items()
+            },
         }
 
 
@@ -852,6 +863,25 @@ def _config_from_dict(d: dict) -> Config:
             if ks and vs:
                 profiles_by_context[ks] = vs
 
+    # namespaces_by_context: a {context: [ns]} map, coerced to clean str->list
+    # (drop blank keys and empty selections) so a hand-edited file can't crash
+    # load or restore an empty scope.
+    nbc_in = d.get("namespaces_by_context", {}) or {}
+    namespaces_by_context: dict = {}
+    if isinstance(nbc_in, dict):
+        for ctx_name, ns_list in nbc_in.items():
+            key = str(ctx_name).strip()
+            if not key:
+                continue
+            if isinstance(ns_list, str):
+                values = [n.strip() for n in ns_list.split(",") if n.strip()]
+            elif isinstance(ns_list, (list, tuple)):
+                values = [str(n).strip() for n in ns_list if str(n).strip()]
+            else:
+                continue
+            if values:
+                namespaces_by_context[key] = values
+
     def _int(src, key, default):
         try:
             return int(src.get(key, default))
@@ -891,6 +921,7 @@ def _config_from_dict(d: dict) -> Config:
         remember_profile_per_context=_coerce_bool(
             view.get("remember_profile_per_context"), False),
         profiles_by_context=profiles_by_context,
+        namespaces_by_context=namespaces_by_context,
     )
 
 
@@ -1239,6 +1270,17 @@ def dump_config_yaml(cfg: Optional[Config] = None) -> str:
             lines.append(f"  {json.dumps(str(ctx_name))}: {json.dumps(str(prof))}")
     else:
         lines.append("profiles_by_context: {}")
+    lines.append("")
+    lines.append("# namespaces remembered per kube context (updated whenever you")
+    lines.append("# switch context or tick a namespace); a cluster's selection is")
+    lines.append("# restored when you come back to it.")
+    if cfg.namespaces_by_context:
+        lines.append("namespaces_by_context:")
+        for ctx_name, ns_list in cfg.namespaces_by_context.items():
+            values = ", ".join(json.dumps(str(n)) for n in ns_list)
+            lines.append(f"  {json.dumps(str(ctx_name))}: [{values}]")
+    else:
+        lines.append("namespaces_by_context: {}")
     lines.append("")
     lines.append("view:")
     lines.append(

@@ -430,3 +430,202 @@ def test_discovery_failure_stays_silent_before_the_first_frame() -> None:
             await pilot.exit(None)
 
     asyncio.run(drive())
+
+
+# ── 8. namespaces are remembered per context ─────────────────────────────────
+
+
+def test_context_switch_restores_that_clusters_own_namespaces() -> None:
+    """Switching clusters must not carry the previous cluster's scope over —
+    namespaces that do not exist in the new cluster used to stay listed AND
+    ticked (calico-* from a local cluster showing under an EKS context)."""
+
+    async def drive() -> None:
+        app = TopApp(["calico-system", "default"], discover_namespaces=False,
+                     auto_refresh=False, context="local")
+        app.fetcher = _FakeFetcher({}, context="local")  # type: ignore[assignment]
+        _mute(app)
+        app._persist_state = lambda: None  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.cfg.namespaces_by_context["spm-eks"] = ["prod", "api"]
+
+            app.set_context("spm-eks")
+            await pilot.pause()
+
+            # the EKS cluster's own remembered scope is adopted ...
+            assert list(app.namespaces) == ["prod", "api"]
+            # ... and the local cluster's scope is parked under its own key
+            assert app.cfg.namespaces_by_context["local"] == [
+                "calico-system", "default"]
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_unknown_context_starts_from_the_default_scope() -> None:
+    """A cluster we have never watched starts at the built-in default, not at
+    whatever the previous cluster happened to be showing."""
+
+    async def drive() -> None:
+        app = TopApp(["calico-system"], discover_namespaces=False,
+                     auto_refresh=False, context="local")
+        app.fetcher = _FakeFetcher({}, context="local")  # type: ignore[assignment]
+        _mute(app)
+        app._persist_state = lambda: None  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.set_context("brand-new")
+            await pilot.pause()
+            assert list(app.namespaces) == ["default"]
+            assert "calico-system" not in _ns_labels(app)
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_ticking_namespaces_records_them_for_the_active_context() -> None:
+    async def drive() -> None:
+        app = TopApp(["default"], discover_namespaces=False, auto_refresh=False,
+                     context="spm-eks")
+        app.fetcher = _FakeFetcher({}, context="spm-eks")  # type: ignore[assignment]
+        _mute(app)
+        app._persist_state = lambda: None  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.set_namespaces(["prod", "api"])
+            await pilot.pause()
+            assert app.cfg.namespaces_by_context["spm-eks"] == ["prod", "api"]
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_listing_drops_namespaces_the_cluster_does_not_have() -> None:
+    """The reported symptom: calico-* survived a switch to an EKS context."""
+
+    async def drive() -> None:
+        app = TopApp(["default", "calico-system", "calico-apiserver"],
+                     discover_namespaces=False, auto_refresh=False,
+                     context="spm-eks")
+        app.fetcher = _FakeFetcher({}, context="spm-eks")  # type: ignore[assignment]
+        _mute(app)
+        app._persist_state = lambda: None  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._populate_ns_list(["default", "prod", "api"],
+                                  app._discover_gen, "")
+            await pilot.pause()
+            assert list(app.namespaces) == ["default"]
+            labels = _ns_labels(app)
+            assert "calico-system" not in labels
+            assert "calico-apiserver" not in labels
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_pruning_keeps_a_namespace_the_cluster_really_has() -> None:
+    async def drive() -> None:
+        app = TopApp(["prod", "gone"], discover_namespaces=False,
+                     auto_refresh=False, context="spm-eks")
+        app.fetcher = _FakeFetcher({}, context="spm-eks")  # type: ignore[assignment]
+        _mute(app)
+        app._persist_state = lambda: None  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._populate_ns_list(["prod", "api"], app._discover_gen, "")
+            await pilot.pause()
+            assert list(app.namespaces) == ["prod"]
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_pruning_never_empties_the_watched_set() -> None:
+    """Nothing in common: fall back to a namespace the cluster actually has."""
+
+    async def drive() -> None:
+        app = TopApp(["only-here"], discover_namespaces=False,
+                     auto_refresh=False, context="spm-eks")
+        app.fetcher = _FakeFetcher({}, context="spm-eks")  # type: ignore[assignment]
+        _mute(app)
+        app._persist_state = lambda: None  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._populate_ns_list(["alpha", "beta"], app._discover_gen, "")
+            await pilot.pause()
+            assert list(app.namespaces) == ["alpha"]   # no 'default' here
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_failed_listing_never_prunes() -> None:
+    """A failed listing lists nothing — that must not read as 'this cluster has
+    no namespaces' and wipe the user's scope."""
+
+    async def drive() -> None:
+        app = TopApp(["prod", "api"], discover_namespaces=False,
+                     auto_refresh=False, context="spm-eks")
+        app.fetcher = _FakeFetcher({}, context="spm-eks")  # type: ignore[assignment]
+        _mute(app)
+        app._persist_state = lambda: None  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._apply_snapshot(_good_frame(), gen=app._fetch_gen)
+            await pilot.pause()
+            app._populate_ns_list([], app._discover_gen, "timed out after 6s")
+            await pilot.pause()
+            assert list(app.namespaces) == ["prod", "api"]
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_startup_recall_restores_the_contexts_scope_once() -> None:
+    async def drive() -> None:
+        app = TopApp(["default"], discover_namespaces=False, auto_refresh=False,
+                     context="spm-eks")
+        app.fetcher = _FakeFetcher({}, context="spm-eks")  # type: ignore[assignment]
+        _mute(app)
+        app._persist_state = lambda: None  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.cfg.namespaces_by_context["spm-eks"] = ["prod", "api"]
+
+            app._populate_ns_list(["default", "prod", "api"],
+                                  app._discover_gen, "")
+            await pilot.pause()
+            assert list(app.namespaces) == ["prod", "api"]
+
+            # a later listing must not undo a subsequent manual pick
+            app.set_namespaces(["default"])
+            await pilot.pause()
+            app._populate_ns_list(["default", "prod", "api"],
+                                  app._discover_gen, "")
+            await pilot.pause()
+            assert list(app.namespaces) == ["default"]
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_startup_recall_yields_to_namespaces_given_on_the_command_line() -> None:
+    async def drive() -> None:
+        app = TopApp(["typed-ns"], discover_namespaces=False, auto_refresh=False,
+                     context="spm-eks",
+                     reload_overrides={"base_overrides":
+                                       {"cluster": {"namespaces": ["typed-ns"]}}})
+        app.fetcher = _FakeFetcher({}, context="spm-eks")  # type: ignore[assignment]
+        _mute(app)
+        app._persist_state = lambda: None  # type: ignore[method-assign]
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.cfg.namespaces_by_context["spm-eks"] = ["prod"]
+            app._populate_ns_list(["typed-ns", "prod"], app._discover_gen, "")
+            await pilot.pause()
+            assert list(app.namespaces) == ["typed-ns"]
+            await pilot.exit(None)
+
+    asyncio.run(drive())
