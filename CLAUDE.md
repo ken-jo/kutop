@@ -161,7 +161,7 @@ presentation (ordering, timezone, thresholds).
   `--self-test` stay cheap and cluster-free.
 - **Network/kubectl only when asked.** Empty alertmanager/health-probe config means those paths
   never touch the network — this is what keeps `--self-test` kubectl- and network-free.
-- **Pinned deps:** `textual==8.2.7`, `rich==15.0.0`. Targets Python **3.9+** (CI matrix is 3.9
+- **Pinned deps:** `textual==8.2.8`, `rich==15.0.0`. Targets Python **3.9+** (CI matrix is 3.9
   and 3.12) — avoid 3.10+-only syntax in runtime code. See `tests/conftest.py` for the 3.9
   event-loop shim that keeps synchronous Textual widget tests portable.
 - **`storage_used_mi`/`used_mi` use `None` to mean "unknown"** (rendered `-`), distinct from a

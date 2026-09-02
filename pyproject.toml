@@ -58,7 +58,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "textual==8.2.7",
+    "textual==8.2.8",
     "rich==15.0.0",
     "pyyaml>=6",
 ]
@@ -70,7 +70,7 @@ Issues = "https://github.com/ken-jo/kutop/issues"
 
 [project.optional-dependencies]
 profiles = []
-test = ["pytest>=8,<9", "ruff>=0.5"]
+test = ["pytest>=9,<10", "ruff==0.16.5"]
 
 [project.scripts]
 kutop = "kutop.cli:main"

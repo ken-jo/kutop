@@ -176,7 +176,7 @@ uses your local `kubectl` and kubeconfig exactly as `kubectl` would.
 | Dependency | Required version / contract | Used for |
 |------------|-----------------------------|----------|
 | Python | 3.9+ | running the installed `kutop` package |
-| Textual / Rich | `textual==8.2.7`, `rich==15.0.0` | terminal UI rendering |
+| Textual / Rich | `textual==8.2.8`, `rich==15.0.0` | terminal UI rendering |
 | kubectl | installed on `PATH`; use a client within +/- 1 minor version of your cluster's kube-apiserver | all live cluster reads and actions |
 | kubeconfig | current context from `~/.kube/config`, `KUBECONFIG`, or `--context` | cluster auth and target selection |
 | Metrics Server | 0.6.x+ on Kubernetes 1.19+ recommended | `kubectl top` CPU/MEM metrics |
