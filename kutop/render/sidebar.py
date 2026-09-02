@@ -322,8 +322,16 @@ class SidebarPanel(Vertical):
             sel = self.query_one("#side_context", Select)
         except Exception:
             return
-        ctx_opts = self._context_options or [self._context_name or ""]
-        pairs = [(c or "(current)", c) for c in ctx_opts]
+        ctx_opts = list(self._context_options or [self._context_name or ""])
+        # NO context selected (kubeconfig has no current-context and none was
+        # passed): the picker must SAY so instead of falling back to the first
+        # discovered name. Displaying "local" while the app still queries
+        # kubectl's default server is not just cosmetic — the displayed value
+        # then equals the value the user would pick, so the Select posts no
+        # Changed and the context can never be selected at all.
+        if not self._context_name and "" not in ctx_opts:
+            ctx_opts.insert(0, "")
+        pairs = [(c or "(no context)", c) for c in ctx_opts]
         desired = (self._context_name if self._context_name in ctx_opts
                    else ctx_opts[0])
         state = (tuple(pairs), desired)

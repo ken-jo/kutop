@@ -69,6 +69,14 @@
 
 ### Fixed
 
+- **The CONTEXT picker no longer claims a cluster the app is not using.**
+  Launching without a kubectl current-context showed the first *discovered*
+  context (e.g. `local`) as if it were active while every read still went to
+  kubectl's default `localhost:8080` — and because the displayed value equalled
+  the one the user would pick, selecting it posted no change event, so that
+  context could not be selected at all and its namespaces never loaded. The
+  picker now shows `(no context)` until one is really active, making the first
+  pick take effect.
 - **The sidebar NAMESPACES list now tracks the selected context.** A namespace
   listing carries the scope token it started under, so a slow listing from the
   previous cluster can no longer land as the new one's list (switching contexts
@@ -79,9 +87,10 @@
   sidebar showing only the watched namespaces, which reads as "this cluster has
   one namespace" rather than "the listing failed". The NAMESPACES header now
   says `loading…` while listing and `unavailable` when it failed, the reason is
-  toasted once, and the next good refresh retries the listing on its own — so a
-  cluster that was slow at launch fills the list in without the user switching
-  contexts to force it.
+  toasted once (but not before the first frame, where the startup guidance rows
+  already name the reason), and the next good refresh retries the listing on its
+  own — so a cluster that was slow at launch fills the list in without the user
+  switching contexts to force it.
 
 ### Removed
 

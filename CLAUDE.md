@@ -165,7 +165,9 @@ presentation (ordering, timezone, thresholds).
   `_start_ns_discovery`) so a listing from a superseded context is dropped; the
   sidebar NAMESPACES header shows `loading…`/`unavailable` via
   `SidebarPanel.set_ns_status`, and a failed listing is retried on the next
-  good frame. Event rows use
+  good frame. The CONTEXT `Select` shows an explicit `(no context)` entry while
+  none is active, so its displayed value never diverges from `app.context` (a
+  divergence made the displayed context unpickable). Event rows use
   content-derived keys resolved through `_event_rows`. Modal headers, the event detail modal,
   the confirm modal body and the health-probe option list render cluster/user text as
   `rich.text.Text`, never markup. Textual PRIVATE

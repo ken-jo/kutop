@@ -909,7 +909,15 @@ class TopApp(App):
     def _notify_discovery_failure(self, error: str) -> None:
         """Say once why the namespace list is empty — the sidebar would
         otherwise show only the watched namespaces, which reads as 'this
-        cluster has one namespace' rather than 'the listing failed'."""
+        cluster has one namespace' rather than 'the listing failed'.
+
+        Silent before the first frame: the startup guidance rows already name
+        the same failure (and name it better, e.g. 'no kube context selected'),
+        so a toast there only stacks noise on a launch that has not reached a
+        cluster yet.
+        """
+        if not self._loaded:
+            return
         detail = error if len(error) <= 90 else error[:89] + "…"
         if detail == self._last_discovery_error:
             return

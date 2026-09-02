@@ -184,6 +184,10 @@ def test_failed_listing_is_visible_and_announced_once() -> None:
         notices = _mute(app)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            # a frame must exist first: before that the startup guidance rows
+            # carry the failure and the toast is deliberately suppressed
+            app._apply_snapshot(_good_frame(), gen=app._fetch_gen)
+            await pilot.pause()
             app._populate_ns_list([], app._discover_gen, "timed out after 6s")
             await pilot.pause()
 
@@ -301,6 +305,8 @@ def test_worker_reports_the_listing_error() -> None:
         notices = _mute(app)
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            app._apply_snapshot(_good_frame(), gen=app._fetch_gen)
+            await pilot.pause()
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, app._discover_ns_worker,
                                        app._discover_gen)
@@ -330,6 +336,97 @@ def test_sidebar_ns_status_is_plain_text() -> None:
             sidebar.set_ns_status("")
             await pilot.pause()
             assert _ns_title(app) == "NAMESPACES"
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+# ── 7. the CONTEXT picker never claims a context the app is not using ────────
+
+
+def test_no_context_picker_shows_unset_and_first_pick_takes_effect() -> None:
+    """Launching without a kubectl current-context used to display the first
+    DISCOVERED context as if it were active. The app was still querying
+    kubectl's default server, and because the displayed value equalled the one
+    the user would pick, selecting it posted no Changed — so that context could
+    never be selected and its namespaces never loaded."""
+
+    from textual.widgets import Select
+
+    async def drive() -> None:
+        app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+        app.fetcher = _FakeFetcher({"local": ["kube-system", "llm"]})  # type: ignore[assignment]
+        picked: "list[str]" = []
+        app.set_context = lambda name: picked.append(name)  # type: ignore[method-assign]
+        _mute(app)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            sidebar = app.query_one("#sidebar", SidebarPanel)
+            # discovery found three contexts; the app itself has none selected
+            sidebar.rebuild_contexts(["local", "spm-eks", "spm-eks-dev"], "")
+            await pilot.pause()
+            await pilot.pause()
+
+            sel = app.query_one("#side_context", Select)
+            assert sel.value == ""                     # honest: nothing selected
+            labels = [label for label, _ in sel._options] if hasattr(
+                sel, "_options") else []
+            assert any("no context" in str(label) for label in labels)
+
+            # picking the real context is now a genuine change
+            sel.value = "local"
+            for _ in range(3):
+                await pilot.pause()
+            assert picked == ["local"]
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_resolved_context_is_shown_without_an_unset_entry() -> None:
+    """Once a context IS active the picker shows it, with no phantom entry."""
+
+    from textual.widgets import Select
+
+    async def drive() -> None:
+        app = TopApp(["default"], discover_namespaces=False, auto_refresh=False,
+                     context="spm-eks")
+        _mute(app)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            sidebar = app.query_one("#sidebar", SidebarPanel)
+            sidebar.rebuild_contexts(["local", "spm-eks"], "spm-eks")
+            await pilot.pause()
+            sel = app.query_one("#side_context", Select)
+            assert sel.value == "spm-eks"
+            await pilot.exit(None)
+
+    asyncio.run(drive())
+
+
+def test_discovery_failure_stays_silent_before_the_first_frame() -> None:
+    """The startup guidance rows already name the failure — and name it better
+    ('no kube context selected'); a toast there is pure noise."""
+
+    async def drive() -> None:
+        app = TopApp(["default"], discover_namespaces=False, auto_refresh=False)
+        notices = _mute(app)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert app._loaded is False
+            app._populate_ns_list(
+                [], app._discover_gen,
+                "The connection to the server localhost:8080 was refused")
+            await pilot.pause()
+            assert not [n for n in notices if "namespace list" in n]
+            assert "unavailable" in _ns_title(app)     # the header still says it
+
+            # after a frame has landed, the same failure IS announced
+            app._apply_snapshot(_good_frame(), gen=app._fetch_gen)
+            await pilot.pause()
+            app._populate_ns_list([], app._discover_gen, "timed out after 6s")
+            await pilot.pause()
+            assert [n for n in notices if "namespace list unavailable" in n]
             await pilot.exit(None)
 
     asyncio.run(drive())
